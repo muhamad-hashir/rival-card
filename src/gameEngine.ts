@@ -21,6 +21,8 @@ import type {
 // 1. DECK GENERATOR (108 CARDS)
 // ============================================================================
 
+export const TURN_DURATION = 15;
+
 /**
  * Generates the full 108-card deck for Rival Card:
  * - 4 Suits/Colors: Red (#EF4444), Blue (#3B82F6), Green (#10B981), Yellow (#F59E0B)
@@ -260,6 +262,7 @@ export interface PlayerConfig {
   id: string;
   name: string;
   isBot?: boolean;
+  avatarId?: string;
 }
 
 /**
@@ -291,6 +294,7 @@ export function createGame(
       isMuted: false,
       mutedRoundsRemaining: 0,
       hasDeclaredRival: false,
+      avatarId: config.avatarId || (config.isBot ? 'avatar_2' : 'avatar_1'),
     };
   });
 
@@ -958,7 +962,11 @@ export function advanceToNextTurn(state: GameState, steps: number = 1): GameStat
   });
 
   const nextPlayer = updatedPlayers[nextIndex];
-  const shouldMask = state.gameMode === 'pass_and_play' && !nextPlayer.isBot;
+  // In Pass & Play, only mask the screen when the turn actually switches to a DIFFERENT human player.
+  // In 1v1 or consecutive turns (e.g. Skip, Reverse in 1v1, Draw 2, Wild Draw 4), the active player
+  // keeps their turn, so their hand stays visible without triggering the privacy mask.
+  const isDifferentPlayer = nextIndex !== state.currentTurnIndex;
+  const shouldMask = state.gameMode === 'pass_and_play' && !nextPlayer.isBot && isDifferentPlayer;
 
   const privacyMask: PrivacyMaskState = {
     isActive: shouldMask,

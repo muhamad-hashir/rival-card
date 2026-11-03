@@ -7,6 +7,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import {
+  FONT_CARTOON_BOLD,
+  FONT_CARTOON_HEAVY,
+} from '../styles/typography';
+import { hapticsService } from '../services/hapticsService';
+import { soundService } from '../services/soundService';
 
 interface PrivacyMaskModalProps {
   visible: boolean;
@@ -19,41 +25,40 @@ export const PrivacyMaskModal: React.FC<PrivacyMaskModalProps> = ({
   targetPlayerName,
   onDismiss,
 }) => {
+  const handleReveal = () => {
+    hapticsService.cardSnap();
+    soundService.playCardDraw();
+    onDismiss();
+  };
+
   return (
     <Modal
-      transparent={false}
+      transparent
       animationType="fade"
       visible={visible}
       statusBarTranslucent
     >
       <View style={styles.container}>
-        {/* Decorative Top Accent Bar */}
-        <View style={styles.topAccentBar} />
-
         <View style={styles.cardContainer}>
-          {/* Privacy Shield Icon */}
-          <View style={styles.iconCircle}>
-            <Text style={styles.shieldIcon}>🔒</Text>
-          </View>
-
+          {/* Clean Pass & Play Badge */}
           <View style={styles.passBadge}>
-            <Text style={styles.passBadgeText}>PASS & PLAY MODE</Text>
+            <Text style={styles.passBadgeText}>PASS & PLAY</Text>
           </View>
 
           <Text style={styles.mainTitle}>Pass Device To</Text>
           <Text style={styles.playerName}>{targetPlayerName}</Text>
 
+          {/* Clean Alert Warning Banner (without lock icon or eye emoji) */}
           <View style={styles.warningBox}>
-            <Text style={styles.warningIcon}>👁️</Text>
             <Text style={styles.warningText}>
               Keep the screen hidden from opponents to protect your hand!
             </Text>
           </View>
 
-          {/* Unlock / Ready Button */}
+          {/* Punchy Emerald Green Pill Button */}
           <TouchableOpacity
             activeOpacity={0.85}
-            onPress={onDismiss}
+            onPress={handleReveal}
             style={styles.readyButton}
           >
             <Text style={styles.readyButtonText}>
@@ -71,120 +76,102 @@ export const PrivacyMaskModal: React.FC<PrivacyMaskModalProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
-  topAccentBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 8,
-    backgroundColor: '#3B82F6',
-  },
   cardContainer: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    padding: 28,
+    backgroundColor: '#FEF6E9', // Warm cream surface matching design system
+    borderRadius: 24,
+    padding: 24,
     alignItems: 'center',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
+    borderWidth: 3,
+    borderColor: '#E2D9C8',
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
     elevation: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  iconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#EFF6FF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1.5,
-    borderColor: '#DBEAFE',
-  },
-  shieldIcon: {
-    fontSize: 34,
   },
   passBadge: {
     backgroundColor: '#F1F5F9',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 5,
-    borderRadius: 12,
-    marginBottom: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    marginBottom: 14,
   },
   passBadgeText: {
+    ...FONT_CARTOON_BOLD,
     fontSize: 11,
-    fontWeight: '800',
     color: '#475569',
-    letterSpacing: 1,
+    letterSpacing: 1.2,
   },
   mainTitle: {
-    fontSize: 16,
-    fontWeight: '600',
+    ...FONT_CARTOON_BOLD,
+    fontSize: 15,
     color: '#64748B',
-    marginBottom: 4,
+    marginBottom: 6,
+    letterSpacing: 0.5,
   },
   playerName: {
+    ...FONT_CARTOON_HEAVY,
     fontSize: 28,
-    fontWeight: '900',
     color: '#0F172A',
-    marginBottom: 20,
+    marginBottom: 18,
     textAlign: 'center',
   },
   warningBox: {
-    flexDirection: 'row',
+    width: '100%',
     backgroundColor: '#FEF3C7',
-    borderRadius: 14,
-    padding: 12,
-    alignItems: 'center',
-    marginBottom: 24,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#FDE68A',
-  },
-  warningIcon: {
-    fontSize: 20,
-    marginRight: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginBottom: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   warningText: {
-    flex: 1,
+    ...FONT_CARTOON_BOLD,
     fontSize: 12.5,
     color: '#92400E',
-    fontWeight: '500',
+    textAlign: 'center',
     lineHeight: 18,
   },
   readyButton: {
     width: '100%',
-    backgroundColor: '#3B82F6',
-    borderRadius: 16,
-    paddingVertical: 16,
+    backgroundColor: '#22C55E', // Punchy emerald green
+    borderRadius: 999, // Rounded pill
+    borderBottomWidth: 4,
+    borderColor: '#15803D', // Tactile edge
+    paddingVertical: 14,
     paddingHorizontal: 16,
     alignItems: 'center',
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 6 },
+    justifyContent: 'center',
+    shadowColor: '#15803D',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 5,
+    shadowRadius: 6,
+    elevation: 4,
   },
   readyButtonText: {
+    ...FONT_CARTOON_BOLD,
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '800',
     letterSpacing: 0.5,
   },
   footerBrand: {
     position: 'absolute',
     bottom: 24,
+    ...FONT_CARTOON_BOLD,
     fontSize: 10,
-    fontWeight: '700',
     color: '#94A3B8',
-    letterSpacing: 1.2,
+    letterSpacing: 1.5,
   },
 });

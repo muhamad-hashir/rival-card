@@ -9,6 +9,11 @@ import {
 } from 'react-native';
 import { COLOR_HEX, STANDARD_COLORS } from '../types';
 import type { StandardColor } from '../types';
+import {
+  FONT_CARTOON_BOLD,
+  FONT_CARTOON_HEAVY,
+  FONT_CARTOON_REGULAR,
+} from '../styles/typography';
 
 interface ColorPickerModalProps {
   visible: boolean;
@@ -105,19 +110,20 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   badgeText: {
+    ...FONT_CARTOON_BOLD,
     fontSize: 10,
-    fontWeight: '800',
     color: '#475569',
     letterSpacing: 0.8,
   },
   title: {
+    ...FONT_CARTOON_HEAVY,
     fontSize: 22,
-    fontWeight: '800',
     color: '#0F172A',
     marginBottom: 6,
     textAlign: 'center',
   },
   subtitle: {
+    ...FONT_CARTOON_REGULAR,
     fontSize: 13,
     color: '#64748B',
     textAlign: 'center',
@@ -157,9 +163,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   colorButtonText: {
+    ...FONT_CARTOON_HEAVY,
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '900',
     letterSpacing: 1,
     textShadowColor: 'rgba(0, 0, 0, 0.3)',
     textShadowOffset: { width: 0, height: 1 },

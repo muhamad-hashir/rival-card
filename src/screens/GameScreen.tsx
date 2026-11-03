@@ -1,7 +1,9 @@
 // src/screens/GameScreen.tsx - Main Game Screen for Rival Card with Mobile-Native Polish & Supabase Realtime Multiplayer
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  AppState,
   Dimensions,
   FlatList,
   Image,
@@ -13,6 +15,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import {
@@ -29,27 +32,39 @@ import {
   playCard,
   playerDrawCard,
   playerPassTurn,
+  TURN_DURATION,
 } from '../gameEngine';
 import { CardView } from '../components/CardView';
 import { DraggableCard } from '../components/DraggableCard';
 import { ColorPickerModal } from '../components/ColorPickerModal';
 import { PrivacyMaskModal } from '../components/PrivacyMaskModal';
 import { GameOverModal } from '../components/GameOverModal';
+import { LeaveConfirmationModal } from '../components/LeaveConfirmationModal';
 import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { ModesModal } from '../components/ModesModal';
 import { TauntBar } from '../components/TauntBar';
+import { TurnTimerBadge } from '../components/TurnTimerBadge';
 import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
-import { multiplayerService, TauntMessage } from '../services/supabase';
+import { playerProfileService, getAvatarConfig } from '../services/playerProfileService';
+import {
+  multiplayerService,
+  TauntMessage,
+  saveActiveMatchSession,
+  clearActiveMatchSession,
+} from '../services/multiplayerService';
 import { COLOR_HEX } from '../types';
 import type { Card, GameMode, GameState, Player, StandardColor } from '../types';
+import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
 const CARD_BACK_IMAGE = require('../../assets/card_back.png');
 
 export type SetupPreset = 'vs_bot_2p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
+
+export { TURN_DURATION };
 
 const PRESETS: Record<
   SetupPreset,
@@ -92,6 +107,27 @@ const PRESETS: Record<
   },
 };
 
+export function getPresetPlayers(
+  presetKey: SetupPreset,
+  customPlayerName?: string
+): { id: string; name: string; isBot: boolean; avatarId?: string }[] {
+  const base = PRESETS[presetKey];
+  const cached = playerProfileService.getCachedProfile();
+  const profileName =
+    customPlayerName || cached?.nickname || 'Player';
+  const profileAvatar = cached?.avatarId || 'avatar_1';
+
+  return base.players.map((p) => {
+    if (p.id === 'p1' && base.mode === 'vs_bot') {
+      return { ...p, name: profileName, avatarId: profileAvatar };
+    }
+    return {
+      ...p,
+      avatarId: p.isBot ? 'avatar_2' : 'avatar_1',
+    };
+  });
+}
+
 function getCardOverlapMargin(cardCount: number): number {
   if (cardCount <= 1) return 0;
   if (cardCount === 2) return -26;
@@ -118,9 +154,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   initialLocalOnlinePlayerId = null,
   onGoHome,
 }) => {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [currentPresetKey, setCurrentPresetKey] = useState<SetupPreset>(initialPresetKey);
   const [gameState, setGameState] = useState<GameState>(() =>
-    initialGameState || createGame(PRESETS[initialPresetKey].players, PRESETS[initialPresetKey].mode)
+    initialGameState ||
+    createGame(getPresetPlayers(initialPresetKey), PRESETS[initialPresetKey].mode)
   );
 
   // Sound mute state
@@ -133,13 +171,40 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // 3-second RIVAL countdown tracking
   const [rivalCountdown, setRivalCountdown] = useState<number | null>(null);
   const rivalTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isGameOverRef = useRef(gameState.isGameOver);
+  isGameOverRef.current = gameState.isGameOver;
 
   // Multiplayer Online & Modes states
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isModesModalOpen, setIsModesModalOpen] = useState(false);
+  const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
   const [onlineRoomCode, setOnlineRoomCode] = useState<string | null>(initialOnlineRoomCode);
   const [localOnlinePlayerId, setLocalOnlinePlayerId] = useState<string | null>(initialLocalOnlinePlayerId);
   const [activeTaunt, setActiveTaunt] = useState<TauntMessage | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+
+  // Quick feedback banner state (e.g., for Pass & Play turn skips)
+  const [quickBannerMessage, setQuickBannerMessage] = useState<string | null>(null);
+  const quickBannerTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showQuickBanner = useCallback((message: string, durationMs: number = 3200) => {
+    if (quickBannerTimerRef.current) {
+      clearTimeout(quickBannerTimerRef.current);
+    }
+    setQuickBannerMessage(message);
+    quickBannerTimerRef.current = setTimeout(() => {
+      setQuickBannerMessage(null);
+      quickBannerTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (quickBannerTimerRef.current) {
+        clearTimeout(quickBannerTimerRef.current);
+      }
+    };
+  }, []);
 
   // Active flying card animations (deals and draws)
   const [flyingCards, setFlyingCards] = useState<FlyingCardData[]>([]);
@@ -154,6 +219,27 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Bot & Human action processing flags
   const [isBotProcessing, setIsBotProcessing] = useState(false);
   const [isHumanDrawing, setIsHumanDrawing] = useState(false);
+
+  // Browser testing hook to simulate game ending for verification
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__triggerGameOver = (winnerId?: string) => {
+        setGameState((prev) => ({
+          ...prev,
+          isGameOver: true,
+          winner: prev.players.find((p) => p.id === (winnerId || 'p1')) || prev.players[0],
+          players: prev.players.map((p) =>
+            p.id === (winnerId || 'p1') ? { ...p, hand: [] } : p
+          ),
+        }));
+      };
+      (window as any).__getGameState = () => gameState;
+      (window as any).__setIsLeaveModalOpen = (open: boolean) => setIsLeaveModalOpen(open);
+      (window as any).__showQuickBanner = (msg: string) => showQuickBanner(msg);
+      (window as any).__setIsReconnecting = (val: boolean) => setIsReconnecting(val);
+      (window as any).__getIsReconnecting = () => isReconnecting;
+    }
+  }, [gameState, showQuickBanner, isReconnecting]);
 
   // Lock orientation to landscape on mount; revert to portrait on unmount
   useEffect(() => {
@@ -174,6 +260,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Handle returning to home screen with portrait orientation lock
   const handleExitToHome = async () => {
     try {
+      await clearActiveMatchSession();
+      if (isOnlineMode) {
+        await multiplayerService.leaveRoom();
+      }
       await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     } catch {
       // Fallback
@@ -199,10 +289,77 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       ? gameState.players.find((p) => p.id === localOnlinePlayerId) || currentPlayer
       : currentPlayer;
 
+  // 4-Player Clock Seating Positions:
+  // 6 O'Clock: myPlayer (Bottom)
+  // 9 O'Clock: Opponent 1 (Left Edge, e.g., CyberBot)
+  // 12 O'Clock: Opponent 2 (Top Center, e.g., NovaBot)
+  // 3 O'Clock: Opponent 3 (Right Edge, e.g., EchoBot)
+  // In 2-Player matches, Opponent 1 is centered at 12 O'Clock.
+  const isFourPlayer = gameState.players.length === 4;
+  const myPlayerIndex = gameState.players.findIndex((p) => p.id === myPlayer.id);
+
+  const opponentLeft: Player | null = isFourPlayer
+    ? gameState.players[(myPlayerIndex + 1) % 4]
+    : null;
+  const opponentTop: Player | null = isFourPlayer
+    ? gameState.players[(myPlayerIndex + 2) % 4]
+    : gameState.players.length === 2
+    ? gameState.players[(myPlayerIndex + 1) % 2]
+    : null;
+  const opponentRight: Player | null = isFourPlayer
+    ? gameState.players[(myPlayerIndex + 3) % 4]
+    : null;
+
   const isMyTurn = isOnlineMode
     ? currentPlayer.id === localOnlinePlayerId
     : currentPlayer.id === myPlayer.id;
-  const isHumanTurn = isMyTurn && !gameState.privacyMask.isActive && !gameState.isGameOver;
+  const isHumanTurn =
+    isMyTurn && !gameState.privacyMask.isActive && !gameState.isGameOver && !isReconnecting;
+
+  // Record match result in persistent player profile and clear active session when game ends
+  const hasRecordedResultRef = useRef(false);
+  useEffect(() => {
+    if (gameState.isGameOver && !hasRecordedResultRef.current) {
+      hasRecordedResultRef.current = true;
+      clearActiveMatchSession().catch(() => {});
+      const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
+      playerProfileService.recordMatchResult(isWinner).catch((err) => {
+        console.warn('Failed to record match result:', err);
+      });
+    } else if (!gameState.isGameOver) {
+      hasRecordedResultRef.current = false;
+    }
+  }, [gameState.isGameOver, gameState.winner, myPlayer.id]);
+
+  // Cache active online session on mount / room connection
+  useEffect(() => {
+    if (isOnlineMode && onlineRoomCode && localOnlinePlayerId && !gameState.isGameOver) {
+      saveActiveMatchSession(onlineRoomCode, localOnlinePlayerId).catch(() => {});
+    }
+  }, [isOnlineMode, onlineRoomCode, localOnlinePlayerId, gameState.isGameOver]);
+
+  // Keep human player name and avatar in sync with saved profile in vs_bot mode
+  useEffect(() => {
+    playerProfileService.getProfile().then((profile) => {
+      if (profile?.nickname) {
+        setGameState((prev) => {
+          if (prev.gameMode !== 'vs_bot') return prev;
+          const p1 = prev.players.find((p) => p.id === 'p1');
+          if (p1 && (p1.name !== profile.nickname || p1.avatarId !== profile.avatarId)) {
+            return {
+              ...prev,
+              players: prev.players.map((p) =>
+                p.id === 'p1'
+                  ? { ...p, name: profile.nickname, avatarId: profile.avatarId || p.avatarId }
+                  : p
+              ),
+            };
+          }
+          return prev;
+        });
+      }
+    });
+  }, []);
 
   // Toggle Audio
   const handleToggleSound = () => {
@@ -219,6 +376,148 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   };
 
+  // =========================================================================
+  // 15-SECOND TURN TIMER & AFK AUTO-PLAY LOGIC
+  // =========================================================================
+  const [turnTimeRemaining, setTurnTimeRemaining] = useState<number>(TURN_DURATION);
+  const turnTimerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const hasExecutedTimeoutRef = useRef<boolean>(false);
+
+  // Conditions that pause the turn countdown
+  const isTimerPaused =
+    gameState.isGameOver ||
+    isDealing ||
+    isColorPickerOpen ||
+    gameState.pendingColorChoice ||
+    gameState.privacyMask.isActive ||
+    isLeaveModalOpen ||
+    isModesModalOpen ||
+    isLobbyModalOpen ||
+    isReconnecting;
+
+  // Reset turn timer to 15s whenever the active player turn changes or game deals
+  useEffect(() => {
+    hasExecutedTimeoutRef.current = false;
+    setTurnTimeRemaining(TURN_DURATION);
+  }, [gameState.currentTurnIndex, gameState.turnCount, gameState.gameMode, isDealing]);
+
+  // Turn Countdown Interval (ticks every 1s when unpaused)
+  useEffect(() => {
+    if (isTimerPaused) {
+      if (turnTimerIntervalRef.current) {
+        clearInterval(turnTimerIntervalRef.current);
+        turnTimerIntervalRef.current = null;
+      }
+      return;
+    }
+
+    turnTimerIntervalRef.current = setInterval(() => {
+      setTurnTimeRemaining((prev) => {
+        if (prev <= 1) {
+          return 0;
+        }
+
+        const next = prev - 1;
+
+        // Audio & Tactile cue: Ticking pulse on last 3 seconds (3, 2, 1) when local human turn
+        if (isHumanTurn && (next === 3 || next === 2 || next === 1)) {
+          soundService.playCardSnap();
+          hapticsService.cardSnap();
+        }
+
+        return next;
+      });
+    }, 1000);
+
+    return () => {
+      if (turnTimerIntervalRef.current) {
+        clearInterval(turnTimerIntervalRef.current);
+        turnTimerIntervalRef.current = null;
+      }
+    };
+  }, [isTimerPaused, isHumanTurn]);
+
+  // AFK Timeout Fallback Action (Auto-Play / Auto-Draw & Pass)
+  const handleTimeoutFallback = useCallback(() => {
+    if (gameState.isGameOver || isDealing || gameState.privacyMask.isActive) return;
+
+    const timedOutPlayer = gameState.players[gameState.currentTurnIndex];
+    if (!timedOutPlayer) return;
+
+    // Online multiplayer synchronization:
+    // If it's my turn, I execute and broadcast the timeout action.
+    // If it's the other player's turn and I am host, I execute and broadcast so the match never freezes.
+    if (isOnlineMode) {
+      const isHost = multiplayerService.getMyPlayer()?.isHost ?? false;
+      const isMyTurnOnline = currentPlayer.id === localOnlinePlayerId;
+      if (!isMyTurnOnline && !isHost) {
+        // Guest waiting for host or active player to broadcast
+        return;
+      }
+    }
+
+    // Check if player has any playable cards in hand
+    const playableCards = timedOutPlayer.hand.filter((c) =>
+      isValidMove(c, topDiscardCard, gameState.activeColor)
+    );
+
+    if (playableCards.length > 0) {
+      // 1. Playable card exists: Auto-play first valid card
+      const cardToPlay = playableCards[0];
+      const isWild = isWildCard(cardToPlay);
+      const chosenColor = isWild
+        ? getDominantColor(timedOutPlayer.hand.filter((c) => c.id !== cardToPlay.id))
+        : undefined;
+
+      const nextState = playCard(gameState, timedOutPlayer.id, cardToPlay.id, { chosenColor });
+      soundService.playCardSnap();
+      hapticsService.cardSnap();
+      showQuickBanner(`Time's up! ${timedOutPlayer.name} auto-played.`);
+      commitGameState(
+        nextState,
+        `Time's up! ${timedOutPlayer.name} auto-played ${cardToPlay.color} ${cardToPlay.value}`
+      );
+    } else {
+      // 2. No playable card exists (or player hasn't drawn): Auto-draw and pass turn
+      const drawnState = gameState.hasDrawnThisTurn
+        ? gameState
+        : playerDrawCard(gameState, timedOutPlayer.id);
+      const passedState = playerPassTurn(drawnState, timedOutPlayer.id);
+      soundService.playCardDraw();
+      hapticsService.cardSnap();
+      showQuickBanner(`Time's up! ${timedOutPlayer.name} auto-draw passed.`);
+      commitGameState(
+        passedState,
+        `Time's up! ${timedOutPlayer.name} auto-draw passed`
+      );
+    }
+  }, [
+    gameState,
+    isDealing,
+    isOnlineMode,
+    currentPlayer.id,
+    localOnlinePlayerId,
+    topDiscardCard,
+    showQuickBanner,
+  ]);
+
+  // Watch for Turn Timeout trigger at 0s
+  useEffect(() => {
+    if (turnTimeRemaining === 0 && !hasExecutedTimeoutRef.current && !isTimerPaused) {
+      hasExecutedTimeoutRef.current = true;
+      handleTimeoutFallback();
+    }
+  }, [turnTimeRemaining, isTimerPaused, handleTimeoutFallback]);
+
+  // Browser testing hooks for turn timer and AFK verification
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__setTurnTimer = (secs: number) => setTurnTimeRemaining(secs);
+      (window as any).__getTurnTimer = () => turnTimeRemaining;
+      (window as any).__triggerTurnTimeout = () => handleTimeoutFallback();
+    }
+  }, [turnTimeRemaining, handleTimeoutFallback]);
+
   // Clean up completed flying card and execute its arrival callback
   const handleFlyingCardComplete = useCallback((id: string) => {
     setFlyingCards((prev) => {
@@ -230,15 +529,40 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     });
   }, []);
 
-  // Launch a flying card animation from Draw Pile to target hand with 320ms travel time
+  // Launch a flying card animation from Center Table Draw Pile to target clock position
   const triggerFlyingCard = useCallback(
-    (target: 'player' | 'opponent', onArrival?: () => void) => {
+    (target: 'player' | 'opponent' | string, onArrival?: () => void) => {
       const id = `fly_${Date.now()}_${Math.random()}`;
-      const startX = 82; // Center of deck positioned at mid-left
-      const startY = SCREEN_HEIGHT * 0.44;
-      const targetX = SCREEN_WIDTH * 0.5;
-      const targetY = target === 'player' ? SCREEN_HEIGHT - 65 : 65;
-      const targetScale = target === 'player' ? 1.0 : 0.65;
+      const screenW = windowWidth || SCREEN_WIDTH;
+      const screenH = windowHeight || SCREEN_HEIGHT;
+      const startX = screenW * 0.5 - 65; // Draw pile in center table arena
+      const startY = screenH * 0.44;
+
+      let targetX = screenW * 0.5;
+      let targetY = screenH - 65;
+      let targetScale = 1.0;
+
+      if (target === 'player' || target === myPlayer.id) {
+        // 6 O'Clock (Bottom Center): User hand
+        targetX = screenW * 0.5;
+        targetY = screenH - 65;
+        targetScale = 1.0;
+      } else if (isFourPlayer && (target === opponentLeft?.id || target === 'left')) {
+        // 9 O'Clock (Left Edge): Opponent 1
+        targetX = 65;
+        targetY = screenH * 0.44;
+        targetScale = 0.65;
+      } else if (isFourPlayer && (target === opponentRight?.id || target === 'right')) {
+        // 3 O'Clock (Right Edge): Opponent 3
+        targetX = screenW - 65;
+        targetY = screenH * 0.44;
+        targetScale = 0.65;
+      } else {
+        // 12 O'Clock (Top Center): Opponent 2 or 2P opponent
+        targetX = screenW * 0.5;
+        targetY = 65;
+        targetScale = 0.65;
+      }
 
       setFlyingCards((prev) => [
         ...prev,
@@ -254,7 +578,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         },
       ]);
     },
-    []
+    [isFourPlayer, myPlayer.id, opponentLeft?.id, opponentRight?.id, windowWidth, windowHeight]
   );
 
   // Rapid sequential card dealing animation at game start: hands start empty and each card reveals on arrival
@@ -274,11 +598,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     for (let round = 0; round < cardsPerPlayer; round++) {
       for (let pIdx = 0; pIdx < initialPlayers.length; pIdx++) {
         const playerId = initialPlayers[pIdx].id;
-        const isHuman = playerId === myPlayer.id || pIdx === 0;
         const currentFlight = flightIndex++;
 
         setTimeout(() => {
-          triggerFlyingCard(isHuman ? 'player' : 'opponent', () => {
+          triggerFlyingCard(playerId, () => {
             soundService.playCardSnap();
             setDealtCardsCount((prev) => ({
               ...prev,
@@ -293,18 +616,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setTimeout(() => {
       setIsDealing(false);
     }, totalDuration);
-  }, [myPlayer.id, triggerFlyingCard]);
+  }, [triggerFlyingCard]);
 
   // Trigger dealing animation on initial match mount
   useEffect(() => {
-    runDealingAnimation(PRESETS[initialPresetKey].players);
+    runDealingAnimation(getPresetPlayers(initialPresetKey));
   }, [initialPresetKey, runDealingAnimation]);
 
   // Restart match with current or new preset
   const handleStartGame = useCallback((presetKey: SetupPreset) => {
     setCurrentPresetKey(presetKey);
     const preset = PRESETS[presetKey];
-    setGameState(createGame(preset.players, preset.mode));
+    const players = getPresetPlayers(presetKey);
+    setGameState(createGame(players, preset.mode));
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
     setOnlineRoomCode(null);
@@ -318,7 +642,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       rivalTimerRef.current = null;
     }
     setRivalCountdown(null);
-    runDealingAnimation(preset.players);
+    runDealingAnimation(players);
   }, [runDealingAnimation]);
 
   // Online Multiplayer real-time state synchronization listener
@@ -328,15 +652,40 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     multiplayerService.setCallbacks({
       onGameStateUpdate: (remoteState, senderId) => {
         if (senderId !== localOnlinePlayerId) {
+          const wasGameOver = isGameOverRef.current;
           setGameState(remoteState);
+          setIsReconnecting(false);
           if (remoteState.isGameOver) {
             soundService.playWinChime();
             hapticsService.victory();
           } else {
             soundService.playCardSnap();
             hapticsService.cardSnap();
+            if (wasGameOver) {
+              setSelectedWildCard(null);
+              setIsColorPickerOpen(false);
+              setRivalCountdown(null);
+              runDealingAnimation(remoteState.players);
+            }
           }
         }
+      },
+      onReconnecting: (_attempt) => {
+        setIsReconnecting(true);
+      },
+      onReconnected: () => {
+        setIsReconnecting(false);
+        showQuickBanner('Reconnected to match!');
+      },
+      onStateSnapshotRequested: (requesterId) => {
+        if (isOnlineMode && (multiplayerService.getMyPlayer()?.isHost || myPlayer.id !== requesterId)) {
+          multiplayerService.broadcastStateSnapshot(gameState, requesterId);
+        }
+      },
+      onStateSnapshotReceived: (syncedState) => {
+        setGameState(syncedState);
+        setIsReconnecting(false);
+        showQuickBanner('Match state synchronized!');
       },
       onTauntReceived: (taunt) => {
         setActiveTaunt(taunt);
@@ -347,15 +696,93 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         Alert.alert('Player Disconnected', `${name} has left the match.`);
       },
     });
-  }, [isOnlineMode, localOnlinePlayerId]);
+  }, [
+    isOnlineMode,
+    localOnlinePlayerId,
+    runDealingAnimation,
+    gameState,
+    myPlayer.id,
+    showQuickBanner,
+  ]);
 
-  // Leave active online multiplayer room
-  const handleLeaveRoom = async () => {
+  // AppState background/foreground resume listener
+  useEffect(() => {
+    if (!isOnlineMode) return;
+
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        const status = multiplayerService.getConnectionStatus();
+        if (status !== 'connected') {
+          setIsReconnecting(true);
+          multiplayerService.reconnect();
+        } else {
+          multiplayerService.requestStateSnapshot();
+        }
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isOnlineMode]);
+
+  // Handle post-game "Play Again" action
+  const handlePlayAgain = async () => {
     hapticsService.cardSnap();
-    await multiplayerService.leaveRoom();
-    setOnlineRoomCode(null);
-    setLocalOnlinePlayerId(null);
-    handleStartGame('vs_bot_2p');
+    soundService.playCardDraw();
+    if (rivalTimerRef.current) {
+      clearInterval(rivalTimerRef.current);
+      rivalTimerRef.current = null;
+    }
+    setRivalCountdown(null);
+    setSelectedWildCard(null);
+    setIsColorPickerOpen(false);
+    setIsBotProcessing(false);
+    setIsHumanDrawing(false);
+
+    if (isOnlineMode) {
+      const playerConfigs = gameState.players.map((p) => ({
+        id: p.id,
+        name: p.name,
+        isBot: false,
+      }));
+      const freshState = createGame(playerConfigs, 'multiplayer');
+      setGameState(freshState);
+      try {
+        await multiplayerService.broadcastGameState(freshState, 'Restarted Match');
+      } catch (err) {
+        console.warn('Failed to broadcast fresh match state:', err);
+      }
+      runDealingAnimation(playerConfigs);
+    } else {
+      handleStartGame(currentPresetKey);
+    }
+  };
+
+  // Handle post-game or header "Quit Room" action
+  const handleQuitGame = async () => {
+    hapticsService.cardSnap();
+    await clearActiveMatchSession();
+    if (rivalTimerRef.current) {
+      clearInterval(rivalTimerRef.current);
+      rivalTimerRef.current = null;
+    }
+    setRivalCountdown(null);
+    setSelectedWildCard(null);
+    setIsColorPickerOpen(false);
+    setIsBotProcessing(false);
+    setIsHumanDrawing(false);
+
+    if (isOnlineMode) {
+      try {
+        await multiplayerService.leaveRoom();
+      } catch (err) {
+        console.warn('Error leaving room on quit:', err);
+      }
+      setOnlineRoomCode(null);
+      setLocalOnlinePlayerId(null);
+    }
+    await handleExitToHome();
   };
 
   // 3-second RIVAL! alert countdown when human player has 1 card without declaring
@@ -469,7 +896,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: penaltyCards }));
             for (let i = 0; i < penaltyCards; i++) {
               setTimeout(() => {
-                triggerFlyingCard(victim.isBot ? 'opponent' : 'player', () => {
+                triggerFlyingCard(victim.id, () => {
                   soundService.playCardSnap();
                   setPendingPenaltyCount((prev) => ({
                     ...prev,
@@ -491,7 +918,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         } else {
           // No playable cards: Bot draws from deck!
           // Flying card animates to bot hand, card is committed only upon arrival
-          triggerFlyingCard('opponent', () => {
+          triggerFlyingCard(currentPlayer.id, () => {
             try {
               const nextState = playerDrawCard(stateForBot, currentPlayer.id);
               soundService.playCardSnap();
@@ -550,7 +977,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 2 }));
           for (let i = 0; i < 2; i++) {
             setTimeout(() => {
-              triggerFlyingCard(victim.isBot ? 'opponent' : 'player', () => {
+              triggerFlyingCard(victim.id, () => {
                 soundService.playCardSnap();
                 setPendingPenaltyCount((prev) => ({
                   ...prev,
@@ -564,6 +991,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
       const nextState = playCard(gameState, myPlayer.id, card.id);
       hapticsService.validPlay();
+
+      // In 1v1 Pass & Play mode: If an action card keeps the turn with the player (e.g. Skip, Reverse, Draw 2, Mute),
+      // keep their hand active and display a quick feedback banner.
+      if (
+        gameState.gameMode === 'pass_and_play' &&
+        gameState.players.length === 2 &&
+        nextState.currentTurnIndex === gameState.currentTurnIndex &&
+        !nextState.isGameOver
+      ) {
+        const opponent = gameState.players.find((p) => p.id !== myPlayer.id);
+        const opponentName = opponent ? opponent.name : 'Player 2';
+        showQuickBanner(`You skipped ${opponentName}! Take another turn.`);
+      }
 
       if (nextState.isGameOver) {
         hapticsService.victory();
@@ -590,6 +1030,18 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       const nextState = chooseWildColor(gameState, myPlayer.id, color);
       hapticsService.validPlay();
       soundService.playCardSnap();
+
+      if (
+        gameState.gameMode === 'pass_and_play' &&
+        gameState.players.length === 2 &&
+        nextState.currentTurnIndex === gameState.currentTurnIndex &&
+        !nextState.isGameOver
+      ) {
+        const opponent = gameState.players.find((p) => p.id !== myPlayer.id);
+        const opponentName = opponent ? opponent.name : 'Player 2';
+        showQuickBanner(`You skipped ${opponentName}! Take another turn.`);
+      }
+
       commitGameState(nextState, `${myPlayer.name} picked ${color}`);
       setSelectedWildCard(null);
       return;
@@ -604,7 +1056,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 4 }));
             for (let i = 0; i < 4; i++) {
               setTimeout(() => {
-                triggerFlyingCard(victim.isBot ? 'opponent' : 'player', () => {
+                triggerFlyingCard(victim.id, () => {
                   soundService.playCardSnap();
                   setPendingPenaltyCount((prev) => ({
                     ...prev,
@@ -620,6 +1072,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           chosenColor: color,
         });
         hapticsService.validPlay();
+
+        if (
+          gameState.gameMode === 'pass_and_play' &&
+          gameState.players.length === 2 &&
+          nextState.currentTurnIndex === gameState.currentTurnIndex &&
+          !nextState.isGameOver
+        ) {
+          const opponent = gameState.players.find((p) => p.id !== myPlayer.id);
+          const opponentName = opponent ? opponent.name : 'Player 2';
+          showQuickBanner(`You skipped ${opponentName}! Take another turn.`);
+        }
 
         if (nextState.isGameOver) {
           hapticsService.victory();
@@ -707,6 +1170,185 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Opponents list (all players except local player)
   const opponents = gameState.players.filter((p) => p.id !== myPlayer.id);
 
+  // Helper to render an opponent in horizontal layout (12 O'Clock Top Center) or compact vertical stack (9 O'Clock Left / 3 O'Clock Right)
+  const renderOpponentBox = (opp: Player, layout: 'horizontal' | 'vertical') => {
+    const isOppTurn = gameState.players[gameState.currentTurnIndex].id === opp.id;
+    const isCatchable = opp.hand.length === 1 && !opp.hasDeclaredRival;
+    const oppVisibleCount = isDealing
+      ? (dealtCardsCount[opp.id] ?? 0)
+      : pendingPenaltyCount[opp.id]
+      ? Math.max(0, opp.hand.length - pendingPenaltyCount[opp.id])
+      : opp.hand.length;
+
+    if (layout === 'vertical') {
+      const fanCardCount = Math.min(oppVisibleCount, 4);
+      return (
+        <View
+          key={opp.id}
+          style={[
+            styles.sideOpponentCard,
+            isOppTurn && styles.opponentCardActive,
+          ]}
+        >
+          {/* Side Opponent Header (Avatar, Name, Count Badge, Muted, Rival) */}
+          <View style={styles.sideOpponentInfo}>
+            <Text style={styles.opponentAvatarEmoji}>
+              {getAvatarConfig(opp.avatarId).emoji}
+            </Text>
+            <Text style={styles.sideOpponentName} numberOfLines={1}>
+              {opp.name}
+            </Text>
+            {isOppTurn && !gameState.isGameOver && !isDealing && (
+              <TurnTimerBadge seconds={turnTimeRemaining} size="compact" />
+            )}
+            <View
+              style={[
+                styles.opponentCountBadge,
+                oppVisibleCount === 1 && styles.opponentCountBadgeRival,
+              ]}
+            >
+              <Text style={styles.opponentCountBadgeText}>{oppVisibleCount}</Text>
+            </View>
+            {opp.isMuted && (
+              <View style={styles.mutedBadge}>
+                <Text style={styles.mutedBadgeText}>🔇</Text>
+              </View>
+            )}
+            {opp.hasDeclaredRival && (
+              <View style={styles.rivalDeclaredBadge}>
+                <Text style={styles.rivalDeclaredText}>⚡ RIVAL!</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Compact Vertical Stack of Card Backs */}
+          <View style={styles.sideOpponentFanContainer}>
+            {fanCardCount > 0 ? (
+              Array.from({ length: fanCardCount }).map((_, idx) => (
+                <View
+                  key={idx}
+                  style={[
+                    styles.sideCardWrapper,
+                    {
+                      marginTop: idx === 0 ? 0 : -38,
+                      zIndex: idx + 1,
+                    },
+                  ]}
+                >
+                  <CardView isFaceDown size="small" disabled />
+                </View>
+              ))
+            ) : (
+              <Text style={styles.opponentEmptyText}>{isDealing ? 'Dealing...' : 'Empty'}</Text>
+            )}
+            {oppVisibleCount > 4 && (
+              <View style={styles.sideOverflowPill}>
+                <Text style={styles.sideOverflowPillText}>
+                  +{oppVisibleCount - 4}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Catch Rival Button */}
+          {isCatchable && !gameState.privacyMask.isActive && !gameState.isGameOver && !isDealing && (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => handleCatchRival(opp)}
+              style={styles.catchRivalBtn}
+            >
+              <Text style={styles.catchRivalText}>🚨 CATCH!</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      );
+    }
+
+    // Horizontal Layout for 12 O'Clock (Top Center)
+    const fanCardCount = Math.min(oppVisibleCount, 6);
+    return (
+      <View
+        key={opp.id}
+        style={[
+          styles.opponentCard,
+          isOppTurn && styles.opponentCardActive,
+          styles.opponentCardSingle,
+        ]}
+      >
+        {/* Opponent Top Row (Avatar, Name, Count Badge, Muted, Rival) */}
+        <View style={styles.opponentTopRow}>
+          <Text style={styles.opponentAvatarEmoji}>
+            {getAvatarConfig(opp.avatarId).emoji}
+          </Text>
+          <Text style={styles.opponentName} numberOfLines={1}>
+            {opp.name}
+          </Text>
+          {isOppTurn && !gameState.isGameOver && !isDealing && (
+            <TurnTimerBadge seconds={turnTimeRemaining} />
+          )}
+          <View
+            style={[
+              styles.opponentCountBadge,
+              oppVisibleCount === 1 && styles.opponentCountBadgeRival,
+            ]}
+          >
+            <Text style={styles.opponentCountBadgeText}>{oppVisibleCount}</Text>
+          </View>
+          {opp.isMuted && (
+            <View style={styles.mutedBadge}>
+              <Text style={styles.mutedBadgeText}>🔇</Text>
+            </View>
+          )}
+          {opp.hasDeclaredRival && (
+            <View style={styles.rivalDeclaredBadge}>
+              <Text style={styles.rivalDeclaredText}>⚡ RIVAL!</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Physical Face-Down Cards Fan */}
+        <View style={styles.opponentFanContainer}>
+          {fanCardCount > 0 ? (
+            Array.from({ length: fanCardCount }).map((_, idx) => (
+              <View
+                key={idx}
+                style={[
+                  styles.opponentCardWrapper,
+                  {
+                    marginLeft: idx === 0 ? 0 : -27,
+                    zIndex: idx + 1,
+                  },
+                ]}
+              >
+                <CardView isFaceDown size="small" disabled />
+              </View>
+            ))
+          ) : (
+            <Text style={styles.opponentEmptyText}>{isDealing ? 'Dealing...' : 'Empty'}</Text>
+          )}
+          {oppVisibleCount > 6 && (
+            <View style={styles.opponentOverflowPill}>
+              <Text style={styles.opponentOverflowPillText}>
+                +{oppVisibleCount - 6}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Catch Rival Button */}
+        {isCatchable && !gameState.privacyMask.isActive && !gameState.isGameOver && !isDealing && (
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => handleCatchRival(opp)}
+            style={styles.catchRivalBtn}
+          >
+            <Text style={styles.catchRivalText}>🚨 CATCH!</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+
   // Latest game event
   const latestLog = gameState.logs[gameState.logs.length - 1];
 
@@ -726,28 +1368,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               <View style={styles.headerLeft}>
                 {Boolean(onGoHome) && (
                   <TouchableOpacity
-                    activeOpacity={0.7}
+                    activeOpacity={0.75}
                     onPress={() => {
                       hapticsService.cardSnap();
-                      if (isOnlineMode) {
-                        Alert.alert('Leave Online Match?', 'Are you sure you want to return to home screen?', [
-                          {
-                            text: 'Leave',
-                            style: 'destructive',
-                            onPress: async () => {
-                              await handleLeaveRoom();
-                              handleExitToHome();
-                            },
-                          },
-                          { text: 'Stay', style: 'cancel' },
-                        ]);
-                      } else {
-                        handleExitToHome();
-                      }
+                      setIsLeaveModalOpen(true);
                     }}
-                    style={styles.homeIconBtn}
+                    style={styles.leaveHeaderBtn}
                   >
-                    <Text style={styles.homeIconBtnText}>🏠</Text>
+                    <Text style={styles.leaveHeaderIcon}>🏠</Text>
+                    <Text style={styles.leaveHeaderText}>Leave</Text>
                   </TouchableOpacity>
                 )}
 
@@ -824,112 +1453,45 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         </View>
 
         {/* ================================================================= */}
-        {/* 2. OPPONENTS ROW */}
+        {/* 2. 12 O'CLOCK POSITION (TOP OPPONENT) */}
         {/* ================================================================= */}
         <View style={styles.opponentsSection}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[
-              styles.opponentsScroll,
-              opponents.length <= 2 && styles.opponentsScrollCentered,
-            ]}
-          >
-            {opponents.map((opp) => {
-              const isOppTurn = gameState.players[gameState.currentTurnIndex].id === opp.id;
-              const isCatchable = opp.hand.length === 1 && !opp.hasDeclaredRival;
-              const oppVisibleCount = isDealing
-                ? (dealtCardsCount[opp.id] ?? 0)
-                : pendingPenaltyCount[opp.id]
-                ? Math.max(0, opp.hand.length - pendingPenaltyCount[opp.id])
-                : opp.hand.length;
-              const fanCardCount = Math.min(oppVisibleCount, 6);
-
-              return (
-                <View
-                  key={opp.id}
-                  style={[
-                    styles.opponentCard,
-                    isOppTurn && styles.opponentCardActive,
-                    opponents.length === 1 && styles.opponentCardSingle,
-                  ]}
-                >
-                  {/* Opponent Top Row (Name, Count Badge, Muted, Rival) */}
-                  <View style={styles.opponentTopRow}>
-                    <Text style={styles.opponentName} numberOfLines={1}>
-                      {opp.name}
-                    </Text>
-                    <View
-                      style={[
-                        styles.opponentCountBadge,
-                        oppVisibleCount === 1 && styles.opponentCountBadgeRival,
-                      ]}
-                    >
-                      <Text style={styles.opponentCountBadgeText}>{oppVisibleCount}</Text>
-                    </View>
-                    {opp.isMuted && (
-                      <View style={styles.mutedBadge}>
-                        <Text style={styles.mutedBadgeText}>🔇</Text>
-                      </View>
-                    )}
-                    {opp.hasDeclaredRival && (
-                      <View style={styles.rivalDeclaredBadge}>
-                        <Text style={styles.rivalDeclaredText}>⚡ RIVAL!</Text>
-                      </View>
-                    )}
-                  </View>
-
-                  {/* Physical Face-Down Cards Fan */}
-                  <View style={styles.opponentFanContainer}>
-                    {fanCardCount > 0 ? (
-                      Array.from({ length: fanCardCount }).map((_, idx) => (
-                        <View
-                          key={idx}
-                          style={[
-                            styles.opponentCardWrapper,
-                            {
-                              marginLeft: idx === 0 ? 0 : -27,
-                              zIndex: idx + 1,
-                            },
-                          ]}
-                        >
-                          <CardView isFaceDown size="small" disabled />
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={styles.opponentEmptyText}>{isDealing ? 'Dealing...' : 'Empty'}</Text>
-                    )}
-                    {oppVisibleCount > 6 && (
-                      <View style={styles.opponentOverflowPill}>
-                        <Text style={styles.opponentOverflowPillText}>
-                          +{oppVisibleCount - 6}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-
-                  {/* Catch Rival Button */}
-                  {isCatchable && !gameState.privacyMask.isActive && !gameState.isGameOver && !isDealing && (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      onPress={() => handleCatchRival(opp)}
-                      style={styles.catchRivalBtn}
-                    >
-                      <Text style={styles.catchRivalText}>🚨 CATCH!</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              );
-            })}
-          </ScrollView>
+          {isFourPlayer && opponentTop ? (
+            <View style={styles.topOpponentContainer}>
+              {renderOpponentBox(opponentTop, 'horizontal')}
+            </View>
+          ) : opponents.length === 1 ? (
+            <View style={styles.topOpponentContainer}>
+              {renderOpponentBox(opponents[0], 'horizontal')}
+            </View>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={[
+                styles.opponentsScroll,
+                styles.opponentsScrollCentered,
+              ]}
+            >
+              {opponents.map((opp) => renderOpponentBox(opp, 'horizontal'))}
+            </ScrollView>
+          )}
         </View>
 
         {/* ================================================================= */}
-        {/* 3. PLAY ARENA (Draw Deck on Upper/Mid-Left + Discard Pile Centered) */}
+        {/* 3. PLAY ARENA (9 O'Clock Left, Center Table Arena, 3 O'Clock Right) */}
         {/* ================================================================= */}
-        <View style={styles.arenaSection}>
-          {/* Draw Pile (Positioned Upper-Left / Mid-Left with 3D Stack) */}
-          <View style={styles.deckAnchor}>
+        <View style={[styles.arenaSection, !isFourPlayer && styles.arenaSectionCentered]}>
+          {/* 9 O'Clock (Left Edge): Opponent 1 (e.g., CyberBot) */}
+          {isFourPlayer && opponentLeft && (
+            <View style={styles.clockPositionLeft}>
+              {renderOpponentBox(opponentLeft, 'vertical')}
+            </View>
+          )}
+
+          {/* Center Table: Draw Pile & Discard Pile with clear visual spacing */}
+          <View style={styles.centerTableArena}>
+            {/* Draw Pile (3D Stack) */}
             <View style={styles.deckContainer}>
               <TouchableOpacity
                 activeOpacity={0.8}
@@ -940,7 +1502,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   (!isHumanTurn || gameState.hasDrawnThisTurn) && styles.drawDeckDisabled,
                 ]}
               >
-                {/* 3D Physical Stack Layer 3 (Bottom-most offset edge) */}
+                {/* 3D Physical Stack Layer 3 */}
                 {gameState.deck.length > 4 && (
                   <View style={[styles.deckLayerCard, styles.deckLayer3]}>
                     <Image
@@ -951,7 +1513,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   </View>
                 )}
 
-                {/* 3D Physical Stack Layer 2 (Middle offset edge) */}
+                {/* 3D Physical Stack Layer 2 */}
                 {gameState.deck.length > 2 && (
                   <View style={[styles.deckLayerCard, styles.deckLayer2]}>
                     <Image
@@ -976,59 +1538,66 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               </TouchableOpacity>
               <Text style={styles.deckLabel}>Draw Pile</Text>
             </View>
+
+            {/* Active Discard Pile (Center Table with 3D Stack) */}
+            <View style={styles.discardContainer}>
+              {topDiscardCard ? (
+                <View style={styles.discardStackContainer}>
+                  {cardMinus2 && (
+                    <View
+                      key={`d2_${cardMinus2.id}`}
+                      style={[styles.discardLayerCard, styles.discardLayerMinus2]}
+                    >
+                      <CardView
+                        card={cardMinus2}
+                        size="large"
+                        disabled
+                        isPlayable={false}
+                        style={{ opacity: 1 }}
+                      />
+                    </View>
+                  )}
+                  {cardMinus1 && (
+                    <View
+                      key={`d1_${cardMinus1.id}`}
+                      style={[styles.discardLayerCard, styles.discardLayerMinus1]}
+                    >
+                      <CardView
+                        card={cardMinus1}
+                        size="large"
+                        disabled
+                        isPlayable={false}
+                        style={{ opacity: 1 }}
+                      />
+                    </View>
+                  )}
+                  <View
+                    key={`top_${topDiscardCard.id}`}
+                    style={[styles.discardLayerCard, styles.discardLayerTop]}
+                  >
+                    <CardView
+                      card={topDiscardCard}
+                      size="large"
+                      disabled
+                      isPlayable={false}
+                      style={{ opacity: 1 }}
+                    />
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.emptyDiscard}>
+                  <Text style={styles.emptyDiscardText}>Empty</Text>
+                </View>
+              )}
+            </View>
           </View>
 
-          {/* Active Discard Pile (Center Table with 3D Stack) */}
-          <View style={styles.discardContainer}>
-            {topDiscardCard ? (
-              <View style={styles.discardStackContainer}>
-                {cardMinus2 && (
-                  <View
-                    key={`d2_${cardMinus2.id}`}
-                    style={[styles.discardLayerCard, styles.discardLayerMinus2]}
-                  >
-                    <CardView
-                      card={cardMinus2}
-                      size="large"
-                      disabled
-                      isPlayable={false}
-                      style={{ opacity: 1 }}
-                    />
-                  </View>
-                )}
-                {cardMinus1 && (
-                  <View
-                    key={`d1_${cardMinus1.id}`}
-                    style={[styles.discardLayerCard, styles.discardLayerMinus1]}
-                  >
-                    <CardView
-                      card={cardMinus1}
-                      size="large"
-                      disabled
-                      isPlayable={false}
-                      style={{ opacity: 1 }}
-                    />
-                  </View>
-                )}
-                <View
-                  key={`top_${topDiscardCard.id}`}
-                  style={[styles.discardLayerCard, styles.discardLayerTop]}
-                >
-                  <CardView
-                    card={topDiscardCard}
-                    size="large"
-                    disabled
-                    isPlayable={false}
-                    style={{ opacity: 1 }}
-                  />
-                </View>
-              </View>
-            ) : (
-              <View style={styles.emptyDiscard}>
-                <Text style={styles.emptyDiscardText}>Empty</Text>
-              </View>
-            )}
-          </View>
+          {/* 3 O'Clock (Right Edge): Opponent 3 (e.g., EchoBot) */}
+          {isFourPlayer && opponentRight && (
+            <View style={styles.clockPositionRight}>
+              {renderOpponentBox(opponentRight, 'vertical')}
+            </View>
+          )}
         </View>
 
         {/* Mid Controls Row: Live Event Ticker + Real-time Quick Taunt Bar */}
@@ -1074,9 +1643,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               {/* Floating Compact Pill Matching RivalBot's Minimal Style */}
               <View style={styles.playerFloatingBadge}>
                 <View style={styles.playerBadgeRow}>
+                  <Text style={styles.playerAvatarEmoji}>
+                    {getAvatarConfig(myPlayer.avatarId).emoji}
+                  </Text>
                   <Text style={styles.playerBadgeName}>
                     {myPlayer.name === 'You' ? 'You' : myPlayer.name} • {visiblePlayerHand.length} card{visiblePlayerHand.length === 1 ? '' : 's'}
                   </Text>
+                  {isMyTurn && !gameState.isGameOver && !isDealing && !gameState.privacyMask.isActive && (
+                    <TurnTimerBadge seconds={turnTimeRemaining} />
+                  )}
                   {isDealing ? (
                     <Text style={styles.dragHintWaitingText}>• Dealing cards...</Text>
                   ) : isHumanTurn ? (
@@ -1199,21 +1774,51 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           winner={gameState.winner}
           turnCount={gameState.turnCount}
           players={gameState.players}
-          onPlayAgain={() => {
-            if (isOnlineMode) {
-              handleLeaveRoom();
-            } else {
-              handleStartGame(currentPresetKey);
-            }
+          localPlayerId={myPlayer.id}
+          mode={isOnlineMode ? 'online' : gameState.gameMode === 'vs_bot' ? 'bot' : 'pass_and_play'}
+          gameMode={gameState.gameMode}
+          isOnlineMode={isOnlineMode}
+          onPlayAgain={handlePlayAgain}
+          onQuitRoom={handleQuitGame}
+          onPlayWithMoreBots={() => handleStartGame('vs_bot_4p')}
+          onPlay1v1={() => handleStartGame('vs_bot_2p')}
+          onMainMenu={handleExitToHome}
+        />
+
+        {/* Styled In-Game Leave Confirmation Modal */}
+        <LeaveConfirmationModal
+          visible={isLeaveModalOpen}
+          isOnlineMode={isOnlineMode}
+          onCancel={() => {
+            hapticsService.cardSnap();
+            setIsLeaveModalOpen(false);
           }}
-          onResetMode={() => {
-            if (isOnlineMode) {
-              handleLeaveRoom();
-            } else {
-              setIsModesModalOpen(true);
-            }
+          onConfirmLeave={async () => {
+            setIsLeaveModalOpen(false);
+            await handleQuitGame();
           }}
         />
+
+        {/* Network Reconnecting Amber Banner */}
+        {isReconnecting && isOnlineMode && (
+          <View style={styles.reconnectingBannerOverlay} pointerEvents="none">
+            <View style={styles.reconnectingBannerBadge}>
+              <ActivityIndicator size="small" color="#B45309" />
+              <Text style={styles.reconnectingBannerText}>Reconnecting to match...</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Quick Feedback Banner Overlay */}
+        {Boolean(quickBannerMessage) && (
+          <View style={styles.quickBannerOverlay} pointerEvents="none">
+            <View style={styles.quickBannerBadge}>
+              <Text style={styles.quickBannerIcon}>⊘</Text>
+              <Text style={styles.quickBannerText}>{quickBannerMessage}</Text>
+            </View>
+          </View>
+        )}
+
         {/* Active Flying Cards Overlay */}
         {flyingCards.map((card) => (
           <FlyingCard
@@ -1261,6 +1866,91 @@ const styles = StyleSheet.create({
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  leaveHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+    gap: 4,
+    marginRight: 10,
+  },
+  leaveHeaderIcon: {
+    fontSize: 13,
+  },
+  leaveHeaderText: {
+    ...FONT_CARTOON_BOLD,
+    color: '#F8FAFC',
+    fontSize: 12,
+    letterSpacing: 0.4,
+  },
+  reconnectingBannerOverlay: {
+    position: 'absolute',
+    top: 50,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  reconnectingBannerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B',
+    borderWidth: 2,
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  reconnectingBannerText: {
+    ...FONT_CARTOON_BOLD,
+    color: '#92400E',
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
+  quickBannerOverlay: {
+    position: 'absolute',
+    top: 50,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 999,
+  },
+  quickBannerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#0F172A',
+    borderColor: '#38BDF8',
+    borderWidth: 2,
+    borderRadius: 999,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  quickBannerIcon: {
+    fontSize: 16,
+    color: '#38BDF8',
+  },
+  quickBannerText: {
+    ...FONT_CARTOON_BOLD,
+    color: '#FFFFFF',
+    fontSize: 14,
+    letterSpacing: 0.4,
   },
   homeIconBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
@@ -1370,9 +2060,15 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   opponentsSection: {
-    paddingVertical: 4,
+    paddingVertical: 2,
     backgroundColor: 'transparent',
     zIndex: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topOpponentContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   opponentsScroll: {
     paddingHorizontal: 16,
@@ -1415,6 +2111,10 @@ const styles = StyleSheet.create({
     gap: 5,
     marginBottom: 2,
     justifyContent: 'center',
+  },
+  opponentAvatarEmoji: {
+    fontSize: 12,
+    marginRight: 2,
   },
   opponentName: {
     fontSize: 11,
@@ -1508,17 +2208,84 @@ const styles = StyleSheet.create({
   arenaSection: {
     flex: 1,
     position: 'relative',
-    justifyContent: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 16,
     paddingVertical: 4,
     zIndex: 10,
   },
-  deckAnchor: {
-    position: 'absolute',
-    left: 40,
-    top: '50%',
-    transform: [{ translateY: -65 }],
-    zIndex: 12,
+  arenaSectionCentered: {
+    justifyContent: 'center',
+  },
+  centerTableArena: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 28,
+    zIndex: 10,
+  },
+  clockPositionLeft: {
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    zIndex: 15,
+  },
+  clockPositionRight: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    zIndex: 15,
+  },
+  sideOpponentCard: {
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    borderRadius: 12,
+    padding: 6,
+    width: 88,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 3,
+    alignItems: 'center',
+    zIndex: 15,
+  },
+  sideOpponentInfo: {
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 3,
+  },
+  sideOpponentName: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#F8FAFC',
+    maxWidth: 78,
+    textAlign: 'center',
+  },
+  sideOpponentFanContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 2,
+    minHeight: 58,
+  },
+  sideCardWrapper: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  sideOverflowPill: {
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 6,
+    marginTop: 2,
+  },
+  sideOverflowPillText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
   },
   deckContainer: {
     alignItems: 'center',
@@ -1685,8 +2452,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   tauntSection: {
-    flex: 1,
-    maxWidth: 320,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   playerSection: {
     backgroundColor: 'transparent',
@@ -1716,6 +2483,10 @@ const styles = StyleSheet.create({
   playerBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  playerAvatarEmoji: {
+    fontSize: 13,
+    marginRight: 4,
   },
   playerBadgeName: {
     fontSize: 12,

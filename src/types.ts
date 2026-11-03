@@ -41,6 +41,7 @@ export interface Player {
   isMuted: boolean;
   mutedRoundsRemaining: number;
   hasDeclaredRival: boolean;
+  avatarId?: string;
 }
 
 export type TurnDirection = 1 | -1;

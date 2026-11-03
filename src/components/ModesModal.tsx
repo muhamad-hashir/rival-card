@@ -10,6 +10,11 @@ import {
 import { SetupPreset } from '../screens/HomeScreen';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import {
+  FONT_CARTOON_BOLD,
+  FONT_CARTOON_HEAVY,
+  FONT_CARTOON_REGULAR,
+} from '../styles/typography';
 
 interface ModesModalProps {
   visible: boolean;
@@ -166,8 +171,8 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   title: {
+    ...FONT_CARTOON_HEAVY,
     fontSize: 16,
-    fontWeight: '900',
     color: '#F8FAFC',
     letterSpacing: 0.8,
   },
@@ -180,9 +185,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   closeBtnText: {
+    ...FONT_CARTOON_HEAVY,
     color: '#E2E8F0',
     fontSize: 14,
-    fontWeight: '700',
   },
   optionsList: {
     gap: 10,
@@ -213,14 +218,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   optionTitle: {
+    ...FONT_CARTOON_BOLD,
     fontSize: 14,
-    fontWeight: '800',
     color: '#F8FAFC',
   },
   onlineTitle: {
     color: '#60A5FA',
   },
   optionSubtitle: {
+    ...FONT_CARTOON_REGULAR,
     fontSize: 11,
     color: '#94A3B8',
     marginTop: 2,

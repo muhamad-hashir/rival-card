@@ -2,11 +2,25 @@ import React, { useState } from 'react';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
+import {
+  useFonts,
+  Fredoka_400Regular,
+  Fredoka_500Medium,
+  Fredoka_600SemiBold,
+  Fredoka_700Bold,
+} from '@expo-google-fonts/fredoka';
 import { HomeScreen, SetupPreset } from './src/screens/HomeScreen';
 import { GameScreen } from './src/screens/GameScreen';
 import type { GameState } from './src/types';
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    Fredoka_400Regular,
+    Fredoka_500Medium,
+    Fredoka_600SemiBold,
+    Fredoka_700Bold,
+  });
+
   const [currentScreen, setCurrentScreen] = useState<'home' | 'game'>('home');
   const [activePreset, setActivePreset] = useState<SetupPreset>('vs_bot_2p');
   const [activeOnlineMatch, setActiveOnlineMatch] = useState<{
