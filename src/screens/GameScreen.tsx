@@ -3,12 +3,14 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   AppState,
   Dimensions,
   FlatList,
   Image,
   ImageBackground,
   Platform,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -47,7 +49,8 @@ import { TurnTimerBadge } from '../components/TurnTimerBadge';
 import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
-import { playerProfileService, getAvatarConfig } from '../services/playerProfileService';
+import { playerProfileService, getAvatarConfig, AwardRewardsResult } from '../services/playerProfileService';
+import { shopService, ShopItem } from '../services/shopService';
 import {
   multiplayerService,
   TauntMessage,
@@ -182,6 +185,44 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [localOnlinePlayerId, setLocalOnlinePlayerId] = useState<string | null>(initialLocalOnlinePlayerId);
   const [activeTaunt, setActiveTaunt] = useState<TauntMessage | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
+  const [matchRewards, setMatchRewards] = useState<AwardRewardsResult | null>(null);
+
+  // Equipped Cosmetics from Shop
+  const [equippedScenery, setEquippedScenery] = useState<ShopItem | null>(null);
+  const [equippedCardBack, setEquippedCardBack] = useState<ShopItem | null>(null);
+
+  useEffect(() => {
+    async function loadEquippedCosmetics() {
+      try {
+        const scenery = await shopService.getEquippedItem('sceneries');
+        const cardBack = await shopService.getEquippedItem('card_backs');
+        setEquippedScenery(scenery);
+        setEquippedCardBack(cardBack);
+      } catch {
+        // Fallback to default
+      }
+    }
+    loadEquippedCosmetics();
+
+    const unsubscribe = shopService.subscribe(async () => {
+      const scenery = await shopService.getEquippedItem('sceneries');
+      const cardBack = await shopService.getEquippedItem('card_backs');
+      setEquippedScenery(scenery);
+      setEquippedCardBack(cardBack);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2.5-second "CATCH RIVAL!" Penalty Window state
+  interface CatchPenaltyTarget {
+    id: string;
+    name: string;
+  }
+  const [catchPenaltyTarget, setCatchPenaltyTarget] = useState<CatchPenaltyTarget | null>(null);
+  const catchTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const botCatchTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const prevHandCountsRef = useRef<Record<string, number>>({});
+  const catchPulseAnim = useRef(new Animated.Value(1)).current;
 
   // Quick feedback banner state (e.g., for Pass & Play turn skips)
   const [quickBannerMessage, setQuickBannerMessage] = useState<string | null>(null);
@@ -238,8 +279,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       (window as any).__showQuickBanner = (msg: string) => showQuickBanner(msg);
       (window as any).__setIsReconnecting = (val: boolean) => setIsReconnecting(val);
       (window as any).__getIsReconnecting = () => isReconnecting;
+      (window as any).__getMatchRewards = () => matchRewards;
+      (window as any).__getCatchPenaltyTarget = () => catchPenaltyTarget;
+      (window as any).__setCatchPenaltyTarget = (target: CatchPenaltyTarget | null) => setCatchPenaltyTarget(target);
     }
-  }, [gameState, showQuickBanner, isReconnecting]);
+  }, [gameState, showQuickBanner, isReconnecting, matchRewards, catchPenaltyTarget]);
+
+  // Cleanup catch timers on unmount
+  useEffect(() => {
+    return () => {
+      if (catchTimerRef.current) clearTimeout(catchTimerRef.current);
+      if (botCatchTimerRef.current) clearTimeout(botCatchTimerRef.current);
+    };
+  }, []);
 
   // Lock orientation to landscape on mount; revert to portrait on unmount
   useEffect(() => {
@@ -316,20 +368,120 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const isHumanTurn =
     isMyTurn && !gameState.privacyMask.isActive && !gameState.isGameOver && !isReconnecting;
 
-  // Record match result in persistent player profile and clear active session when game ends
+  // Record match result in persistent player profile and award match rewards (XP, Coins, Level Up)
   const hasRecordedResultRef = useRef(false);
   useEffect(() => {
     if (gameState.isGameOver && !hasRecordedResultRef.current) {
       hasRecordedResultRef.current = true;
       clearActiveMatchSession().catch(() => {});
       const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
+      const turns = gameState.turnCount;
       playerProfileService.recordMatchResult(isWinner).catch((err) => {
         console.warn('Failed to record match result:', err);
       });
+      playerProfileService
+        .awardMatchRewards(isWinner, turns)
+        .then((rewards) => {
+          setMatchRewards(rewards);
+        })
+        .catch((err) => {
+          console.warn('Failed to award match rewards:', err);
+        });
     } else if (!gameState.isGameOver) {
       hasRecordedResultRef.current = false;
+      setMatchRewards(null);
     }
-  }, [gameState.isGameOver, gameState.winner, myPlayer.id]);
+  }, [gameState.isGameOver, gameState.winner, gameState.turnCount, myPlayer.id]);
+
+  // Pulsing animation for floating "CATCH RIVAL!" button
+  useEffect(() => {
+    if (catchPenaltyTarget && catchPenaltyTarget.id !== myPlayer.id) {
+      const pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(catchPulseAnim, {
+            toValue: 1.08,
+            duration: 350,
+            useNativeDriver: true,
+          }),
+          Animated.timing(catchPulseAnim, {
+            toValue: 1.0,
+            duration: 350,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoop.start();
+      return () => {
+        pulseLoop.stop();
+        catchPulseAnim.setValue(1);
+      };
+    } else {
+      catchPulseAnim.setValue(1);
+    }
+  }, [catchPenaltyTarget, myPlayer.id, catchPulseAnim]);
+
+  // Monitor player hand reductions to 1 card and trigger 2.5-second "CATCH RIVAL!" penalty window
+  useEffect(() => {
+    if (isDealing || gameState.isGameOver) return;
+
+    for (const player of gameState.players) {
+      const prevCount = prevHandCountsRef.current[player.id];
+      // When a player transitions from 2+ cards down to exactly 1 card without having declared RIVAL
+      if (
+        prevCount !== undefined &&
+        prevCount > 1 &&
+        player.hand.length === 1 &&
+        !player.hasDeclaredRival
+      ) {
+        if (catchTimerRef.current) clearTimeout(catchTimerRef.current);
+        if (botCatchTimerRef.current) clearTimeout(botCatchTimerRef.current);
+
+        setCatchPenaltyTarget({ id: player.id, name: player.name });
+
+        // 2.5s expiration window
+        catchTimerRef.current = setTimeout(() => {
+          setCatchPenaltyTarget(null);
+          catchTimerRef.current = null;
+        }, 2500);
+
+        // If human player dropped to 1 card without calling Rival, bots react with random delay
+        if (player.id === myPlayer.id) {
+          const activeBots = gameState.players.filter((p) => p.isBot && p.id !== player.id);
+          if (activeBots.length > 0) {
+            const reactiveBot = activeBots[Math.floor(Math.random() * activeBots.length)];
+            const reactionDelay = 1200 + Math.random() * 1000; // 1.2s - 2.2s
+
+            botCatchTimerRef.current = setTimeout(() => {
+              // 80% chance for bot to catch human
+              if (Math.random() < 0.8) {
+                executeCatchPenalty(reactiveBot.id, player.id);
+              }
+            }, reactionDelay);
+          }
+        }
+      } else if (player.hand.length !== 1 || player.hasDeclaredRival) {
+        // If the targeted player is no longer at 1 card or declared Rival, dismiss
+        if (catchPenaltyTarget?.id === player.id) {
+          if (catchTimerRef.current) {
+            clearTimeout(catchTimerRef.current);
+            catchTimerRef.current = null;
+          }
+          if (botCatchTimerRef.current) {
+            clearTimeout(botCatchTimerRef.current);
+            botCatchTimerRef.current = null;
+          }
+          setCatchPenaltyTarget(null);
+        }
+      }
+    }
+
+    // Update tracked hand counts
+    const newCounts: Record<string, number> = {};
+    for (const p of gameState.players) {
+      newCounts[p.id] = p.hand.length;
+    }
+    prevHandCountsRef.current = newCounts;
+  }, [gameState.players, isDealing, gameState.isGameOver, myPlayer.id, catchPenaltyTarget]);
 
   // Cache active online session on mount / room connection
   useEffect(() => {
@@ -841,7 +993,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             const chosenColor = isWildCard(drawnCard)
               ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== drawnCard.id))
               : undefined;
-            const nextState = playCard(gameState, currentPlayer.id, drawnCard.id, { chosenColor });
+            let stateToPlay = gameState;
+            if (currentPlayer.hand.length === 2 && Math.random() < 0.75) {
+              stateToPlay = declareRival(stateToPlay, currentPlayer.id);
+            }
+            const nextState = playCard(stateToPlay, currentPlayer.id, drawnCard.id, { chosenColor });
             soundService.playCardSnap();
             commitGameState(nextState, `${currentPlayer.name} played ${drawnCard.value}`);
           } else {
@@ -876,9 +1032,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           isValidMove(c, topDiscardCard, stateForBot.activeColor)
         );
 
-        // Pre-declare RIVAL if playing second-to-last card
+        // Pre-declare RIVAL if playing second-to-last card (with 75% memory rate)
         if (currentPlayer.hand.length === 2 && playableCards.length > 0) {
-          stateForBot = declareRival(stateForBot, currentPlayer.id);
+          const botRemembers = Math.random() < 0.75;
+          if (botRemembers) {
+            stateForBot = declareRival(stateForBot, currentPlayer.id);
+          }
         }
 
         if (playableCards.length > 0) {
@@ -1144,6 +1303,52 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   };
 
+  // Execute Catch Rival penalty (+2 cards draw on careless player)
+  const executeCatchPenalty = (accuserPlayerId: string, accusedPlayerId: string) => {
+    if (catchTimerRef.current) {
+      clearTimeout(catchTimerRef.current);
+      catchTimerRef.current = null;
+    }
+    if (botCatchTimerRef.current) {
+      clearTimeout(botCatchTimerRef.current);
+      botCatchTimerRef.current = null;
+    }
+    setCatchPenaltyTarget(null);
+
+    setGameState((current) => {
+      const accused = current.players.find((p) => p.id === accusedPlayerId);
+      const accuser = current.players.find((p) => p.id === accuserPlayerId);
+      if (!accused || accused.hand.length !== 1 || accused.hasDeclaredRival) {
+        return current;
+      }
+
+      const nextState = catchRival(current, accuserPlayerId, accusedPlayerId);
+      hapticsService.rivalCatch();
+      soundService.playPenalty();
+
+      // Trigger visual flying penalty cards
+      setPendingPenaltyCount((prev) => ({ ...prev, [accusedPlayerId]: 2 }));
+      for (let i = 0; i < 2; i++) {
+        setTimeout(() => {
+          triggerFlyingCard(accusedPlayerId, () => {
+            soundService.playCardSnap();
+            setPendingPenaltyCount((prev) => ({
+              ...prev,
+              [accusedPlayerId]: Math.max(0, (prev[accusedPlayerId] || 1) - 1),
+            }));
+          });
+        }, i * 120);
+      }
+
+      const accuserName = accuser ? accuser.name : 'Opponent';
+      const accusedName = accused ? accused.name : 'Player';
+      const toastMsg = `${accuserName} caught ${accusedName}! +2 Cards penalty applied!`;
+      showQuickBanner(toastMsg);
+      commitGameState(nextState, toastMsg);
+      return nextState;
+    });
+  };
+
   // Declare RIVAL!
   const handleDeclareRival = () => {
     if (!myPlayer || myPlayer.isBot) return;
@@ -1151,6 +1356,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     hapticsService.rivalCallout();
     soundService.playRivalCallout();
     commitGameState(nextState, `${myPlayer.name} declared RIVAL!`);
+
+    if (catchTimerRef.current) {
+      clearTimeout(catchTimerRef.current);
+      catchTimerRef.current = null;
+    }
+    if (botCatchTimerRef.current) {
+      clearTimeout(botCatchTimerRef.current);
+      botCatchTimerRef.current = null;
+    }
+    setCatchPenaltyTarget(null);
+
     if (rivalTimerRef.current) {
       clearInterval(rivalTimerRef.current);
       rivalTimerRef.current = null;
@@ -1160,11 +1376,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Catch Opponent who forgot to declare RIVAL!
   const handleCatchRival = (accusedPlayer: Player) => {
-    if (accusedPlayer.hand.length !== 1 || accusedPlayer.hasDeclaredRival) return;
-    const nextState = catchRival(gameState, myPlayer.id, accusedPlayer.id);
-    hapticsService.rivalCatch();
-    soundService.playPenalty();
-    commitGameState(nextState, `${myPlayer.name} caught ${accusedPlayer.name}!`);
+    executeCatchPenalty(myPlayer.id, accusedPlayer.id);
   };
 
   // Opponents list (all players except local player)
@@ -1235,7 +1447,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                     },
                   ]}
                 >
-                  <CardView isFaceDown size="small" disabled />
+                  <CardView
+                    isFaceDown
+                    size="small"
+                    disabled
+                    cardBackStyle={equippedCardBack?.previewStyle}
+                  />
                 </View>
               ))
             ) : (
@@ -1320,7 +1537,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   },
                 ]}
               >
-                <CardView isFaceDown size="small" disabled />
+                <CardView
+                  isFaceDown
+                  size="small"
+                  disabled
+                  cardBackStyle={equippedCardBack?.previewStyle}
+                />
               </View>
             ))
           ) : (
@@ -1358,7 +1580,21 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       style={styles.scenicBackground}
       resizeMode="cover"
     >
-      <View style={styles.scenicOverlay}>
+      <View
+        style={[
+          styles.scenicOverlay,
+          equippedScenery?.previewStyle?.primaryColor
+            ? {
+                backgroundColor:
+                  equippedScenery.id === 'scenery_midnight'
+                    ? 'rgba(15, 23, 42, 0.72)'
+                    : equippedScenery.id === 'scenery_royal'
+                    ? 'rgba(88, 28, 135, 0.42)'
+                    : 'rgba(21, 128, 61, 0.32)',
+              }
+            : null,
+        ]}
+      >
         <SafeAreaView style={styles.safeArea}>
           <View style={styles.container}>
             {/* ================================================================= */}
@@ -1490,7 +1726,24 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           )}
 
           {/* Center Table: Draw Pile & Discard Pile with clear visual spacing */}
-          <View style={styles.centerTableArena}>
+          <View
+            style={[
+              styles.centerTableArena,
+              styles.tableFeltMat,
+              equippedScenery?.previewStyle?.primaryColor
+                ? {
+                    backgroundColor:
+                      equippedScenery.id === 'scenery_midnight'
+                        ? 'rgba(15, 23, 42, 0.65)'
+                        : equippedScenery.id === 'scenery_royal'
+                        ? 'rgba(88, 28, 135, 0.35)'
+                        : 'rgba(21, 128, 61, 0.28)',
+                    borderColor:
+                      equippedScenery.previewStyle.borderColor || 'rgba(255, 255, 255, 0.2)',
+                  }
+                : null,
+            ]}
+          >
             {/* Draw Pile (3D Stack) */}
             <View style={styles.deckContainer}>
               <TouchableOpacity
@@ -1504,10 +1757,26 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               >
                 {/* 3D Physical Stack Layer 3 */}
                 {gameState.deck.length > 4 && (
-                  <View style={[styles.deckLayerCard, styles.deckLayer3]}>
+                  <View
+                    style={[
+                      styles.deckLayerCard,
+                      styles.deckLayer3,
+                      equippedCardBack?.previewStyle?.primaryColor
+                        ? { backgroundColor: equippedCardBack.previewStyle.primaryColor }
+                        : null,
+                      equippedCardBack?.previewStyle?.borderColor
+                        ? { borderColor: equippedCardBack.previewStyle.borderColor }
+                        : null,
+                    ]}
+                  >
                     <Image
                       source={CARD_BACK_IMAGE}
-                      style={styles.drawDeckBackImage}
+                      style={[
+                        styles.drawDeckBackImage,
+                        equippedCardBack?.id !== 'card_back_classic' && equippedCardBack?.previewStyle?.primaryColor
+                          ? { tintColor: equippedCardBack.previewStyle.primaryColor }
+                          : null,
+                      ]}
                       resizeMode="cover"
                     />
                   </View>
@@ -1515,20 +1784,51 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
                 {/* 3D Physical Stack Layer 2 */}
                 {gameState.deck.length > 2 && (
-                  <View style={[styles.deckLayerCard, styles.deckLayer2]}>
+                  <View
+                    style={[
+                      styles.deckLayerCard,
+                      styles.deckLayer2,
+                      equippedCardBack?.previewStyle?.primaryColor
+                        ? { backgroundColor: equippedCardBack.previewStyle.primaryColor }
+                        : null,
+                      equippedCardBack?.previewStyle?.borderColor
+                        ? { borderColor: equippedCardBack.previewStyle.borderColor }
+                        : null,
+                    ]}
+                  >
                     <Image
                       source={CARD_BACK_IMAGE}
-                      style={styles.drawDeckBackImage}
+                      style={[
+                        styles.drawDeckBackImage,
+                        equippedCardBack?.id !== 'card_back_classic' && equippedCardBack?.previewStyle?.primaryColor
+                          ? { tintColor: equippedCardBack.previewStyle.primaryColor }
+                          : null,
+                      ]}
                       resizeMode="cover"
                     />
                   </View>
                 )}
 
                 {/* Active Top Card Layer 1 */}
-                <View style={styles.drawDeckCard}>
+                <View
+                  style={[
+                    styles.drawDeckCard,
+                    equippedCardBack?.previewStyle?.primaryColor
+                      ? { backgroundColor: equippedCardBack.previewStyle.primaryColor }
+                      : null,
+                    equippedCardBack?.previewStyle?.borderColor
+                      ? { borderColor: equippedCardBack.previewStyle.borderColor }
+                      : null,
+                  ]}
+                >
                   <Image
                     source={CARD_BACK_IMAGE}
-                    style={styles.drawDeckBackImage}
+                    style={[
+                      styles.drawDeckBackImage,
+                      equippedCardBack?.id !== 'card_back_classic' && equippedCardBack?.previewStyle?.primaryColor
+                        ? { tintColor: equippedCardBack.previewStyle.primaryColor }
+                        : null,
+                    ]}
                     resizeMode="cover"
                   />
                   <View style={styles.drawDeckBadge}>
@@ -1727,6 +2027,33 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           );
         })()}
 
+        {/* Prominent Pulsing Floating "CATCH RIVAL!" Button (2.5s penalty window) */}
+        {catchPenaltyTarget &&
+          catchPenaltyTarget.id !== myPlayer.id &&
+          !gameState.privacyMask.isActive &&
+          !gameState.isGameOver &&
+          !isDealing && (
+            <Animated.View
+              style={[
+                styles.catchRivalFloatingContainer,
+                { transform: [{ scale: catchPulseAnim }] },
+              ]}
+              pointerEvents="box-none"
+            >
+              <Pressable
+                onPress={() => executeCatchPenalty(myPlayer.id, catchPenaltyTarget.id)}
+                style={({ pressed }) => [
+                  styles.catchRivalFloatingBtn,
+                  pressed && styles.catchRivalFloatingBtnPressed,
+                ]}
+              >
+                <Text style={styles.catchRivalFloatingBtnText}>
+                  CATCH RIVAL!
+                </Text>
+              </Pressable>
+            </Animated.View>
+          )}
+
         {/* ================================================================= */}
         {/* 5. MODALS */}
         {/* ================================================================= */}
@@ -1778,6 +2105,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           mode={isOnlineMode ? 'online' : gameState.gameMode === 'vs_bot' ? 'bot' : 'pass_and_play'}
           gameMode={gameState.gameMode}
           isOnlineMode={isOnlineMode}
+          matchRewards={matchRewards}
           onPlayAgain={handlePlayAgain}
           onQuitRoom={handleQuitGame}
           onPlayWithMoreBots={() => handleStartGame('vs_bot_4p')}
@@ -2225,6 +2553,14 @@ const styles = StyleSheet.create({
     gap: 28,
     zIndex: 10,
   },
+  tableFeltMat: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+  },
   clockPositionLeft: {
     alignItems: 'flex-start',
     justifyContent: 'center',
@@ -2552,5 +2888,38 @@ const styles = StyleSheet.create({
   handScrollListCentered: {
     minWidth: '100%',
     justifyContent: 'center',
+  },
+  catchRivalFloatingContainer: {
+    position: 'absolute',
+    bottom: 95,
+    alignSelf: 'center',
+    zIndex: 99,
+  },
+  catchRivalFloatingBtn: {
+    backgroundColor: '#EF4444',
+    borderWidth: 2,
+    borderColor: '#B91C1C',
+    borderBottomWidth: 4,
+    borderRadius: 999,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  catchRivalFloatingBtnPressed: {
+    transform: [{ scale: 0.95 }],
+    borderBottomWidth: 1,
+    marginTop: 3,
+  },
+  catchRivalFloatingBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#FFFFFF',
+    fontSize: 16,
+    letterSpacing: 1,
   },
 });

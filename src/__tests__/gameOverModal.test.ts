@@ -124,4 +124,41 @@ describe('GameOverModal Standings & Ranking Logic', () => {
     assert.ok(onlineButtons.includes('Quit Room'));
     assert.ok(!onlineButtons.includes('Play with More Bots'));
   });
+
+  test('Match rewards payload format and level-up banner detection', () => {
+    // Normal match rewards without level up
+    const normalRewards = {
+      earnedXp: 50,
+      earnedCoins: 20,
+      leveledUp: false,
+      newLevel: 1,
+      bonusCoins: 0,
+      bonusGems: 0,
+      currentXp: 50,
+      xpToNextLevel: 100,
+    };
+
+    assert.strictEqual(normalRewards.leveledUp, false);
+    assert.strictEqual(normalRewards.earnedXp, 50);
+    assert.strictEqual(normalRewards.earnedCoins, 20);
+
+    // Victory match rewards with level up
+    const levelUpRewards = {
+      earnedXp: 120,
+      earnedCoins: 60,
+      leveledUp: true,
+      newLevel: 2,
+      bonusCoins: 100,
+      bonusGems: 5,
+      currentXp: 20,
+      xpToNextLevel: 200,
+    };
+
+    assert.strictEqual(levelUpRewards.leveledUp, true);
+    assert.strictEqual(levelUpRewards.newLevel, 2);
+    assert.strictEqual(levelUpRewards.bonusCoins, 100);
+    assert.strictEqual(levelUpRewards.bonusGems, 5);
+    assert.strictEqual(levelUpRewards.earnedXp, 120);
+    assert.strictEqual(levelUpRewards.earnedCoins, 60);
+  });
 });

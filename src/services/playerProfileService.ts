@@ -1,4 +1,4 @@
-// src/services/playerProfileService.ts - Persistent Guest Player Profile system
+// src/services/playerProfileService.ts - Persistent Guest Player Profile, Progression, and Economy System
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface PlayerStats {
@@ -11,8 +11,24 @@ export interface PlayerProfile {
   id: string; // UUID generated on first run
   nickname: string; // defaults to "Player", user-editable
   avatarId: string; // e.g. "avatar_1", "avatar_2", "avatar_3", "avatar_4"
+  level: number; // starts at 1
+  currentXp: number; // starts at 0
+  xpToNextLevel: number; // formula: level * 100
+  coins: number; // starts at 250 for new guests
+  gems: number; // starts at 10 for new guests
   stats: PlayerStats;
   isGuest: boolean; // set to true
+}
+
+export interface AwardRewardsResult {
+  leveledUp: boolean;
+  newLevel: number;
+  bonusCoins: number;
+  bonusGems: number;
+  earnedXp: number;
+  earnedCoins: number;
+  currentXp: number;
+  xpToNextLevel: number;
 }
 
 export interface AvatarOption {
@@ -36,7 +52,8 @@ export function getAvatarConfig(avatarId?: string): AvatarOption {
   return AVATAR_OPTIONS.find((a) => a.id === avatarId) || AVATAR_OPTIONS[0];
 }
 
-const STORAGE_KEY = '@rival_card_guest_player_profile_v1';
+export const STORAGE_KEY = '@rivalcard:player_profile';
+export const LEGACY_STORAGE_KEY = '@rival_card_guest_player_profile_v1';
 
 // In-memory fallback for test environments or SSR where window/native storage is inaccessible
 const memoryStorage: Record<string, string> = {};
@@ -82,6 +99,22 @@ async function storageSet(key: string, value: string): Promise<void> {
   if (typeof window !== 'undefined' && window.localStorage) {
     try {
       window.localStorage.setItem(key, value);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function storageRemove(key: string): Promise<void> {
+  delete memoryStorage[key];
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      window.localStorage.removeItem(key);
     } catch {
       // ignore
     }
@@ -136,15 +169,36 @@ class PlayerProfileService {
       return this.cachedProfile;
     }
 
-    const raw = await storageGet(STORAGE_KEY);
+    let raw = await storageGet(STORAGE_KEY);
+    if (!raw) {
+      raw = await storageGet(LEGACY_STORAGE_KEY);
+    }
+
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
+          const level = typeof parsed.level === 'number' && parsed.level >= 1 ? parsed.level : 1;
+          const currentXp = typeof parsed.currentXp === 'number' && parsed.currentXp >= 0 ? parsed.currentXp : 0;
+          const xpToNextLevel =
+            typeof parsed.xpToNextLevel === 'number' && parsed.xpToNextLevel > 0
+              ? parsed.xpToNextLevel
+              : level * 100;
+          const coins = typeof parsed.coins === 'number' && parsed.coins >= 0 ? parsed.coins : 250;
+          const gems = typeof parsed.gems === 'number' && parsed.gems >= 0 ? parsed.gems : 10;
+
           this.cachedProfile = {
             id: typeof parsed.id === 'string' && parsed.id ? parsed.id : generateUUID(),
-            nickname: typeof parsed.nickname === 'string' && parsed.nickname.trim() ? parsed.nickname.trim().slice(0, 15) : 'Player',
+            nickname:
+              typeof parsed.nickname === 'string' && parsed.nickname.trim()
+                ? parsed.nickname.trim().slice(0, 15)
+                : 'Player',
             avatarId: typeof parsed.avatarId === 'string' ? parsed.avatarId : 'avatar_1',
+            level,
+            currentXp,
+            xpToNextLevel,
+            coins,
+            gems,
             stats: {
               gamesPlayed: typeof parsed.stats?.gamesPlayed === 'number' ? parsed.stats.gamesPlayed : 0,
               wins: typeof parsed.stats?.wins === 'number' ? parsed.stats.wins : 0,
@@ -165,6 +219,11 @@ class PlayerProfileService {
       id: generateUUID(),
       nickname: 'Player',
       avatarId: 'avatar_1',
+      level: 1,
+      currentXp: 0,
+      xpToNextLevel: 100,
+      coins: 250,
+      gems: 10,
       stats: {
         gamesPlayed: 0,
         wins: 0,
@@ -175,6 +234,7 @@ class PlayerProfileService {
 
     this.cachedProfile = defaultProfile;
     await storageSet(STORAGE_KEY, JSON.stringify(defaultProfile));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(defaultProfile));
     this.notify();
     return defaultProfile;
   }
@@ -191,6 +251,7 @@ class PlayerProfileService {
     };
     this.cachedProfile = updated;
     await storageSet(STORAGE_KEY, JSON.stringify(updated));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
     this.notify();
     return updated;
   }
@@ -207,6 +268,7 @@ class PlayerProfileService {
     };
     this.cachedProfile = updated;
     await storageSet(STORAGE_KEY, JSON.stringify(updated));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
     this.notify();
     return updated;
   }
@@ -226,8 +288,111 @@ class PlayerProfileService {
     };
     this.cachedProfile = updated;
     await storageSet(STORAGE_KEY, JSON.stringify(updated));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
     this.notify();
     return updated;
+  }
+
+  /**
+   * Awards match rewards (XP and Coins) with Level-Up threshold detection.
+   * Completion XP: +50 XP on defeat, +120 XP on victory.
+   * Completion Coins: +20 coins on defeat, +60 coins on victory.
+   * When currentXp >= xpToNextLevel: level increments, carry over remainder,
+   * next threshold becomes level * 100, bonus +100 Coins & +5 Gems awarded.
+   */
+  public async awardMatchRewards(
+    isWinner: boolean,
+    turnsPlayed: number = 0
+  ): Promise<AwardRewardsResult> {
+    const current = await this.getProfile();
+
+    const earnedXp = isWinner ? 120 : 50;
+    const earnedCoins = isWinner ? 60 : 20;
+
+    let currentXp = current.currentXp + earnedXp;
+    let level = current.level;
+    let xpToNextLevel = current.xpToNextLevel || (level * 100);
+
+    let leveledUp = false;
+    let bonusCoins = 0;
+    let bonusGems = 0;
+
+    while (currentXp >= xpToNextLevel) {
+      leveledUp = true;
+      currentXp -= xpToNextLevel;
+      level += 1;
+      xpToNextLevel = level * 100;
+      bonusCoins += 100;
+      bonusGems += 5;
+    }
+
+    const totalCoins = current.coins + earnedCoins + bonusCoins;
+    const totalGems = current.gems + bonusGems;
+
+    const updated: PlayerProfile = {
+      ...current,
+      level,
+      currentXp,
+      xpToNextLevel,
+      coins: totalCoins,
+      gems: totalGems,
+    };
+
+    this.cachedProfile = updated;
+    await storageSet(STORAGE_KEY, JSON.stringify(updated));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    this.notify();
+
+    return {
+      leveledUp,
+      newLevel: level,
+      bonusCoins,
+      bonusGems,
+      earnedXp,
+      earnedCoins,
+      currentXp,
+      xpToNextLevel,
+    };
+  }
+
+  /**
+   * Adds coins and/or gems to the player profile.
+   */
+  public async addCurrency(coins: number, gems: number): Promise<PlayerProfile> {
+    const current = await this.getProfile();
+    const updated: PlayerProfile = {
+      ...current,
+      coins: current.coins + Math.max(0, coins),
+      gems: current.gems + Math.max(0, gems),
+    };
+    this.cachedProfile = updated;
+    await storageSet(STORAGE_KEY, JSON.stringify(updated));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    this.notify();
+    return updated;
+  }
+
+  /**
+   * Deducts coins and/or gems from the player profile if sufficient funds exist.
+   * Returns true if successful, or false if insufficient balance.
+   */
+  public async deductCurrency(coins: number, gems: number): Promise<boolean> {
+    const current = await this.getProfile();
+    const cleanCoins = Math.max(0, coins);
+    const cleanGems = Math.max(0, gems);
+    if (current.coins < cleanCoins || current.gems < cleanGems) {
+      return false;
+    }
+    const updated: PlayerProfile = {
+      ...current,
+      coins: current.coins - cleanCoins,
+      gems: current.gems - cleanGems,
+    };
+    this.cachedProfile = updated;
+    await storageSet(STORAGE_KEY, JSON.stringify(updated));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    this.notify();
+    return true;
   }
 
   /**
@@ -241,19 +406,8 @@ class PlayerProfileService {
    * Reset profile (clears storage & cache for testing).
    */
   public async resetProfile(): Promise<PlayerProfile> {
-    delete memoryStorage[STORAGE_KEY];
-    try {
-      await AsyncStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
-    }
-    if (typeof window !== 'undefined' && window.localStorage) {
-      try {
-        window.localStorage.removeItem(STORAGE_KEY);
-      } catch {
-        // ignore
-      }
-    }
+    await storageRemove(STORAGE_KEY);
+    await storageRemove(LEGACY_STORAGE_KEY);
     this.cachedProfile = null;
     return this.getProfile(true);
   }

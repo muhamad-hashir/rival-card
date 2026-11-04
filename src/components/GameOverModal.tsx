@@ -15,7 +15,8 @@ import {
   FONT_CARTOON_REGULAR,
   FONT_CARTOON_SEMIBOLD,
 } from '../styles/typography';
-import { getAvatarConfig } from '../services/playerProfileService';
+import { getAvatarConfig, AwardRewardsResult } from '../services/playerProfileService';
+import { ModalConfettiBurst } from './ModalConfettiBurst';
 
 export interface GameOverModalProps {
   visible: boolean;
@@ -26,6 +27,7 @@ export interface GameOverModalProps {
   mode?: 'bot' | 'online' | 'pass_and_play';
   gameMode?: GameMode;
   isOnlineMode?: boolean;
+  matchRewards?: AwardRewardsResult | null;
   onPlayAgain: () => void;
   onQuitRoom?: () => void;
   onPlayWithMoreBots?: () => void;
@@ -50,6 +52,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   mode,
   gameMode,
   isOnlineMode = false,
+  matchRewards = null,
   onPlayAgain,
   onQuitRoom,
   onPlayWithMoreBots,
@@ -93,44 +96,109 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
           bounces={false}
         >
           <View style={styles.dialogCard}>
-            {/* Trophy / Emblem Circle */}
-            <View
-              style={[
-                styles.trophyCircle,
-                isLocalWinner ? styles.trophyCircleVictory : styles.trophyCircleDefeat,
-              ]}
-            >
-              <Text style={styles.trophyEmoji}>{isLocalWinner ? '🏆' : '🛡️'}</Text>
-            </View>
+            {/* Top Trophy Section with Winner-Only Confetti Burst strictly constrained inside */}
+            <View style={styles.topSectionWrapper}>
+              {isLocalWinner && <ModalConfettiBurst active={visible && isLocalWinner} />}
 
-            {/* Top Banner Tag: VICTORY! vs DEFEAT */}
-            <View
-              style={[
-                styles.bannerTagContainer,
-                isLocalWinner ? styles.bannerTagVictory : styles.bannerTagDefeat,
-              ]}
-            >
-              <Text
+              {/* Trophy / Emblem Circle */}
+              <View
                 style={[
-                  styles.bannerTagText,
-                  isLocalWinner ? styles.bannerTagTextVictory : styles.bannerTagTextDefeat,
+                  styles.trophyCircle,
+                  isLocalWinner ? styles.trophyCircleVictory : styles.trophyCircleDefeat,
                 ]}
               >
-                {isLocalWinner ? 'VICTORY!' : 'DEFEAT'}
+                <Text style={styles.trophyEmoji}>{isLocalWinner ? '🏆' : '🛡️'}</Text>
+              </View>
+
+              {/* Top Banner Tag: VICTORY! vs DEFEAT */}
+              <View
+                style={[
+                  styles.bannerTagContainer,
+                  isLocalWinner ? styles.bannerTagVictory : styles.bannerTagDefeat,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.bannerTagText,
+                    isLocalWinner ? styles.bannerTagTextVictory : styles.bannerTagTextDefeat,
+                  ]}
+                >
+                  {isLocalWinner ? 'VICTORY!' : 'DEFEAT'}
+                </Text>
+              </View>
+
+              {/* Main Headline */}
+              <Text style={styles.headline}>
+                {isLocalWinner ? 'You Won!' : `${winner.name} Won!`}
+              </Text>
+
+              {/* Dynamic Subtitle */}
+              <Text style={styles.subtitle}>
+                {isLocalWinner
+                  ? `You emptied your hand and won the match in ${turnCount} turns!`
+                  : `${winner.name} emptied their hand and won the match in ${turnCount} turns.`}
               </Text>
             </View>
 
-            {/* Main Headline */}
-            <Text style={styles.headline}>
-              {isLocalWinner ? 'You Won!' : `${winner.name} Won!`}
-            </Text>
+            {/* Level Up Celebratory Banner */}
+            {matchRewards?.leveledUp && (
+              <View style={styles.levelUpBanner}>
+                <View style={styles.levelUpHeader}>
+                  <Text style={styles.levelUpEmoji}>🎉</Text>
+                  <Text style={styles.levelUpTitle}>LEVEL UP!</Text>
+                </View>
+                <Text style={styles.levelUpReached}>
+                  Reached Level {matchRewards.newLevel}!
+                </Text>
+                <View style={styles.levelUpBonusBadge}>
+                  <Text style={styles.levelUpBonusText}>
+                    Bonus: +{matchRewards.bonusCoins} Coins • +{matchRewards.bonusGems} Gems
+                  </Text>
+                </View>
+              </View>
+            )}
 
-            {/* Dynamic Subtitle */}
-            <Text style={styles.subtitle}>
-              {isLocalWinner
-                ? `You emptied your hand and won the match in ${turnCount} turns!`
-                : `${winner.name} emptied their hand and won the match in ${turnCount} turns.`}
-            </Text>
+            {/* Match Rewards Card */}
+            {matchRewards && (
+              <View style={styles.rewardsCard}>
+                <Text style={styles.rewardsCardTitle}>MATCH REWARDS</Text>
+                <View style={styles.rewardsPillsRow}>
+                  <View style={styles.xpRewardPill}>
+                    <Text style={styles.xpRewardIcon}>⚡</Text>
+                    <Text style={styles.xpRewardText}>+{matchRewards.earnedXp} XP</Text>
+                  </View>
+                  <View style={styles.coinRewardPill}>
+                    <Text style={styles.coinRewardIcon}>🪙</Text>
+                    <Text style={styles.coinRewardText}>+{matchRewards.earnedCoins} Coins</Text>
+                  </View>
+                </View>
+
+                {/* Mini XP progress status */}
+                <View style={styles.rewardXpProgressRow}>
+                  <Text style={styles.rewardXpProgressText}>
+                    Level {matchRewards.newLevel} ({matchRewards.currentXp} / {matchRewards.xpToNextLevel} XP)
+                  </Text>
+                  <View style={styles.rewardXpTrack}>
+                    <View
+                      style={[
+                        styles.rewardXpFill,
+                        {
+                          width: `${Math.min(
+                            100,
+                            Math.max(
+                              0,
+                              Math.round(
+                                (matchRewards.currentXp / (matchRewards.xpToNextLevel || 100)) * 100
+                              )
+                            )
+                          )}%`,
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+              </View>
+            )}
 
             {/* Final Standings Card */}
             <View style={styles.statsContainer}>
@@ -307,6 +375,15 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 8,
   },
+  topSectionWrapper: {
+    width: '100%',
+    alignItems: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+    borderRadius: 20,
+    paddingTop: 4,
+    marginBottom: 4,
+  },
   trophyCircle: {
     width: 72,
     height: 72,
@@ -366,8 +443,151 @@ const styles = StyleSheet.create({
     color: '#475569',
     textAlign: 'center',
     lineHeight: 18,
-    marginBottom: 14,
+    marginBottom: 12,
     paddingHorizontal: 8,
+  },
+  levelUpBanner: {
+    width: '100%',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2.5,
+    borderColor: '#F59E0B',
+    borderRadius: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    marginBottom: 10,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  levelUpHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
+  levelUpEmoji: {
+    fontSize: 18,
+  },
+  levelUpTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 16,
+    color: '#B45309',
+    letterSpacing: 0.6,
+  },
+  levelUpReached: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 14,
+    color: '#0F172A',
+    marginBottom: 6,
+  },
+  levelUpBonusBadge: {
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  levelUpBonusText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#15803D',
+  },
+  rewardsCard: {
+    width: '100%',
+    backgroundColor: '#FFFDF7',
+    borderWidth: 2.5,
+    borderColor: '#E2D9C8',
+    borderRadius: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    marginBottom: 12,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  rewardsCardTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#475569',
+    letterSpacing: 0.8,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  rewardsPillsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  xpRewardPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    borderWidth: 2,
+    borderColor: '#86EFAC',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  xpRewardIcon: {
+    fontSize: 13,
+  },
+  xpRewardText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#15803D',
+  },
+  coinRewardPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  coinRewardIcon: {
+    fontSize: 13,
+  },
+  coinRewardText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#92400E',
+  },
+  rewardXpProgressRow: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  rewardXpProgressText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#64748B',
+    marginBottom: 4,
+  },
+  rewardXpTrack: {
+    width: '90%',
+    height: 7,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 999,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: '#CBD5E1',
+  },
+  rewardXpFill: {
+    height: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 999,
   },
   statsContainer: {
     width: '100%',

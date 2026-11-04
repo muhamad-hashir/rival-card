@@ -33,6 +33,10 @@ interface CardViewProps {
   size?: 'small' | 'medium' | 'large';
   onPress?: () => void;
   style?: ViewStyle;
+  cardBackStyle?: {
+    primaryColor?: string;
+    borderColor?: string;
+  };
 }
 
 export const CardView: React.FC<CardViewProps> = ({
@@ -44,6 +48,7 @@ export const CardView: React.FC<CardViewProps> = ({
   size = 'medium',
   onPress,
   style,
+  cardBackStyle,
 }) => {
   const [imageError, setImageError] = useState(false);
   const dimensions = getCardDimensions(size);
@@ -67,6 +72,8 @@ export const CardView: React.FC<CardViewProps> = ({
           dimensions.container,
           { borderWidth: size === 'small' ? 1.5 : 2 },
           styles.faceDownCard,
+          cardBackStyle?.primaryColor ? { backgroundColor: cardBackStyle.primaryColor } : null,
+          cardBackStyle?.borderColor ? { borderColor: cardBackStyle.borderColor } : null,
           style,
         ]}
       >
@@ -75,6 +82,9 @@ export const CardView: React.FC<CardViewProps> = ({
           style={[
             styles.cardBackImage,
             { borderRadius: Math.max(0, dimensions.container.borderRadius - 1.5) },
+            cardBackStyle?.primaryColor && cardBackStyle.primaryColor !== '#1E293B'
+              ? { tintColor: cardBackStyle.primaryColor }
+              : null,
           ]}
           resizeMode="cover"
         />

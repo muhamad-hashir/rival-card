@@ -191,6 +191,48 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 <Text style={styles.guestBadgeDot}>●</Text>
                 <Text style={styles.guestBadgeText}>Guest Account</Text>
               </View>
+
+              {/* Economy Currency Balances (Coins & Gems) */}
+              <View style={styles.economyRow}>
+                <View style={styles.coinsBadge}>
+                  <Text style={styles.coinsBadgeIcon}>🪙</Text>
+                  <Text style={styles.coinsBadgeText}>{profile.coins ?? 250}</Text>
+                </View>
+                <View style={styles.gemsBadge}>
+                  <Text style={styles.gemsBadgeIcon}>💎</Text>
+                  <Text style={styles.gemsBadgeText}>{profile.gems ?? 10}</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Level & XP Progression Card */}
+            <View style={styles.levelCard}>
+              <View style={styles.levelHeaderRow}>
+                <View style={styles.levelBadge}>
+                  <Text style={styles.levelBadgeText}>⭐ Level {profile.level ?? 1}</Text>
+                </View>
+                <Text style={styles.levelXpText}>
+                  {profile.currentXp ?? 0} / {profile.xpToNextLevel ?? 100} XP
+                </Text>
+              </View>
+              <View style={styles.xpTrack}>
+                <View
+                  style={[
+                    styles.xpFill,
+                    {
+                      width: `${Math.min(
+                        100,
+                        Math.max(
+                          0,
+                          Math.round(
+                            ((profile.currentXp ?? 0) / (profile.xpToNextLevel || 100)) * 100
+                          )
+                        )
+                      )}%`,
+                    },
+                  ]}
+                />
+              </View>
             </View>
 
             {/* Nickname Input Field */}
@@ -250,13 +292,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </View>
             </View>
 
-            {/* Simple Player Stats Card */}
+            {/* Streamlined Career Stats Grid */}
             <View style={styles.statsCard}>
               <Text style={styles.statsCardTitle}>CAREER STATS</Text>
               <View style={styles.statsRow}>
                 <View style={styles.statBox}>
                   <Text style={styles.statNumber}>{profile.stats.gamesPlayed}</Text>
-                  <Text style={styles.statLabel}>Played</Text>
+                  <Text style={styles.statLabel}>Matches</Text>
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBox}>
@@ -413,6 +455,98 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_BOLD,
     fontSize: 11,
     color: '#475569',
+  },
+  economyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 8,
+  },
+  coinsBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  coinsBadgeIcon: {
+    fontSize: 13,
+  },
+  coinsBadgeText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#92400E',
+  },
+  gemsBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E0F2FE',
+    borderWidth: 2,
+    borderColor: '#BAE6FD',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  gemsBadgeIcon: {
+    fontSize: 13,
+  },
+  gemsBadgeText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#0369A1',
+  },
+  levelCard: {
+    width: '100%',
+    backgroundColor: '#FFFDF7',
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#E2D9C8',
+    padding: 10,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  levelHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  levelBadge: {
+    backgroundColor: '#FEF6E9',
+    borderWidth: 1.5,
+    borderColor: '#E2D9C8',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  levelBadgeText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#0F172A',
+  },
+  levelXpText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#15803D',
+  },
+  xpTrack: {
+    width: '100%',
+    height: 10,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 999,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  xpFill: {
+    height: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 999,
   },
   inputSection: {
     width: '100%',

@@ -14,6 +14,8 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { ProfileModal } from '../components/ProfileModal';
 import { ResumeMatchModal } from '../components/ResumeMatchModal';
+import { HowToPlayModal } from '../components/HowToPlayModal';
+import { ShopModal } from '../components/ShopModal';
 import {
   playerProfileService,
   PlayerProfile,
@@ -45,6 +47,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 }) => {
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isHowToPlayOpen, setIsHowToPlayOpen] = useState(false);
+  const [isShopOpen, setIsShopOpen] = useState(false);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [pendingResumeSession, setPendingResumeSession] = useState<ActiveMatchSession | null>(null);
   const [isRejoiningSession, setIsRejoiningSession] = useState(false);
@@ -182,6 +186,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setIsLobbyModalOpen(true);
   };
 
+  // Button 4: How to Play (opens interactive book rulebook modal)
+  const handlePressHowToPlay = () => {
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    setIsHowToPlayOpen(true);
+  };
+
+  // Button 5: Store / Shop (opens interactive cosmetics & currency shop)
+  const handlePressShop = () => {
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    setIsShopOpen(true);
+  };
+
   // Header: Open Profile Editor Modal
   const handlePressProfile = () => {
     hapticsService.cardSelection();
@@ -240,36 +258,120 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             pressed && styles.touchOverlayPressed,
           ]}
         />
+
+        {/* Invisible Touch Overlay Button 4: How to Play */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="How to Play"
+          testID="how-to-play-trigger"
+          onPress={handlePressHowToPlay}
+          style={({ pressed }) => [
+            styles.howToPlayOverlay,
+            pressed && styles.touchOverlayPressed,
+          ]}
+        />
+
+        {/* Invisible Touch Overlay Button 5: Store / Shop */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Store"
+          testID="store-trigger"
+          onPress={handlePressShop}
+          style={({ pressed }) => [
+            styles.storeOverlay,
+            pressed && styles.touchOverlayPressed,
+          ]}
+        />
       </ImageBackground>
 
-      {/* Top Header Row with Profile Pill */}
+      {/* Top Header Row with Profile Pill, Level Badge, Coins, and Gems */}
       <View style={styles.topHeaderContainer} pointerEvents="box-none">
-        <Pressable
-          pointerEvents="auto"
-          onPress={handlePressProfile}
-          style={({ pressed }) => [
-            styles.profilePill,
-            pressed && styles.profilePillPressed,
-          ]}
-        >
-          {/* Avatar Circle */}
-          <View style={[styles.avatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
-            <Text style={styles.avatarEmoji}>{activeAvatar.emoji}</Text>
-          </View>
+        {/* Left Cluster: Profile Pill & Level Badge */}
+        <View style={styles.headerLeftGroup} pointerEvents="box-none">
+          <Pressable
+            pointerEvents="auto"
+            onPress={handlePressProfile}
+            style={({ pressed }) => [
+              styles.profilePill,
+              pressed && styles.headerPillPressed,
+            ]}
+          >
+            {/* Avatar Circle */}
+            <View style={[styles.avatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
+              <Text style={styles.avatarEmoji}>{activeAvatar.emoji}</Text>
+            </View>
 
-          {/* Nickname */}
-          <Text style={styles.profileNickname} numberOfLines={1}>
-            {profile?.nickname || 'Player'}
-          </Text>
+            {/* Nickname */}
+            <Text style={styles.profileNickname} numberOfLines={1}>
+              {profile?.nickname || 'Player'}
+            </Text>
+          </Pressable>
 
-          {/* Divider */}
-          <View style={styles.profileDivider} />
+          {/* Level Badge with Mini XP Progress Bar */}
+          <Pressable
+            pointerEvents="auto"
+            onPress={handlePressProfile}
+            style={({ pressed }) => [
+              styles.levelPill,
+              pressed && styles.headerPillPressed,
+            ]}
+          >
+            <Text style={styles.levelText}>Lv. {profile?.level ?? 1}</Text>
+            <View style={styles.levelTrack}>
+              <View
+                style={[
+                  styles.levelFill,
+                  {
+                    width: `${Math.min(
+                      100,
+                      Math.max(
+                        0,
+                        Math.round(
+                          ((profile?.currentXp ?? 0) / (profile?.xpToNextLevel || 100)) * 100
+                        )
+                      )
+                    )}%`,
+                  },
+                ]}
+              />
+            </View>
+          </Pressable>
+        </View>
 
-          {/* Wins count */}
-          <View style={styles.winsBadge}>
-            <Text style={styles.winsText}>🏆 {profile?.stats.wins ?? 0}</Text>
-          </View>
-        </Pressable>
+        {/* Right Cluster: Coin & Gem Economy Pills (Opens Shop) */}
+        <View style={styles.headerRightGroup} pointerEvents="box-none">
+          {/* Coins Pill */}
+          <Pressable
+            pointerEvents="auto"
+            accessibilityRole="button"
+            accessibilityLabel="Coins Shop"
+            testID="coins-shop-trigger"
+            onPress={handlePressShop}
+            style={({ pressed }) => [
+              styles.coinPill,
+              pressed && styles.headerPillPressed,
+            ]}
+          >
+            <Text style={styles.coinIcon}>🪙</Text>
+            <Text style={styles.coinText}>{profile?.coins ?? 250}</Text>
+          </Pressable>
+
+          {/* Gems Pill */}
+          <Pressable
+            pointerEvents="auto"
+            accessibilityRole="button"
+            accessibilityLabel="Gems Shop"
+            testID="gems-shop-trigger"
+            onPress={handlePressShop}
+            style={({ pressed }) => [
+              styles.gemPill,
+              pressed && styles.headerPillPressed,
+            ]}
+          >
+            <Text style={styles.gemIcon}>💎</Text>
+            <Text style={styles.gemText}>{profile?.gems ?? 10}</Text>
+          </Pressable>
+        </View>
       </View>
 
       {/* Online Multiplayer Hosting & Joining Modal */}
@@ -300,6 +402,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         onRejoin={handleRejoinSession}
         onAbandon={handleAbandonSession}
       />
+
+      {/* Interactive Book-Style Rulebook Modal */}
+      <HowToPlayModal
+        visible={isHowToPlayOpen}
+        onClose={() => setIsHowToPlayOpen(false)}
+      />
+
+      {/* Interactive Cosmetics & Currency Shop Modal */}
+      <ShopModal
+        visible={isShopOpen}
+        onClose={() => setIsShopOpen(false)}
+      />
     </View>
   );
 };
@@ -321,12 +435,26 @@ const styles = StyleSheet.create({
       android: (RNStatusBar.currentHeight || 24) + 12,
       default: 20,
     }),
-    left: 20,
-    right: 20,
+    left: 14,
+    right: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
     zIndex: 10,
+  },
+  headerLeftGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerPillPressed: {
+    transform: [{ scale: 0.95 }],
+    opacity: 0.9,
   },
   profilePill: {
     flexDirection: 'row',
@@ -335,7 +463,7 @@ const styles = StyleSheet.create({
     borderWidth: 2.5,
     borderColor: '#E2D9C8',
     borderRadius: 999,
-    paddingVertical: 5,
+    paddingVertical: 4,
     paddingHorizontal: 8,
     shadowColor: '#1E293B',
     shadowOffset: { width: 0, height: 3 },
@@ -348,43 +476,106 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   },
   avatarCircle: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 8,
+    marginRight: 6,
     borderWidth: 1.5,
     borderColor: '#FFFFFF',
   },
   avatarEmoji: {
-    fontSize: 15,
+    fontSize: 14,
   },
   profileNickname: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 13,
+    fontSize: 12,
     color: '#0F172A',
-    maxWidth: 110,
-    marginRight: 6,
+    maxWidth: 90,
   },
-  profileDivider: {
-    width: 1.5,
-    height: 16,
-    backgroundColor: '#CBD5E1',
-    marginRight: 6,
-  },
-  winsBadge: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+  levelPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF6E9',
+    borderWidth: 2,
+    borderColor: '#E2D9C8',
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  winsText: {
-    ...FONT_CARTOON_HEAVY,
+  levelText: {
+    ...FONT_CARTOON_BOLD,
     fontSize: 11,
-    color: '#D97706',
+    color: '#0F172A',
+    marginRight: 5,
+  },
+  levelTrack: {
+    width: 28,
+    height: 6,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 999,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: '#CBD5E1',
+  },
+  levelFill: {
+    height: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 999,
+  },
+  coinPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  coinIcon: {
+    fontSize: 13,
+    marginRight: 4,
+  },
+  coinText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#92400E',
+  },
+  gemPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E0F2FE',
+    borderWidth: 2,
+    borderColor: '#BAE6FD',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  gemIcon: {
+    fontSize: 13,
+    marginRight: 4,
+  },
+  gemText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#0369A1',
   },
   touchOverlay: {
     position: 'absolute',
@@ -405,5 +596,23 @@ const styles = StyleSheet.create({
   },
   btn3: {
     top: '65.2%',
+  },
+  howToPlayOverlay: {
+    position: 'absolute',
+    left: '6%',
+    top: '84.8%',
+    width: '31.5%',
+    height: '11.5%',
+    backgroundColor: 'transparent',
+    borderRadius: 24,
+  },
+  storeOverlay: {
+    position: 'absolute',
+    left: '36.5%',
+    top: '84.8%',
+    width: '28%',
+    height: '11.5%',
+    backgroundColor: 'transparent',
+    borderRadius: 24,
   },
 });

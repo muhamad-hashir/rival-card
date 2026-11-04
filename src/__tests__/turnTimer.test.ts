@@ -269,10 +269,10 @@ describe('Pass & Play Mode Privacy Mask Pausing', () => {
       'pass_and_play'
     );
 
-    // Initial pass_and_play has privacy mask active for player 1
+    // Initial pass_and_play has privacy mask active for active starting player
     assert.strictEqual(game.gameMode, 'pass_and_play');
     assert.strictEqual(game.privacyMask.isActive, true, 'Privacy mask active on initial start');
-    assert.strictEqual(game.privacyMask.targetPlayerId, 'p1');
+    assert.strictEqual(game.privacyMask.targetPlayerId, game.players[game.currentTurnIndex].id);
 
     // Timer is paused while privacyMask.isActive is true
     const isTimerPaused = game.privacyMask.isActive;
