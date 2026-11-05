@@ -7,7 +7,7 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease -Dandroid.enableR8.fullMode=false -PreactNativeArchitectures=arm64-v8a"
+        "gradleCommand": ":app:assembleRelease -Dandroid.enableR8.fullMode=false"
       },
       "env": {
         "EXPO_NO_MINIFY": "1"
