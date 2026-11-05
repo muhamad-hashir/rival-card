@@ -16,6 +16,10 @@ import { ProfileModal } from '../components/ProfileModal';
 import { ResumeMatchModal } from '../components/ResumeMatchModal';
 import { HowToPlayModal } from '../components/HowToPlayModal';
 import { ShopModal } from '../components/ShopModal';
+import { SettingsModal } from '../components/SettingsModal';
+import { OnboardingAuthModal } from '../components/OnboardingAuthModal';
+import { ErrorToast } from '../components/ErrorToast';
+import { authService } from '../services/authService';
 import {
   playerProfileService,
   PlayerProfile,
@@ -29,6 +33,7 @@ import {
 } from '../services/multiplayerService';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import { audioService } from '../services/audioService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 import type { GameState } from '../types';
 
@@ -49,13 +54,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isHowToPlayOpen, setIsHowToPlayOpen] = useState(false);
   const [isShopOpen, setIsShopOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [pendingResumeSession, setPendingResumeSession] = useState<ActiveMatchSession | null>(null);
   const [isRejoiningSession, setIsRejoiningSession] = useState(false);
 
   // Check for unexpired active online match session on initial launch (< 10 minutes old)
   useEffect(() => {
-    async function checkResumeSession() {
+    audioService.playMenuBgm();
+
+    async function checkOnboardingAndSession() {
+      try {
+        const completed = await authService.isOnboardingCompleted();
+        if (!completed) {
+          setIsOnboardingOpen(true);
+        }
+      } catch {
+        // ignore
+      }
+
       try {
         const session = await getActiveMatchSession();
         if (!session) return;
@@ -69,7 +87,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         // ignore storage errors
       }
     }
-    checkResumeSession();
+    checkOnboardingAndSession();
   }, []);
 
   const handleRejoinSession = async () => {
@@ -200,6 +218,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setIsShopOpen(true);
   };
 
+  // Button 6: Settings (opens audio/gameplay toggles & account management)
+  const handlePressSettings = () => {
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    setIsSettingsOpen(true);
+  };
+
   // Header: Open Profile Editor Modal
   const handlePressProfile = () => {
     hapticsService.cardSelection();
@@ -279,6 +304,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           onPress={handlePressShop}
           style={({ pressed }) => [
             styles.storeOverlay,
+            pressed && styles.touchOverlayPressed,
+          ]}
+        />
+
+        {/* Invisible Touch Overlay Button 6: Settings */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Settings"
+          testID="settings-trigger"
+          onPress={handlePressSettings}
+          style={({ pressed }) => [
+            styles.settingsOverlay,
             pressed && styles.touchOverlayPressed,
           ]}
         />
@@ -414,6 +451,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         visible={isShopOpen}
         onClose={() => setIsShopOpen(false)}
       />
+
+      {/* Interactive Settings Modal */}
+      <SettingsModal
+        visible={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
+
+      {/* First-Launch Onboarding & Auth Modal */}
+      <OnboardingAuthModal
+        visible={isOnboardingOpen}
+        onSuccess={async () => {
+          setIsOnboardingOpen(false);
+          const p = await playerProfileService.getProfile(true);
+          setProfile(p);
+        }}
+      />
+
+      {/* Global Error & Disconnection Toast */}
+      <ErrorToast />
     </View>
   );
 };
@@ -611,6 +667,15 @@ const styles = StyleSheet.create({
     left: '36.5%',
     top: '84.8%',
     width: '28%',
+    height: '11.5%',
+    backgroundColor: 'transparent',
+    borderRadius: 24,
+  },
+  settingsOverlay: {
+    position: 'absolute',
+    left: '64.5%',
+    top: '84.8%',
+    width: '29.5%',
     height: '11.5%',
     backgroundColor: 'transparent',
     borderRadius: 24,

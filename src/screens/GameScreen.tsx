@@ -27,11 +27,13 @@ import {
   declareRival,
   dismissPrivacyMask,
   getDominantColor,
+  hasIdenticalPair,
   isValidMove,
   isWildCard,
   makeBotMove,
   pickBestBotCard,
   playCard,
+  playPairCards,
   playerDrawCard,
   playerPassTurn,
   TURN_DURATION,
@@ -43,14 +45,18 @@ import { PrivacyMaskModal } from '../components/PrivacyMaskModal';
 import { GameOverModal } from '../components/GameOverModal';
 import { LeaveConfirmationModal } from '../components/LeaveConfirmationModal';
 import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
+import { ErrorToast } from '../components/ErrorToast';
+import { errorToastService } from '../services/errorToastService';
 import { ModesModal } from '../components/ModesModal';
 import { TauntBar } from '../components/TauntBar';
 import { TurnTimerBadge } from '../components/TurnTimerBadge';
 import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import { audioService } from '../services/audioService';
 import { playerProfileService, getAvatarConfig, AwardRewardsResult } from '../services/playerProfileService';
 import { shopService, ShopItem } from '../services/shopService';
+import { settingsService, UserSettings, DEFAULT_SETTINGS } from '../services/settingsService';
 import {
   multiplayerService,
   TauntMessage,
@@ -191,6 +197,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [equippedScenery, setEquippedScenery] = useState<ShopItem | null>(null);
   const [equippedCardBack, setEquippedCardBack] = useState<ShopItem | null>(null);
 
+  // User Settings (audio, haptics, fastBots, autoPass)
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    settingsService.getSettings().then(setSettings);
+    const unsub = settingsService.subscribe(setSettings);
+    return () => unsub();
+  }, []);
+
   useEffect(() => {
     async function loadEquippedCosmetics() {
       try {
@@ -223,6 +238,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const botCatchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const prevHandCountsRef = useRef<Record<string, number>>({});
   const catchPulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Identical Multi-Card Play (Card Stacking / Pair Play Rule) state
+  const [pendingPairPlay, setPendingPairPlay] = useState<{ card1: Card; card2: Card } | null>(null);
+  const [pendingWildPair, setPendingWildPair] = useState<{ card1: Card; card2: Card } | null>(null);
+
+  // 15-second Network Disconnection Countdown state
+  const disconnectCountdownRef = useRef<NodeJS.Timeout | null>(null);
 
   // Quick feedback banner state (e.g., for Pass & Play turn skips)
   const [quickBannerMessage, setQuickBannerMessage] = useState<string | null>(null);
@@ -282,14 +304,20 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       (window as any).__getMatchRewards = () => matchRewards;
       (window as any).__getCatchPenaltyTarget = () => catchPenaltyTarget;
       (window as any).__setCatchPenaltyTarget = (target: CatchPenaltyTarget | null) => setCatchPenaltyTarget(target);
+      (window as any).__getPendingPairPlay = () => pendingPairPlay;
     }
-  }, [gameState, showQuickBanner, isReconnecting, matchRewards, catchPenaltyTarget]);
+  }, [gameState, showQuickBanner, isReconnecting, matchRewards, catchPenaltyTarget, pendingPairPlay]);
 
-  // Cleanup catch timers on unmount
+  // Cleanup catch timers and network countdown on unmount
   useEffect(() => {
     return () => {
       if (catchTimerRef.current) clearTimeout(catchTimerRef.current);
       if (botCatchTimerRef.current) clearTimeout(botCatchTimerRef.current);
+      if (disconnectCountdownRef.current) {
+        clearInterval(disconnectCountdownRef.current);
+        disconnectCountdownRef.current = null;
+      }
+      errorToastService.hide();
     };
   }, []);
 
@@ -309,13 +337,26 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    audioService.playGameplayBgm();
+    return () => {
+      audioService.playMenuBgm();
+    };
+  }, []);
+
   // Handle returning to home screen with portrait orientation lock
   const handleExitToHome = async () => {
     try {
+      if (disconnectCountdownRef.current) {
+        clearInterval(disconnectCountdownRef.current);
+        disconnectCountdownRef.current = null;
+      }
+      errorToastService.hide();
       await clearActiveMatchSession();
       if (isOnlineMode) {
         await multiplayerService.leaveRoom();
       }
+      await audioService.playMenuBgm();
       await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     } catch {
       // Fallback
@@ -783,6 +824,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setGameState(createGame(players, preset.mode));
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
+    setPendingPairPlay(null);
+    setPendingWildPair(null);
     setOnlineRoomCode(null);
     setLocalOnlinePlayerId(null);
     setIsBotProcessing(false);
@@ -797,87 +840,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     runDealingAnimation(players);
   }, [runDealingAnimation]);
 
-  // Online Multiplayer real-time state synchronization listener
-  useEffect(() => {
-    if (!isOnlineMode) return;
-
-    multiplayerService.setCallbacks({
-      onGameStateUpdate: (remoteState, senderId) => {
-        if (senderId !== localOnlinePlayerId) {
-          const wasGameOver = isGameOverRef.current;
-          setGameState(remoteState);
-          setIsReconnecting(false);
-          if (remoteState.isGameOver) {
-            soundService.playWinChime();
-            hapticsService.victory();
-          } else {
-            soundService.playCardSnap();
-            hapticsService.cardSnap();
-            if (wasGameOver) {
-              setSelectedWildCard(null);
-              setIsColorPickerOpen(false);
-              setRivalCountdown(null);
-              runDealingAnimation(remoteState.players);
-            }
-          }
-        }
-      },
-      onReconnecting: (_attempt) => {
-        setIsReconnecting(true);
-      },
-      onReconnected: () => {
-        setIsReconnecting(false);
-        showQuickBanner('Reconnected to match!');
-      },
-      onStateSnapshotRequested: (requesterId) => {
-        if (isOnlineMode && (multiplayerService.getMyPlayer()?.isHost || myPlayer.id !== requesterId)) {
-          multiplayerService.broadcastStateSnapshot(gameState, requesterId);
-        }
-      },
-      onStateSnapshotReceived: (syncedState) => {
-        setGameState(syncedState);
-        setIsReconnecting(false);
-        showQuickBanner('Match state synchronized!');
-      },
-      onTauntReceived: (taunt) => {
-        setActiveTaunt(taunt);
-        soundService.playCardSnap();
-        hapticsService.cardSelection();
-      },
-      onPlayerLeft: (_id, name) => {
-        Alert.alert('Player Disconnected', `${name} has left the match.`);
-      },
-    });
-  }, [
-    isOnlineMode,
-    localOnlinePlayerId,
-    runDealingAnimation,
-    gameState,
-    myPlayer.id,
-    showQuickBanner,
-  ]);
-
-  // AppState background/foreground resume listener
-  useEffect(() => {
-    if (!isOnlineMode) return;
-
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (nextAppState === 'active') {
-        const status = multiplayerService.getConnectionStatus();
-        if (status !== 'connected') {
-          setIsReconnecting(true);
-          multiplayerService.reconnect();
-        } else {
-          multiplayerService.requestStateSnapshot();
-        }
-      }
-    });
-
-    return () => {
-      subscription.remove();
-    };
-  }, [isOnlineMode]);
-
   // Handle post-game "Play Again" action
   const handlePlayAgain = async () => {
     hapticsService.cardSnap();
@@ -889,6 +851,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setRivalCountdown(null);
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
+    setPendingPairPlay(null);
+    setPendingWildPair(null);
     setIsBotProcessing(false);
     setIsHumanDrawing(false);
 
@@ -912,8 +876,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   };
 
   // Handle post-game or header "Quit Room" action
-  const handleQuitGame = async () => {
+  const handleQuitGame = useCallback(async () => {
     hapticsService.cardSnap();
+    if (disconnectCountdownRef.current) {
+      clearInterval(disconnectCountdownRef.current);
+      disconnectCountdownRef.current = null;
+    }
+    errorToastService.hide();
     await clearActiveMatchSession();
     if (rivalTimerRef.current) {
       clearInterval(rivalTimerRef.current);
@@ -922,6 +891,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setRivalCountdown(null);
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
+    setPendingPairPlay(null);
+    setPendingWildPair(null);
     setIsBotProcessing(false);
     setIsHumanDrawing(false);
 
@@ -935,7 +906,145 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       setLocalOnlinePlayerId(null);
     }
     await handleExitToHome();
-  };
+  }, [isOnlineMode, handleExitToHome]);
+
+  const stopDisconnectionCountdown = useCallback(() => {
+    if (disconnectCountdownRef.current) {
+      clearInterval(disconnectCountdownRef.current);
+      disconnectCountdownRef.current = null;
+    }
+    errorToastService.hide();
+  }, []);
+
+  const startDisconnectionCountdown = useCallback(() => {
+    if (disconnectCountdownRef.current) {
+      clearInterval(disconnectCountdownRef.current);
+    }
+    let remaining = 15;
+    errorToastService.show({
+      message: `Connection lost! Attempting to reconnect... (${remaining}s)`,
+      type: 'warning',
+    });
+
+    disconnectCountdownRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        errorToastService.show({
+          message: `Connection lost! Attempting to reconnect... (${remaining}s)`,
+          type: 'warning',
+        });
+      } else {
+        if (disconnectCountdownRef.current) {
+          clearInterval(disconnectCountdownRef.current);
+          disconnectCountdownRef.current = null;
+        }
+        errorToastService.show({
+          message: 'Match disconnected. Return to Main Menu',
+          type: 'error',
+          action: {
+            label: 'Return to Menu',
+            onPress: () => {
+              errorToastService.hide();
+              handleQuitGame();
+            },
+          },
+        });
+      }
+    }, 1000);
+  }, [handleQuitGame]);
+
+  // Online Multiplayer real-time state synchronization listener
+  useEffect(() => {
+    if (!isOnlineMode) return;
+
+    multiplayerService.setCallbacks({
+      onGameStateUpdate: (remoteState, senderId) => {
+        stopDisconnectionCountdown();
+        if (senderId !== localOnlinePlayerId) {
+          const wasGameOver = isGameOverRef.current;
+          setGameState(remoteState);
+          setIsReconnecting(false);
+          if (remoteState.isGameOver) {
+            soundService.playWinChime();
+            hapticsService.victory();
+          } else {
+            soundService.playCardSnap();
+            hapticsService.cardSnap();
+            if (wasGameOver) {
+              setSelectedWildCard(null);
+              setIsColorPickerOpen(false);
+              setPendingPairPlay(null);
+              setPendingWildPair(null);
+              setRivalCountdown(null);
+              runDealingAnimation(remoteState.players);
+            }
+          }
+        }
+      },
+      onReconnecting: (_attempt) => {
+        setIsReconnecting(true);
+        startDisconnectionCountdown();
+      },
+      onReconnected: () => {
+        stopDisconnectionCountdown();
+        setIsReconnecting(false);
+        showQuickBanner('Reconnected to match!');
+      },
+      onStateSnapshotRequested: (requesterId) => {
+        if (isOnlineMode && (multiplayerService.getMyPlayer()?.isHost || myPlayer.id !== requesterId)) {
+          multiplayerService.broadcastStateSnapshot(gameState, requesterId);
+        }
+      },
+      onStateSnapshotReceived: (syncedState) => {
+        stopDisconnectionCountdown();
+        setGameState(syncedState);
+        setIsReconnecting(false);
+        showQuickBanner('Match state synchronized!');
+      },
+      onTauntReceived: (taunt) => {
+        setActiveTaunt(taunt);
+        soundService.playCardSnap();
+        hapticsService.cardSelection();
+      },
+      onPlayerLeft: (_id, name) => {
+        Alert.alert('Player Disconnected', `${name} has left the match.`);
+      },
+      onError: (errMsg) => {
+        errorToastService.showError(errMsg);
+      },
+    });
+  }, [
+    isOnlineMode,
+    localOnlinePlayerId,
+    runDealingAnimation,
+    gameState,
+    myPlayer.id,
+    showQuickBanner,
+    startDisconnectionCountdown,
+    stopDisconnectionCountdown,
+  ]);
+
+  // AppState background/foreground resume listener
+  useEffect(() => {
+    if (!isOnlineMode) return;
+
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        const status = multiplayerService.getConnectionStatus();
+        if (status !== 'connected') {
+          setIsReconnecting(true);
+          multiplayerService.reconnect();
+        } else {
+          multiplayerService.requestStateSnapshot();
+        }
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isOnlineMode]);
+
 
   // 3-second RIVAL! alert countdown when human player has 1 card without declaring
   useEffect(() => {
@@ -983,21 +1092,30 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       return;
     }
 
-    // Step 2: If bot has already drawn this turn, pause 800ms to deliberate before playing or passing
+    // Step 2: If bot has already drawn this turn, pause to deliberate before playing or passing
     if (gameState.hasDrawnThisTurn) {
+      const postDrawDelay = settings.fastBots ? 300 : 800;
       const postDrawTimer = setTimeout(() => {
         setIsBotProcessing(true);
         try {
           const drawnCard = gameState.drawnCard;
           if (drawnCard && isValidMove(drawnCard, topDiscardCard, gameState.activeColor)) {
+            const pair = hasIdenticalPair(currentPlayer.hand, drawnCard);
+            const playAsPair = Boolean(pair);
             const chosenColor = isWildCard(drawnCard)
-              ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== drawnCard.id))
+              ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== drawnCard.id && (!pair || c.id !== pair.id)))
               : undefined;
             let stateToPlay = gameState;
-            if (currentPlayer.hand.length === 2 && Math.random() < 0.75) {
+            const remainingAfter = currentPlayer.hand.length - (playAsPair ? 2 : 1);
+            if (remainingAfter === 1 && Math.random() < 0.75) {
               stateToPlay = declareRival(stateToPlay, currentPlayer.id);
             }
-            const nextState = playCard(stateToPlay, currentPlayer.id, drawnCard.id, { chosenColor });
+            let nextState: GameState;
+            if (playAsPair && pair) {
+              nextState = playPairCards(stateToPlay, currentPlayer.id, drawnCard.id, pair.id, { chosenColor });
+            } else {
+              nextState = playCard(stateToPlay, currentPlayer.id, drawnCard.id, { chosenColor });
+            }
             soundService.playCardSnap();
             commitGameState(nextState, `${currentPlayer.name} played ${drawnCard.value}`);
           } else {
@@ -1010,12 +1128,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         } finally {
           setIsBotProcessing(false);
         }
-      }, 800);
+      }, postDrawDelay);
 
       return () => clearTimeout(postDrawTimer);
     }
 
-    // Step 1: Initial "thinking" delay (1400ms) so the player clearly sees "RivalBot's turn..."
+    // Step 1: Initial "thinking" delay so the player clearly sees "RivalBot's turn..."
+    const thinkingDelay = settings.fastBots ? 400 : 1400;
     const thinkingTimer = setTimeout(() => {
       setIsBotProcessing(true);
       try {
@@ -1032,24 +1151,34 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           isValidMove(c, topDiscardCard, stateForBot.activeColor)
         );
 
-        // Pre-declare RIVAL if playing second-to-last card (with 75% memory rate)
-        if (currentPlayer.hand.length === 2 && playableCards.length > 0) {
-          const botRemembers = Math.random() < 0.75;
-          if (botRemembers) {
-            stateForBot = declareRival(stateForBot, currentPlayer.id);
-          }
-        }
-
         if (playableCards.length > 0) {
           const chosenCard = pickBestBotCard(playableCards, stateForBot, currentPlayer);
+          const identicalPair = hasIdenticalPair(currentPlayer.hand, chosenCard);
+          const playAsPair = Boolean(identicalPair);
+          const pairCard = identicalPair;
+
+          // Pre-declare RIVAL if playing will leave bot with 1 card (with 75% memory rate)
+          const remainingAfterPlay = currentPlayer.hand.length - (playAsPair ? 2 : 1);
+          if (remainingAfterPlay === 1) {
+            const botRemembers = Math.random() < 0.75;
+            if (botRemembers) {
+              stateForBot = declareRival(stateForBot, currentPlayer.id);
+            }
+          }
+
           const chosenColor = isWildCard(chosenCard)
-            ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== chosenCard.id))
+            ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== chosenCard.id && (!pairCard || c.id !== pairCard.id)))
             : undefined;
 
           // If action card causes draw on victim (+2, +4)
           const targetIndex = (stateForBot.currentTurnIndex + stateForBot.direction + stateForBot.players.length) % stateForBot.players.length;
           const victim = stateForBot.players[targetIndex];
-          const penaltyCards = chosenCard.value === 'draw2' ? 2 : chosenCard.value === 'wild_draw4' ? 4 : 0;
+          let penaltyCards = 0;
+          if (chosenCard.value === 'draw2') {
+            penaltyCards = playAsPair ? 4 : 2;
+          } else if (chosenCard.value === 'wild_draw4') {
+            penaltyCards = playAsPair ? 8 : 4;
+          }
 
           if (penaltyCards > 0 && victim) {
             setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: penaltyCards }));
@@ -1066,13 +1195,22 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             }
           }
 
-          const nextState = playCard(stateForBot, currentPlayer.id, chosenCard.id, { chosenColor });
+          let nextState: GameState;
+          if (playAsPair && pairCard) {
+            nextState = playPairCards(stateForBot, currentPlayer.id, chosenCard.id, pairCard.id, { chosenColor });
+          } else {
+            nextState = playCard(stateForBot, currentPlayer.id, chosenCard.id, { chosenColor });
+          }
+
           if (nextState.isGameOver) {
             soundService.playWinChime();
           } else {
             soundService.playCardSnap();
           }
-          commitGameState(nextState, `${currentPlayer.name} played ${chosenCard.color} ${chosenCard.value}`);
+          const logMsg = playAsPair && pairCard
+            ? `${currentPlayer.name} played pair of ${chosenCard.color} ${chosenCard.value}`
+            : `${currentPlayer.name} played ${chosenCard.color} ${chosenCard.value}`;
+          commitGameState(nextState, logMsg);
           setIsBotProcessing(false);
         } else {
           // No playable cards: Bot draws from deck!
@@ -1093,7 +1231,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         console.error('Error during bot move:', err);
         setIsBotProcessing(false);
       }
-    }, 1400);
+    }, thinkingDelay);
 
     return () => clearTimeout(thinkingTimer);
   }, [
@@ -1104,21 +1242,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     isDealing,
     isBotProcessing,
     triggerFlyingCard,
+    settings.fastBots,
   ]);
 
-  // Card Play Handler (invoked via tap or drag-and-drop)
-  const handleCardPress = (card: Card) => {
+  // Execute Single Card Play
+  const executeSinglePlay = (card: Card) => {
     if (!isHumanTurn) return;
-
-    if (!isValidMove(card, topDiscardCard, gameState.activeColor)) {
-      hapticsService.invalidMove();
-      soundService.playError();
-      Alert.alert(
-        'Invalid Move',
-        `This card does not match active color (${gameState.activeColor.toUpperCase()}) or top card (${topDiscardCard.value.toUpperCase()}).`
-      );
-      return;
-    }
 
     if (card.color === 'wild') {
       hapticsService.cardSnap();
@@ -1174,6 +1303,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       }
 
       commitGameState(nextState, `${myPlayer.name} played ${card.color} ${card.value}`);
+      setPendingPairPlay(null);
     } catch (err: any) {
       hapticsService.invalidMove();
       soundService.playError();
@@ -1181,9 +1311,161 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   };
 
+  // Execute Pair Play (2 Identical Cards Stacking)
+  const executePairPlay = (card1: Card, card2: Card) => {
+    if (!isHumanTurn) return;
+
+    if (card1.color === 'wild') {
+      hapticsService.cardSnap();
+      setPendingWildPair({ card1, card2 });
+      setIsColorPickerOpen(true);
+      return;
+    }
+
+    try {
+      if (card1.value === 'draw2') {
+        const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
+        const victim = gameState.players[targetIndex];
+        if (victim) {
+          setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 4 }));
+          for (let i = 0; i < 4; i++) {
+            setTimeout(() => {
+              triggerFlyingCard(victim.id, () => {
+                soundService.playCardSnap();
+                setPendingPenaltyCount((prev) => ({
+                  ...prev,
+                  [victim.id]: Math.max(0, (prev[victim.id] || 1) - 1),
+                }));
+              });
+            }, i * 110);
+          }
+        }
+      }
+
+      const nextState = playPairCards(gameState, myPlayer.id, card1.id, card2.id);
+      hapticsService.validPlay();
+
+      if (
+        gameState.gameMode === 'pass_and_play' &&
+        gameState.players.length === 2 &&
+        nextState.currentTurnIndex === gameState.currentTurnIndex &&
+        !nextState.isGameOver
+      ) {
+        const opponent = gameState.players.find((p) => p.id !== myPlayer.id);
+        const opponentName = opponent ? opponent.name : 'Player 2';
+        showQuickBanner(`You skipped ${opponentName}! Take another turn.`);
+      }
+
+      if (nextState.isGameOver) {
+        hapticsService.victory();
+        soundService.playWinChime();
+      } else if (card1.value === 'draw2' || card1.value === 'mute') {
+        soundService.playPenalty();
+      } else {
+        soundService.playCardSnap();
+      }
+
+      commitGameState(nextState, `${myPlayer.name} played pair of ${card1.color} ${card1.value}`);
+      setPendingPairPlay(null);
+    } catch (err: any) {
+      hapticsService.invalidMove();
+      soundService.playError();
+      Alert.alert('Pair Move Error', err?.message || 'Unable to play pair');
+    }
+  };
+
+  // Card Play Handler (invoked via tap or drag-and-drop)
+  const handleCardPress = (card: Card) => {
+    if (!isHumanTurn) return;
+
+    if (!isValidMove(card, topDiscardCard, gameState.activeColor)) {
+      hapticsService.invalidMove();
+      soundService.playError();
+      Alert.alert(
+        'Invalid Move',
+        `This card does not match active color (${gameState.activeColor.toUpperCase()}) or top card (${topDiscardCard.value.toUpperCase()}).`
+      );
+      return;
+    }
+
+    const pair = hasIdenticalPair(myPlayer.hand, card);
+    if (pair) {
+      if (pendingPairPlay && (pendingPairPlay.card1.id === card.id || pendingPairPlay.card2.id === card.id)) {
+        // Tapping currently selected pair card again confirms pair play
+        executePairPlay(pendingPairPlay.card1, pendingPairPlay.card2);
+        return;
+      }
+      hapticsService.cardSelection();
+      soundService.playCardSnap();
+      setPendingPairPlay({ card1: card, card2: pair });
+      return;
+    }
+
+    setPendingPairPlay(null);
+    executeSinglePlay(card);
+  };
+
   // Color Selection for Wild Cards
   const handleSelectWildColor = (color: StandardColor) => {
     setIsColorPickerOpen(false);
+
+    if (pendingWildPair) {
+      const pair = pendingWildPair;
+      setPendingWildPair(null);
+      setPendingPairPlay(null);
+      try {
+        if (pair.card1.value === 'wild_draw4') {
+          const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
+          const victim = gameState.players[targetIndex];
+          if (victim) {
+            setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 8 }));
+            for (let i = 0; i < 8; i++) {
+              setTimeout(() => {
+                triggerFlyingCard(victim.id, () => {
+                  soundService.playCardSnap();
+                  setPendingPenaltyCount((prev) => ({
+                    ...prev,
+                    [victim.id]: Math.max(0, (prev[victim.id] || 1) - 1),
+                  }));
+                });
+              }, i * 110);
+            }
+          }
+        }
+
+        const nextState = playPairCards(gameState, myPlayer.id, pair.card1.id, pair.card2.id, {
+          chosenColor: color,
+        });
+        hapticsService.validPlay();
+
+        if (
+          gameState.gameMode === 'pass_and_play' &&
+          gameState.players.length === 2 &&
+          nextState.currentTurnIndex === gameState.currentTurnIndex &&
+          !nextState.isGameOver
+        ) {
+          const opponent = gameState.players.find((p) => p.id !== myPlayer.id);
+          const opponentName = opponent ? opponent.name : 'Player 2';
+          showQuickBanner(`You skipped ${opponentName}! Take another turn.`);
+        }
+
+        if (nextState.isGameOver) {
+          hapticsService.victory();
+          soundService.playWinChime();
+        } else if (pair.card1.value === 'wild_draw4' || pair.card1.value === 'mute') {
+          soundService.playPenalty();
+        } else {
+          soundService.playCardSnap();
+        }
+
+        commitGameState(nextState, `${myPlayer.name} played pair of ${pair.card1.value} (${color})`);
+      } catch (err: any) {
+        hapticsService.invalidMove();
+        soundService.playError();
+        Alert.alert('Move Error', err?.message || 'Unable to play wild pair');
+      }
+      return;
+    }
 
     if (gameState.pendingColorChoice) {
       const nextState = chooseWildColor(gameState, myPlayer.id, color);
@@ -1266,6 +1548,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Draw Card from Deck: Spawn flying card and commit to state only upon landing
   const handleDrawCard = () => {
     if (!isHumanTurn || isHumanDrawing || isDealing) return;
+    setPendingPairPlay(null);
+    setPendingWildPair(null);
     if (gameState.hasDrawnThisTurn) {
       hapticsService.invalidMove();
       soundService.playError();
@@ -1279,7 +1563,26 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       try {
         const nextState = playerDrawCard(gameState, myPlayer.id);
         soundService.playCardSnap();
-        commitGameState(nextState, `${myPlayer.name} drew a card`);
+
+        const drawnCard = nextState.drawnCard;
+        const canPlayDrawn =
+          drawnCard && isValidMove(drawnCard, topDiscardCard, nextState.activeColor);
+
+        if (settings.autoPass && !canPlayDrawn) {
+          // If autoPass is enabled and the drawn card cannot be played, auto-pass after brief delay
+          commitGameState(nextState, `${myPlayer.name} drew a card`);
+          setTimeout(() => {
+            try {
+              const passedState = playerPassTurn(nextState, myPlayer.id);
+              soundService.playCardSnap();
+              commitGameState(passedState, `${myPlayer.name} passed turn`);
+            } catch {
+              // ignore if state changed or game over
+            }
+          }, 450);
+        } else {
+          commitGameState(nextState, `${myPlayer.name} drew a card`);
+        }
       } catch (err: any) {
         Alert.alert('Draw Error', err?.message || 'Unable to draw card');
       } finally {
@@ -1291,6 +1594,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Pass Turn
   const handlePassTurn = () => {
     if (!isHumanTurn) return;
+    setPendingPairPlay(null);
+    setPendingWildPair(null);
 
     try {
       const nextState = playerPassTurn(gameState, myPlayer.id);
@@ -1355,6 +1660,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     const nextState = declareRival(gameState, myPlayer.id);
     hapticsService.rivalCallout();
     soundService.playRivalCallout();
+    audioService.playRivalShout();
     commitGameState(nextState, `${myPlayer.name} declared RIVAL!`);
 
     if (catchTimerRef.current) {
@@ -1672,20 +1978,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 : `${currentPlayer.name}'s Turn`}
             </Text>
           </View>
-
-          <View style={styles.activeColorContainer}>
-            <Text style={styles.activeColorLabel}>ACTIVE COLOR:</Text>
-            <View
-              style={[
-                styles.activeColorBadge,
-                { backgroundColor: COLOR_HEX[gameState.activeColor] },
-              ]}
-            >
-              <Text style={styles.activeColorText}>
-                {gameState.activeColor.toUpperCase()}
-              </Text>
-            </View>
-          </View>
         </View>
 
         {/* ================================================================= */}
@@ -1880,6 +2172,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                       size="large"
                       disabled
                       isPlayable={false}
+                      activeColor={gameState.activeColor}
                       style={{ opacity: 1 }}
                     />
                   </View>
@@ -1995,6 +2288,37 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </View>
               </View>
 
+              {/* Floating Pair Play Quick-Action Pill */}
+              {pendingPairPlay && isHumanTurn && !isDealing && !gameState.isGameOver && (
+                <View style={styles.pairPlayPillContainer}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    style={styles.pairPlayConfirmBtn}
+                    onPress={() => executePairPlay(pendingPairPlay.card1, pendingPairPlay.card2)}
+                  >
+                    <Text style={styles.pairPlayConfirmText}>⚡ Play Pair (x2)</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    style={styles.pairPlaySingleBtn}
+                    onPress={() => {
+                      const c = pendingPairPlay.card1;
+                      setPendingPairPlay(null);
+                      executeSinglePlay(c);
+                    }}
+                  >
+                    <Text style={styles.pairPlaySingleText}>Play Single</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    style={styles.pairPlayDismissBtn}
+                    onPress={() => setPendingPairPlay(null)}
+                  >
+                    <Text style={styles.pairPlayDismissText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* Horizontal Card List Sitting Directly Over Scenic Background */}
               <FlatList
                 horizontal
@@ -2009,6 +2333,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   const playable =
                     isHumanTurn && !isDealing && isValidMove(item, topDiscardCard, gameState.activeColor);
                   const overlapMargin = index === 0 ? 0 : getCardOverlapMargin(visiblePlayerHand.length);
+                  const isPairSelected = Boolean(
+                    pendingPairPlay &&
+                      (item.id === pendingPairPlay.card1.id || item.id === pendingPairPlay.card2.id)
+                  );
 
                   return (
                     <DraggableCard
@@ -2016,6 +2344,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                       card={item}
                       isPlayable={playable}
                       disabled={!isHumanTurn || isDealing}
+                      isSelected={isPairSelected}
                       zIndex={index + 1}
                       overlapMargin={overlapMargin}
                       onPlay={handleCardPress}
@@ -2155,6 +2484,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             onComplete={handleFlyingCardComplete}
           />
         ))}
+
+        {/* Global Error & Network Toast Notification Banner */}
+        <ErrorToast />
           </View>
         </SafeAreaView>
       </View>
@@ -2336,7 +2668,7 @@ const styles = StyleSheet.create({
   },
   turnStatusBar: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 5,
@@ -2921,5 +3253,60 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     letterSpacing: 1,
+  },
+  pairPlayPillContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFDF7',
+    borderWidth: 2.5,
+    borderColor: '#E2D9C8',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 4,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 8,
+    zIndex: 100,
+  },
+  pairPlayConfirmBtn: {
+    backgroundColor: '#F59E0B',
+    borderBottomWidth: 3,
+    borderBottomColor: '#D97706',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  pairPlayConfirmText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#FFFFFF',
+  },
+  pairPlaySingleBtn: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderBottomWidth: 3,
+    borderBottomColor: '#94A3B8',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  pairPlaySingleText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#334155',
+  },
+  pairPlayDismissBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  pairPlayDismissText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 14,
+    color: '#94A3B8',
   },
 });

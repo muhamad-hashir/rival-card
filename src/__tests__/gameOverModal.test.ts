@@ -161,4 +161,70 @@ describe('GameOverModal Standings & Ranking Logic', () => {
     assert.strictEqual(levelUpRewards.earnedXp, 120);
     assert.strictEqual(levelUpRewards.earnedCoins, 60);
   });
+
+  test('Two-Step Pagination Flow & Clean Subtext without Turn Counts', () => {
+    const getScreen1Subtext = (isLocalWinner: boolean, winnerName: string) => {
+      return isLocalWinner
+        ? 'You emptied your hand and won the match!'
+        : `${winnerName} emptied their hand and won the match.`;
+    };
+
+    // Subtext must not contain any turn count phrases
+    const winSubtext = getScreen1Subtext(true, 'Player');
+    assert.strictEqual(winSubtext, 'You emptied your hand and won the match!');
+    assert.ok(!winSubtext.includes('turn'));
+    assert.ok(!winSubtext.includes('turns'));
+
+    const defeatSubtext = getScreen1Subtext(false, 'CyberBot 🤖');
+    assert.strictEqual(defeatSubtext, 'CyberBot 🤖 emptied their hand and won the match.');
+    assert.ok(!defeatSubtext.includes('turn'));
+    assert.ok(!defeatSubtext.includes('turns'));
+
+    // Pagination Step progression
+    let currentStep: 1 | 2 = 1;
+    const advanceToStep2 = () => {
+      currentStep = 2;
+    };
+    assert.strictEqual(currentStep, 1);
+    advanceToStep2();
+    assert.strictEqual(currentStep, 2);
+
+    // Screen 1 buttons vs Screen 2 buttons
+    const getScreenButtons = (step: 1 | 2) => {
+      if (step === 1) return ['Continue ➔'];
+      return ['Play Again', 'Home'];
+    };
+
+    assert.deepStrictEqual(getScreenButtons(1), ['Continue ➔']);
+    assert.deepStrictEqual(getScreenButtons(2), ['Play Again', 'Home']);
+  });
+
+  test('Wild Card & Discard Pile Active Color Tinting Logic', () => {
+    const COLOR_HEX: Record<string, string> = {
+      red: '#EF4444',
+      blue: '#3B82F6',
+      green: '#22C55E',
+      yellow: '#FACC15',
+      wild: '#1E293B',
+    };
+
+    const getCardEffectiveColor = (cardColor: string, activeColor?: string) => {
+      const isWild = cardColor === 'wild';
+      const activeHex = activeColor ? COLOR_HEX[activeColor] : undefined;
+      return isWild && activeHex ? activeHex : COLOR_HEX[cardColor];
+    };
+
+    // Wild cards tint to chosen active color
+    assert.strictEqual(getCardEffectiveColor('wild', 'red'), '#EF4444');
+    assert.strictEqual(getCardEffectiveColor('wild', 'blue'), '#3B82F6');
+    assert.strictEqual(getCardEffectiveColor('wild', 'green'), '#22C55E');
+    assert.strictEqual(getCardEffectiveColor('wild', 'yellow'), '#FACC15');
+
+    // Wild without active color stays standard wild color
+    assert.strictEqual(getCardEffectiveColor('wild', undefined), '#1E293B');
+
+    // Standard colored cards retain their own intrinsic color
+    assert.strictEqual(getCardEffectiveColor('red', 'blue'), '#EF4444');
+    assert.strictEqual(getCardEffectiveColor('green', 'yellow'), '#22C55E');
+  });
 });

@@ -33,6 +33,7 @@
   "private": true,
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "eas-cli": "^27.4.1",
     "tsx": "^4.23.15"
   }
 }

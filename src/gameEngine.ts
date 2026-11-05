@@ -521,6 +521,7 @@ export function playerPassTurn(state: GameState, playerId: string): GameState {
 export interface PlayCardOptions {
   chosenColor?: StandardColor; // Required for wild cards played by human
   targetPlayerId?: string; // Optional target for Mute
+  pairCardId?: string; // Optional identical card to play as a pair (Card Stacking rule)
 }
 
 /**
@@ -539,6 +540,10 @@ export function playCard(
   options?: PlayCardOptions
 ): GameState {
   if (state.isGameOver) return state;
+
+  if (options?.pairCardId) {
+    return playPairCards(state, playerId, cardId, options.pairCardId, options);
+  }
 
   const currentPlayer = state.players[state.currentTurnIndex];
   if (currentPlayer.id !== playerId) {
@@ -835,6 +840,306 @@ export function playCard(
 
     default:
       // Standard number card or regular Wild
+      nextSteps = 1;
+      break;
+  }
+
+  const intermediateState: GameState = {
+    ...state,
+    deck: currentDeck,
+    discardPile: currentDiscard,
+    players: updatedPlayers,
+    direction: newDirection,
+    activeColor: newActiveColor,
+    hasDrawnThisTurn: false,
+    drawnCard: null,
+    pendingColorChoice: false,
+    pendingWildCard: null,
+    logs: newLogs,
+  };
+
+  return advanceToNextTurn(intermediateState, nextSteps);
+}
+
+/**
+ * Checks if a player's hand contains an identical duplicate of a card
+ * (same color and value). Returns the duplicate card if found, or null.
+ */
+export function hasIdenticalPair(hand: readonly Card[], card: Card): Card | null {
+  return hand.find((c) => c.id !== card.id && c.color === card.color && c.value === card.value) || null;
+}
+
+/**
+ * Identical Multi-Card Play (Card Stacking / Pair Play Rule):
+ * If a player holds two identical cards (same color and value) and it is their turn:
+ * Playing one allows playing both identical cards together in a single turn.
+ */
+export function playPairCards(
+  state: GameState,
+  playerId: string,
+  cardId1: string,
+  cardId2: string,
+  options?: PlayCardOptions
+): GameState {
+  if (state.isGameOver) return state;
+
+  const currentPlayer = state.players[state.currentTurnIndex];
+  if (currentPlayer.id !== playerId) {
+    throw new Error(`It is not ${playerId}'s turn.`);
+  }
+
+  const card1 = currentPlayer.hand.find((c) => c.id === cardId1);
+  const card2 = currentPlayer.hand.find((c) => c.id === cardId2);
+
+  if (!card1 || !card2) {
+    throw new Error('Both cards must be in player hand to play a pair.');
+  }
+
+  if (card1.id === card2.id) {
+    throw new Error('Cannot play the same card twice.');
+  }
+
+  if (card1.color !== card2.color || card1.value !== card2.value) {
+    throw new Error('Cards must have identical color and value to be played as a pair.');
+  }
+
+  const topCard = state.discardPile[state.discardPile.length - 1];
+  if (!isValidMove(card1, topCard, state.activeColor)) {
+    throw new Error(`Card ${card1.color} ${card1.value} cannot be played on ${topCard.color} ${topCard.value}.`);
+  }
+
+  // Remove both cards from hand
+  const newHand = currentPlayer.hand.filter((c) => c.id !== cardId1 && c.id !== cardId2);
+
+  // RIVAL! declaration check
+  let hasDeclaredRival = currentPlayer.hasDeclaredRival;
+  if (newHand.length !== 1) {
+    hasDeclaredRival = false;
+  }
+
+  const updatedCurrentPlayer: Player = {
+    ...currentPlayer,
+    hand: newHand,
+    hasDeclaredRival,
+  };
+
+  let updatedPlayers = state.players.map((p) =>
+    p.id === playerId ? updatedCurrentPlayer : p
+  );
+
+  const updatedDiscardPile = [...state.discardPile, card1, card2];
+  const newLogs = [
+    ...state.logs,
+    createLogEntry(
+      'PLAY_CARD',
+      `⚡ PAIR PLAY! ${currentPlayer.name} played TWO ${card1.color === 'wild' ? 'WILD' : card1.color.toUpperCase()} ${card1.value.toUpperCase()} cards!`,
+      {
+        playerId,
+        playerName: currentPlayer.name,
+        card: card2,
+      }
+    ),
+  ];
+
+  // Win condition check
+  if (newHand.length === 0) {
+    newLogs.push(
+      createLogEntry('PLAY_CARD', `🎉 ${currentPlayer.name} has played all their cards and WON the game!`, {
+        playerId,
+        playerName: currentPlayer.name,
+      })
+    );
+    return {
+      ...state,
+      players: updatedPlayers,
+      discardPile: updatedDiscardPile,
+      winner: updatedCurrentPlayer,
+      isGameOver: true,
+      hasDrawnThisTurn: false,
+      drawnCard: null,
+      logs: newLogs,
+    };
+  }
+
+  // Handle Wild pair with pending color choice
+  const isWild = isWildCard(card1);
+  if (isWild && !options?.chosenColor && !currentPlayer.isBot) {
+    return {
+      ...state,
+      players: updatedPlayers,
+      discardPile: updatedDiscardPile,
+      pendingColorChoice: true,
+      pendingWildCard: card2,
+      hasDrawnThisTurn: false,
+      drawnCard: null,
+      logs: newLogs,
+    };
+  }
+
+  let newActiveColor: StandardColor = state.activeColor;
+  if (isWild) {
+    newActiveColor = options?.chosenColor || 'red';
+    newLogs.push(
+      createLogEntry('CHOOSE_COLOR', `${currentPlayer.name} selected ${newActiveColor.toUpperCase()} as the active color.`, {
+        playerId,
+        playerName: currentPlayer.name,
+        chosenColor: newActiveColor,
+      })
+    );
+  } else {
+    newActiveColor = card1.color as StandardColor;
+  }
+
+  // Process Stacked Action Effects
+  let nextSteps = 1;
+  let newDirection = state.direction;
+  let currentDeck = state.deck;
+  let currentDiscard = updatedDiscardPile;
+
+  switch (card1.value) {
+    case 'skip': {
+      if (updatedPlayers.length === 2) {
+        nextSteps = 2;
+      } else {
+        nextSteps = 3;
+      }
+      newLogs.push(
+        createLogEntry('PLAY_CARD', `Double Skip! Next two players lost their turns.`)
+      );
+      break;
+    }
+
+    case 'reverse': {
+      if (updatedPlayers.length === 2) {
+        nextSteps = 2;
+        newLogs.push(
+          createLogEntry('PLAY_CARD', `Double Reverse skipped opponent!`)
+        );
+      } else {
+        newDirection = state.direction;
+        nextSteps = 1;
+        newLogs.push(
+          createLogEntry('PLAY_CARD', `Double Reverse! Direction flipped twice (net zero).`)
+        );
+      }
+      break;
+    }
+
+    case 'draw2': {
+      nextSteps = 2;
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      const targetPlayer = updatedPlayers[targetIndex];
+
+      const drawResult = drawFromDeck(currentDeck, currentDiscard, 4);
+      currentDeck = drawResult.remainingDeck;
+      currentDiscard = drawResult.remainingDiscard;
+
+      if (drawResult.didReshuffle) {
+        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Draw 2.'));
+      }
+
+      updatedPlayers = updatedPlayers.map((p, idx) =>
+        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+      );
+
+      newLogs.push(
+        createLogEntry('DRAW_CARD', `💥 DOUBLE DRAW 2! ${targetPlayer.name} drew 4 cards and lost their turn!`, {
+          targetPlayerId: targetPlayer.id,
+          targetPlayerName: targetPlayer.name,
+        })
+      );
+      break;
+    }
+
+    case 'wild_draw4': {
+      nextSteps = 2;
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      const targetPlayer = updatedPlayers[targetIndex];
+
+      const drawResult = drawFromDeck(currentDeck, currentDiscard, 8);
+      currentDeck = drawResult.remainingDeck;
+      currentDiscard = drawResult.remainingDiscard;
+
+      if (drawResult.didReshuffle) {
+        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Wild Draw 4.'));
+      }
+
+      updatedPlayers = updatedPlayers.map((p, idx) =>
+        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+      );
+
+      newLogs.push(
+        createLogEntry('DRAW_CARD', `💥 DOUBLE WILD DRAW 4! ${targetPlayer.name} drew 8 cards and lost their turn!`, {
+          targetPlayerId: targetPlayer.id,
+          targetPlayerName: targetPlayer.name,
+        })
+      );
+      break;
+    }
+
+    case 'mute': {
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      const targetPlayer = updatedPlayers[targetIndex];
+      updatedPlayers = updatedPlayers.map((p, idx) =>
+        idx === targetIndex ? { ...p, isMuted: true, mutedRoundsRemaining: 2 } : p
+      );
+      nextSteps = 2;
+      newLogs.push(
+        createLogEntry('MUTE_PLAYER', `🔇 DOUBLE MUTE! ${targetPlayer.name} is muted for 2 rounds and skipped!`, {
+          targetPlayerId: targetPlayer.id,
+          targetPlayerName: targetPlayer.name,
+        })
+      );
+      break;
+    }
+
+    case 'rival_swap': {
+      let minHandCount = Infinity;
+      let targetPlayerIndex = -1;
+
+      for (let i = 0; i < updatedPlayers.length; i++) {
+        if (i !== state.currentTurnIndex) {
+          const count = updatedPlayers[i].hand.length;
+          if (count < minHandCount) {
+            minHandCount = count;
+            targetPlayerIndex = i;
+          }
+        }
+      }
+
+      if (targetPlayerIndex !== -1) {
+        const targetPlayer = updatedPlayers[targetPlayerIndex];
+        const playerHandBeforeSwap = updatedCurrentPlayer.hand;
+        const targetHandBeforeSwap = targetPlayer.hand;
+
+        updatedPlayers = updatedPlayers.map((p, idx) => {
+          if (idx === state.currentTurnIndex) {
+            return { ...p, hand: targetHandBeforeSwap, hasDeclaredRival: false };
+          }
+          if (idx === targetPlayerIndex) {
+            return { ...p, hand: playerHandBeforeSwap, hasDeclaredRival: false };
+          }
+          return p;
+        });
+
+        newLogs.push(
+          createLogEntry(
+            'SWAP_HANDS',
+            `🔄 RIVAL SWAP! ${currentPlayer.name} swapped hands with ${targetPlayer.name}!`,
+            {
+              playerId: currentPlayer.id,
+              playerName: currentPlayer.name,
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
+      }
+      nextSteps = 1;
+      break;
+    }
+
+    default:
       nextSteps = 1;
       break;
   }

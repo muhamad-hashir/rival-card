@@ -23,17 +23,17 @@ const CONFETTI_COLORS = [
   '#8B5CF6', // Purple
 ];
 
-const NUM_PARTICLES = 32;
+const NUM_PARTICLES = 40;
 
 function generateParticles(): Particle[] {
   const particles: Particle[] = [];
   for (let i = 0; i < NUM_PARTICLES; i++) {
-    // Upward-biased radial explosion angle (-160 deg to -20 deg)
-    const angle = ((-160 + Math.random() * 140) * Math.PI) / 180;
-    const distance = 50 + Math.random() * 110;
+    // Upward-biased radial explosion angle (-180 deg to 0 deg with horizontal spread)
+    const angle = ((-180 + Math.random() * 180) * Math.PI) / 180;
+    const distance = 45 + Math.random() * 115;
     const dx = Math.cos(angle) * distance;
     const dy = Math.sin(angle) * distance;
-    const isRound = Math.random() > 0.6;
+    const isRound = Math.random() > 0.55;
 
     particles.push({
       id: i,
@@ -133,10 +133,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    overflow: 'hidden',
+    overflow: 'visible',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 20,
+    zIndex: 1,
   },
   particle: {
     position: 'absolute',

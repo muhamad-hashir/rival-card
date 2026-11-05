@@ -24,7 +24,7 @@ const ACTION_ICONS: Record<string, any> = {
   rival_swap: require('../../assets/icons/icon_swap.png'),
 };
 
-interface CardViewProps {
+export interface CardViewProps {
   card?: Card;
   isFaceDown?: boolean;
   isPlayable?: boolean;
@@ -37,6 +37,7 @@ interface CardViewProps {
     primaryColor?: string;
     borderColor?: string;
   };
+  activeColor?: string;
 }
 
 export const CardView: React.FC<CardViewProps> = ({
@@ -49,6 +50,7 @@ export const CardView: React.FC<CardViewProps> = ({
   onPress,
   style,
   cardBackStyle,
+  activeColor,
 }) => {
   const [imageError, setImageError] = useState(false);
   const dimensions = getCardDimensions(size);
@@ -92,8 +94,14 @@ export const CardView: React.FC<CardViewProps> = ({
     );
   }
 
-  const bgColor = COLOR_HEX[card.color];
   const isWild = card.color === 'wild';
+  const activeHex =
+    activeColor &&
+    (COLOR_HEX[activeColor as keyof typeof COLOR_HEX] ||
+      (activeColor.startsWith('#') ? activeColor : undefined));
+
+  // If wild and an active color is chosen (e.g. on discard pile), tint card face and borders to active color
+  const bgColor = isWild && activeHex ? activeHex : COLOR_HEX[card.color];
   const label = getCardDisplayLabel(card.value);
   const cornerLabel = getCornerDisplayLabel(card.value);
   const actionIcon = ACTION_ICONS[card.value];
@@ -109,6 +117,7 @@ export const CardView: React.FC<CardViewProps> = ({
         {
           backgroundColor: bgColor,
           borderWidth: size === 'small' ? 1.5 : 2,
+          borderColor: isWild && activeHex ? '#FFFFFF' : '#FFFFFF',
         },
         isPlayable && !disabled && styles.playableCard,
         (!isPlayable || disabled) && styles.unplayableCard,
@@ -117,7 +126,12 @@ export const CardView: React.FC<CardViewProps> = ({
       ]}
     >
       {/* Outer Inner Container */}
-      <View style={styles.cardInnerBorder}>
+      <View
+        style={[
+          styles.cardInnerBorder,
+          isWild && activeHex ? { borderColor: 'rgba(255, 255, 255, 0.75)' } : null,
+        ]}
+      >
         {/* Top-Left Corner Badge */}
         <View style={styles.topLeftCorner}>
           <Text style={[styles.cornerText, dimensions.cornerText]}>
@@ -126,7 +140,13 @@ export const CardView: React.FC<CardViewProps> = ({
         </View>
 
         {/* Center Oval Visual */}
-        <View style={[styles.centerOval, dimensions.centerOval]}>
+        <View
+          style={[
+            styles.centerOval,
+            dimensions.centerOval,
+            isWild && activeHex ? { borderWidth: 2.5, borderColor: activeHex } : null,
+          ]}
+        >
           {actionIcon && !imageError ? (
             <Image
               source={actionIcon}

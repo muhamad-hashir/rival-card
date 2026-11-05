@@ -1,5 +1,5 @@
-// src/components/GameOverModal.tsx - Displays victory/defeat screen when a match ends
-import React from 'react';
+// src/components/GameOverModal.tsx - Displays 2-step paginated victory/defeat, standings, and rewards flow
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   ScrollView,
@@ -17,6 +17,8 @@ import {
 } from '../styles/typography';
 import { getAvatarConfig, AwardRewardsResult } from '../services/playerProfileService';
 import { ModalConfettiBurst } from './ModalConfettiBurst';
+import { hapticsService } from '../services/hapticsService';
+import { soundService } from '../services/soundService';
 
 export interface GameOverModalProps {
   visible: boolean;
@@ -46,19 +48,28 @@ export function getOrdinalRank(index: number): string {
 export const GameOverModal: React.FC<GameOverModalProps> = ({
   visible,
   winner,
-  turnCount,
+  turnCount: _turnCount,
   players,
   localPlayerId,
-  mode,
-  gameMode,
-  isOnlineMode = false,
+  mode: _mode,
+  gameMode: _gameMode,
+  isOnlineMode: _isOnlineMode = false,
   matchRewards = null,
   onPlayAgain,
   onQuitRoom,
-  onPlayWithMoreBots,
-  onPlay1v1,
+  onPlayWithMoreBots: _onPlayWithMoreBots,
+  onPlay1v1: _onPlay1v1,
   onMainMenu,
 }) => {
+  // Step 1: "Victory & Standings" | Step 2: "Rewards & Level Up"
+  const [step, setStep] = useState<1 | 2>(1);
+
+  useEffect(() => {
+    if (visible) {
+      setStep(1);
+    }
+  }, [visible]);
+
   if (!winner) return null;
 
   // Determine whether the local viewer is the winner
@@ -73,14 +84,37 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     return a.hand.length - b.hand.length;
   });
 
-  // Determine game mode: 'online' vs 'bot' vs 'pass_and_play'
-  const isOnline = mode === 'online' || isOnlineMode || gameMode === 'multiplayer';
-  const isBot =
-    mode === 'bot' ||
-    gameMode === 'vs_bot' ||
-    (!isOnline && (players.some((p) => p.isBot) || mode !== 'pass_and_play'));
-  const is1v1Bot = isBot && players.length <= 2;
-  const isMultiBot = isBot && players.length > 2;
+  // Rewards calculation with sensible defaults
+  const earnedXp = matchRewards?.earnedXp ?? (isLocalWinner ? 120 : 50);
+  const earnedCoins = matchRewards?.earnedCoins ?? (isLocalWinner ? 60 : 20);
+  const displayLevel = matchRewards?.newLevel ?? 1;
+  const displayCurrentXp = matchRewards?.currentXp ?? (isLocalWinner ? 120 : 50);
+  const displayXpToNextLevel = matchRewards?.xpToNextLevel ?? (displayLevel * 100);
+  const progressPct = Math.min(
+    100,
+    Math.max(
+      0,
+      Math.round((displayCurrentXp / (displayXpToNextLevel || 100)) * 100)
+    )
+  );
+
+  const handleContinueToStep2 = () => {
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+    setStep(2);
+  };
+
+  const handlePlayAgainPress = () => {
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+    onPlayAgain();
+  };
+
+  const handleHomePress = () => {
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    (onMainMenu || onQuitRoom)?.();
+  };
 
   return (
     <Modal
@@ -96,247 +130,235 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
           bounces={false}
         >
           <View style={styles.dialogCard}>
-            {/* Top Trophy Section with Winner-Only Confetti Burst strictly constrained inside */}
-            <View style={styles.topSectionWrapper}>
-              {isLocalWinner && <ModalConfettiBurst active={visible && isLocalWinner} />}
+            {/* ========================================================= */}
+            {/* SCREEN 1: VICTORY & STANDINGS                            */}
+            {/* ========================================================= */}
+            {step === 1 && (
+              <View style={styles.stepContentWrapper}>
+                {/* Trophy Section with Localized Confetti Blast directly behind/around the cup */}
+                <View style={styles.trophyWrapper}>
+                  {isLocalWinner && (
+                    <ModalConfettiBurst active={visible && isLocalWinner && step === 1} />
+                  )}
+                  <View
+                    style={[
+                      styles.trophyCircle,
+                      isLocalWinner ? styles.trophyCircleVictory : styles.trophyCircleDefeat,
+                    ]}
+                  >
+                    <Text style={styles.trophyEmoji}>{isLocalWinner ? '🏆' : '🛡️'}</Text>
+                  </View>
+                </View>
 
-              {/* Trophy / Emblem Circle */}
-              <View
-                style={[
-                  styles.trophyCircle,
-                  isLocalWinner ? styles.trophyCircleVictory : styles.trophyCircleDefeat,
-                ]}
-              >
-                <Text style={styles.trophyEmoji}>{isLocalWinner ? '🏆' : '🛡️'}</Text>
-              </View>
-
-              {/* Top Banner Tag: VICTORY! vs DEFEAT */}
-              <View
-                style={[
-                  styles.bannerTagContainer,
-                  isLocalWinner ? styles.bannerTagVictory : styles.bannerTagDefeat,
-                ]}
-              >
-                <Text
+                {/* Banner Tag: VICTORY! vs DEFEAT */}
+                <View
                   style={[
-                    styles.bannerTagText,
-                    isLocalWinner ? styles.bannerTagTextVictory : styles.bannerTagTextDefeat,
+                    styles.bannerTagContainer,
+                    isLocalWinner ? styles.bannerTagVictory : styles.bannerTagDefeat,
                   ]}
                 >
-                  {isLocalWinner ? 'VICTORY!' : 'DEFEAT'}
-                </Text>
-              </View>
-
-              {/* Main Headline */}
-              <Text style={styles.headline}>
-                {isLocalWinner ? 'You Won!' : `${winner.name} Won!`}
-              </Text>
-
-              {/* Dynamic Subtitle */}
-              <Text style={styles.subtitle}>
-                {isLocalWinner
-                  ? `You emptied your hand and won the match in ${turnCount} turns!`
-                  : `${winner.name} emptied their hand and won the match in ${turnCount} turns.`}
-              </Text>
-            </View>
-
-            {/* Level Up Celebratory Banner */}
-            {matchRewards?.leveledUp && (
-              <View style={styles.levelUpBanner}>
-                <View style={styles.levelUpHeader}>
-                  <Text style={styles.levelUpEmoji}>🎉</Text>
-                  <Text style={styles.levelUpTitle}>LEVEL UP!</Text>
-                </View>
-                <Text style={styles.levelUpReached}>
-                  Reached Level {matchRewards.newLevel}!
-                </Text>
-                <View style={styles.levelUpBonusBadge}>
-                  <Text style={styles.levelUpBonusText}>
-                    Bonus: +{matchRewards.bonusCoins} Coins • +{matchRewards.bonusGems} Gems
+                  <Text
+                    style={[
+                      styles.bannerTagText,
+                      isLocalWinner ? styles.bannerTagTextVictory : styles.bannerTagTextDefeat,
+                    ]}
+                  >
+                    {isLocalWinner ? 'VICTORY!' : 'DEFEAT'}
                   </Text>
                 </View>
+
+                {/* Main Headline */}
+                <Text style={styles.headline}>
+                  {isLocalWinner ? 'You Won!' : `${winner.name} Won!`}
+                </Text>
+
+                {/* Cleaned-up Subtitle without turn counts */}
+                <Text style={styles.subtitle}>
+                  {isLocalWinner
+                    ? 'You emptied your hand and won the match!'
+                    : `${winner.name} emptied their hand and won the match.`}
+                </Text>
+
+                {/* Final Standings Card */}
+                <View style={styles.statsContainer}>
+                  <Text style={styles.statsHeader}>FINAL STANDINGS</Text>
+                  {sortedPlayers.map((p, index) => {
+                    const isWinner = p.id === winner.id;
+                    const isLocalPlayer = localPlayerId ? p.id === localPlayerId : p.id === 'p1';
+                    const isAlreadyNamedYou = p.name.trim().toLowerCase() === 'you';
+                    const displayName = isAlreadyNamedYou
+                      ? 'You'
+                      : isLocalPlayer
+                      ? `${p.name} (You)`
+                      : p.name;
+
+                    return (
+                      <View
+                        key={p.id}
+                        style={[
+                          styles.playerRow,
+                          isWinner && styles.winnerPlayerRow,
+                          !isWinner && isLocalPlayer && styles.localPlayerRow,
+                        ]}
+                      >
+                        <View style={styles.playerRowLeft}>
+                          <Text style={[styles.rankText, isWinner && styles.winnerRankText]}>
+                            {getOrdinalRank(index)}
+                          </Text>
+                          {Boolean(p.avatarId) && (
+                            <Text style={styles.standingsAvatarEmoji}>
+                              {getAvatarConfig(p.avatarId).emoji}
+                            </Text>
+                          )}
+                          <Text
+                            style={[
+                              styles.playerRowName,
+                              isWinner && styles.winnerRowName,
+                              !isWinner && isLocalPlayer && styles.localPlayerRowName,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {displayName}
+                          </Text>
+                        </View>
+
+                        <View style={styles.playerRowRight}>
+                          {isWinner ? (
+                            <View style={styles.winnerBadge}>
+                              <Text style={styles.winnerBadgeText}>1ST • WINNER</Text>
+                            </View>
+                          ) : (
+                            <Text style={styles.playerRowCount}>
+                              {p.hand.length} {p.hand.length === 1 ? 'card' : 'cards'} left
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {/* Primary Action Button: Emerald Green "Continue ➔" */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={handleContinueToStep2}
+                  style={styles.continueBtn}
+                >
+                  <Text style={styles.continueBtnText}>Continue ➔</Text>
+                </TouchableOpacity>
               </View>
             )}
 
-            {/* Match Rewards Card */}
-            {matchRewards && (
-              <View style={styles.rewardsCard}>
-                <Text style={styles.rewardsCardTitle}>MATCH REWARDS</Text>
-                <View style={styles.rewardsPillsRow}>
-                  <View style={styles.xpRewardPill}>
-                    <Text style={styles.xpRewardIcon}>⚡</Text>
-                    <Text style={styles.xpRewardText}>+{matchRewards.earnedXp} XP</Text>
+            {/* ========================================================= */}
+            {/* SCREEN 2: REWARDS & LEVEL UP                             */}
+            {/* ========================================================= */}
+            {step === 2 && (
+              <View style={styles.stepContentWrapper}>
+                {/* Step indicator pill */}
+                <View style={styles.stepPill}>
+                  <Text style={styles.stepPillText}>STEP 2 OF 2</Text>
+                </View>
+
+                {/* Celebratory Icon */}
+                <View style={styles.rewardsIconCircle}>
+                  <Text style={styles.rewardsIconEmoji}>🎁</Text>
+                </View>
+
+                {/* Screen 2 Header */}
+                <Text style={styles.headline}>MATCH REWARDS</Text>
+                <Text style={styles.subtitle}>
+                  {isLocalWinner
+                    ? 'Victory rewards added to your profile!'
+                    : 'Match rewards earned! Keep playing to level up.'}
+                </Text>
+
+                {/* Dual XP and Coins Summary Badges */}
+                <View style={styles.rewardsSummaryRow}>
+                  {/* XP Summary Badge */}
+                  <View style={styles.rewardSummaryBadgeXp}>
+                    <Text style={styles.rewardSummaryIcon}>⚡</Text>
+                    <Text style={styles.rewardSummaryValue}>+{earnedXp} XP</Text>
+                    <Text style={styles.rewardSummaryLabel}>XP EARNED</Text>
                   </View>
-                  <View style={styles.coinRewardPill}>
-                    <Text style={styles.coinRewardIcon}>🪙</Text>
-                    <Text style={styles.coinRewardText}>+{matchRewards.earnedCoins} Coins</Text>
+
+                  {/* Coins Summary Badge */}
+                  <View style={styles.rewardSummaryBadgeCoin}>
+                    <Text style={styles.rewardSummaryIcon}>🪙</Text>
+                    <Text style={styles.rewardSummaryValue}>+{earnedCoins} Coins</Text>
+                    <Text style={styles.rewardSummaryLabel}>COINS EARNED</Text>
                   </View>
                 </View>
 
-                {/* Mini XP progress status */}
-                <View style={styles.rewardXpProgressRow}>
-                  <Text style={styles.rewardXpProgressText}>
-                    Level {matchRewards.newLevel} ({matchRewards.currentXp} / {matchRewards.xpToNextLevel} XP)
-                  </Text>
-                  <View style={styles.rewardXpTrack}>
+                {/* Level Progress Bar Card */}
+                <View style={styles.levelProgressCard}>
+                  <View style={styles.levelProgressHeader}>
+                    <Text style={styles.levelProgressLevelText}>Level {displayLevel}</Text>
+                    <Text style={styles.levelProgressXpText}>
+                      {displayCurrentXp} / {displayXpToNextLevel} XP
+                    </Text>
+                  </View>
+                  <View style={styles.levelProgressBarTrack}>
                     <View
                       style={[
-                        styles.rewardXpFill,
-                        {
-                          width: `${Math.min(
-                            100,
-                            Math.max(
-                              0,
-                              Math.round(
-                                (matchRewards.currentXp / (matchRewards.xpToNextLevel || 100)) * 100
-                              )
-                            )
-                          )}%`,
-                        },
+                        styles.levelProgressBarFill,
+                        { width: `${progressPct}%` },
                       ]}
                     />
                   </View>
+                  <Text style={styles.levelProgressFootnote}>
+                    {progressPct}% towards Level {displayLevel + 1}
+                  </Text>
                 </View>
-              </View>
-            )}
 
-            {/* Final Standings Card */}
-            <View style={styles.statsContainer}>
-              <Text style={styles.statsHeader}>FINAL STANDINGS</Text>
-              {sortedPlayers.map((p, index) => {
-                const isWinner = p.id === winner.id;
-                const isLocalPlayer = localPlayerId ? p.id === localPlayerId : p.id === 'p1';
-                const isAlreadyNamedYou = p.name.trim().toLowerCase() === 'you';
-                const displayName = isAlreadyNamedYou
-                  ? 'You'
-                  : isLocalPlayer
-                  ? `${p.name} (You)`
-                  : p.name;
-
-                return (
-                  <View
-                    key={p.id}
-                    style={[
-                      styles.playerRow,
-                      isWinner && styles.winnerPlayerRow,
-                      !isWinner && isLocalPlayer && styles.localPlayerRow,
-                    ]}
-                  >
-                    <View style={styles.playerRowLeft}>
-                      <Text style={[styles.rankText, isWinner && styles.winnerRankText]}>
-                        {getOrdinalRank(index)}
-                      </Text>
-                      {Boolean(p.avatarId) && (
-                        <Text style={styles.standingsAvatarEmoji}>
-                          {getAvatarConfig(p.avatarId).emoji}
-                        </Text>
-                      )}
-                      <Text
-                        style={[
-                          styles.playerRowName,
-                          isWinner && styles.winnerRowName,
-                          !isWinner && isLocalPlayer && styles.localPlayerRowName,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {displayName}
-                      </Text>
+                {/* Celebratory Level Up Card (if leveled up) */}
+                {matchRewards?.leveledUp && (
+                  <View style={styles.levelUpCard}>
+                    <View style={styles.levelUpCardHeader}>
+                      <Text style={styles.levelUpEmoji}>🎉</Text>
+                      <Text style={styles.levelUpTitle}>LEVEL UP!</Text>
                     </View>
-
-                    <View style={styles.playerRowRight}>
-                      {isWinner ? (
-                        <View style={styles.winnerBadge}>
-                          <Text style={styles.winnerBadgeText}>1ST • WINNER</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.playerRowCount}>
-                          {p.hand.length} {p.hand.length === 1 ? 'card' : 'cards'} left
-                        </Text>
-                      )}
+                    <Text style={styles.levelUpSubtitle}>
+                      Reached Level {matchRewards.newLevel}!
+                    </Text>
+                    <View style={styles.levelUpBonusBadge}>
+                      <Text style={styles.levelUpBonusText}>
+                        Bonus: +{matchRewards.bonusCoins} Coins • +{matchRewards.bonusGems} Gems
+                      </Text>
                     </View>
                   </View>
-                );
-              })}
-            </View>
+                )}
 
-            {/* Primary Action: Always Play Again */}
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={onPlayAgain}
-              style={styles.playAgainBtn}
-            >
-              <Text style={styles.playAgainBtnText}>Play Again</Text>
-            </TouchableOpacity>
-
-            {/* Mode-Aware Secondary Action Buttons */}
-            {/* 1. Online Mode: Quit Room */}
-            {isOnline && onQuitRoom && (
-              <TouchableOpacity
-                activeOpacity={0.75}
-                onPress={onQuitRoom}
-                style={styles.quitRoomBtn}
-              >
-                <Text style={styles.quitRoomBtnText}>Quit Room</Text>
-              </TouchableOpacity>
-            )}
-
-            {/* 2. Bot Mode 1v1 (2 players total): Play with More Bots + subtle Main Menu link */}
-            {is1v1Bot && (
-              <>
+                {/* Screen 2 Action Buttons (Bottom) */}
+                {/* 1. Primary Emerald Green "Play Again" */}
                 <TouchableOpacity
                   activeOpacity={0.8}
-                  onPress={onPlayWithMoreBots || onPlayAgain}
-                  style={styles.moreBotsBtn}
+                  onPress={handlePlayAgainPress}
+                  style={styles.playAgainBtn}
                 >
-                  <Text style={styles.moreBotsBtnText}>Play with More Bots</Text>
+                  <Text style={styles.playAgainBtnText}>Play Again</Text>
                 </TouchableOpacity>
 
-                {(onMainMenu || onQuitRoom) && (
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    onPress={onMainMenu || onQuitRoom}
-                    style={styles.mainMenuLinkBtn}
-                  >
-                    <Text style={styles.mainMenuLinkText}>Main Menu</Text>
-                  </TouchableOpacity>
-                )}
-              </>
-            )}
+                {/* 2. Soft Cream/Slate Secondary "Home" Button */}
+                <TouchableOpacity
+                  activeOpacity={0.75}
+                  onPress={handleHomePress}
+                  style={styles.homeBtn}
+                >
+                  <Text style={styles.homeBtnText}>Home</Text>
+                </TouchableOpacity>
 
-            {/* 3. Bot Mode Multi-Bot (3+ bots / 4 players): Play 1v1 + Main Menu button */}
-            {isMultiBot && (
-              <>
-                {onPlay1v1 && (
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={onPlay1v1}
-                    style={styles.moreBotsBtn}
-                  >
-                    <Text style={styles.moreBotsBtnText}>Play 1v1</Text>
-                  </TouchableOpacity>
-                )}
-
-                {(onMainMenu || onQuitRoom) && (
-                  <TouchableOpacity
-                    activeOpacity={0.75}
-                    onPress={onMainMenu || onQuitRoom}
-                    style={styles.mainMenuBtn}
-                  >
-                    <Text style={styles.mainMenuBtnText}>Main Menu</Text>
-                  </TouchableOpacity>
-                )}
-              </>
-            )}
-
-            {/* 4. Pass & Play Mode: Main Menu button */}
-            {!isOnline && !isBot && (onMainMenu || onQuitRoom) && (
-              <TouchableOpacity
-                activeOpacity={0.75}
-                onPress={onMainMenu || onQuitRoom}
-                style={styles.mainMenuBtn}
-              >
-                <Text style={styles.mainMenuBtnText}>Main Menu</Text>
-              </TouchableOpacity>
+                {/* Standings Link to return to Step 1 */}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    hapticsService.cardSelection();
+                    setStep(1);
+                  }}
+                  style={styles.viewStandingsLink}
+                >
+                  <Text style={styles.viewStandingsLinkText}>◀ View Final Standings</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         </ScrollView>
@@ -375,23 +397,27 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 8,
   },
-  topSectionWrapper: {
+  stepContentWrapper: {
     width: '100%',
     alignItems: 'center',
-    overflow: 'hidden',
+  },
+  trophyWrapper: {
+    width: 90,
+    height: 90,
+    alignItems: 'center',
+    justifyContent: 'center',
     position: 'relative',
-    borderRadius: 20,
-    paddingTop: 4,
-    marginBottom: 4,
+    overflow: 'visible',
+    marginVertical: 4,
   },
   trophyCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 10,
-    borderWidth: 2,
+    borderWidth: 2.5,
+    zIndex: 2,
   },
   trophyCircleVictory: {
     backgroundColor: '#FEF3C7',
@@ -402,7 +428,7 @@ const styles = StyleSheet.create({
     borderColor: '#CBD5E1',
   },
   trophyEmoji: {
-    fontSize: 36,
+    fontSize: 38,
   },
   bannerTagContainer: {
     paddingHorizontal: 12,
@@ -410,6 +436,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1.5,
     marginBottom: 6,
+    marginTop: 6,
   },
   bannerTagVictory: {
     backgroundColor: '#FEF3C7',
@@ -430,6 +457,35 @@ const styles = StyleSheet.create({
   bannerTagTextDefeat: {
     color: '#EF4444',
   },
+  stepPill: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.5,
+    borderColor: '#FDE68A',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    marginBottom: 8,
+  },
+  stepPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#92400E',
+    letterSpacing: 1,
+  },
+  rewardsIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 2,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  rewardsIconEmoji: {
+    fontSize: 32,
+  },
   headline: {
     ...FONT_CARTOON_HEAVY,
     fontSize: 24,
@@ -443,155 +499,12 @@ const styles = StyleSheet.create({
     color: '#475569',
     textAlign: 'center',
     lineHeight: 18,
-    marginBottom: 12,
+    marginBottom: 14,
     paddingHorizontal: 8,
-  },
-  levelUpBanner: {
-    width: '100%',
-    backgroundColor: '#FEF3C7',
-    borderWidth: 2.5,
-    borderColor: '#F59E0B',
-    borderRadius: 18,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    marginBottom: 10,
-    shadowColor: '#1E293B',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  levelUpHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 2,
-  },
-  levelUpEmoji: {
-    fontSize: 18,
-  },
-  levelUpTitle: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 16,
-    color: '#B45309',
-    letterSpacing: 0.6,
-  },
-  levelUpReached: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 14,
-    color: '#0F172A',
-    marginBottom: 6,
-  },
-  levelUpBonusBadge: {
-    backgroundColor: '#DCFCE7',
-    borderWidth: 1.5,
-    borderColor: '#86EFAC',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-  },
-  levelUpBonusText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 11,
-    color: '#15803D',
-  },
-  rewardsCard: {
-    width: '100%',
-    backgroundColor: '#FFFDF7',
-    borderWidth: 2.5,
-    borderColor: '#E2D9C8',
-    borderRadius: 18,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    marginBottom: 12,
-    shadowColor: '#1E293B',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  rewardsCardTitle: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 11,
-    color: '#475569',
-    letterSpacing: 0.8,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  rewardsPillsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    marginBottom: 8,
-  },
-  xpRewardPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#DCFCE7',
-    borderWidth: 2,
-    borderColor: '#86EFAC',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    gap: 4,
-  },
-  xpRewardIcon: {
-    fontSize: 13,
-  },
-  xpRewardText: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 12,
-    color: '#15803D',
-  },
-  coinRewardPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF3C7',
-    borderWidth: 2,
-    borderColor: '#FDE68A',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    gap: 4,
-  },
-  coinRewardIcon: {
-    fontSize: 13,
-  },
-  coinRewardText: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 12,
-    color: '#92400E',
-  },
-  rewardXpProgressRow: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  rewardXpProgressText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 10,
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  rewardXpTrack: {
-    width: '90%',
-    height: 7,
-    backgroundColor: '#E2E8F0',
-    borderRadius: 999,
-    overflow: 'hidden',
-    borderWidth: 0.5,
-    borderColor: '#CBD5E1',
-  },
-  rewardXpFill: {
-    height: '100%',
-    backgroundColor: '#22C55E',
-    borderRadius: 999,
   },
   statsContainer: {
     width: '100%',
-    backgroundColor: '#FFFFFF', // Pure white card surface inside cream container
+    backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 12,
     marginBottom: 16,
@@ -617,7 +530,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   winnerPlayerRow: {
-    backgroundColor: '#F0FDF4', // Soft emerald tint for winner
+    backgroundColor: '#F0FDF4',
     borderBottomWidth: 0,
     borderWidth: 1,
     borderColor: '#BBF7D0',
@@ -682,9 +595,166 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#475569',
   },
-  playAgainBtn: {
+  continueBtn: {
     width: '100%',
     backgroundColor: '#22C55E', // Vibrant emerald green
+    borderBottomWidth: 4,
+    borderColor: '#15803D',
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#15803D',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  continueBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#FFFFFF',
+    fontSize: 17,
+    letterSpacing: 0.5,
+  },
+  rewardsSummaryRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 10,
+    marginBottom: 12,
+  },
+  rewardSummaryBadgeXp: {
+    flex: 1,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 2,
+    borderColor: '#BFDBFE',
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  rewardSummaryBadgeCoin: {
+    flex: 1,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  rewardSummaryIcon: {
+    fontSize: 22,
+    marginBottom: 4,
+  },
+  rewardSummaryValue: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 17,
+    color: '#0F172A',
+    marginBottom: 2,
+  },
+  rewardSummaryLabel: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#64748B',
+    letterSpacing: 0.6,
+  },
+  levelProgressCard: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    padding: 12,
+    marginBottom: 12,
+  },
+  levelProgressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  levelProgressLevelText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#0F172A',
+  },
+  levelProgressXpText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#64748B',
+  },
+  levelProgressBarTrack: {
+    width: '100%',
+    height: 10,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 999,
+    overflow: 'hidden',
+    marginBottom: 6,
+  },
+  levelProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 999,
+  },
+  levelProgressFootnote: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 11,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  levelUpCard: {
+    width: '100%',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2.5,
+    borderColor: '#F59E0B',
+    borderRadius: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    marginBottom: 12,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  levelUpCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
+  levelUpEmoji: {
+    fontSize: 18,
+  },
+  levelUpTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 16,
+    color: '#B45309',
+    letterSpacing: 0.6,
+  },
+  levelUpSubtitle: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#0F172A',
+    marginBottom: 6,
+  },
+  levelUpBonusBadge: {
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  levelUpBonusText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#15803D',
+  },
+  playAgainBtn: {
+    width: '100%',
+    backgroundColor: '#22C55E',
     borderBottomWidth: 4,
     borderColor: '#15803D',
     borderRadius: 999,
@@ -704,73 +774,32 @@ const styles = StyleSheet.create({
     fontSize: 16,
     letterSpacing: 0.5,
   },
-  moreBotsBtn: {
+  homeBtn: {
     width: '100%',
-    backgroundColor: '#2563EB', // Warm cobalt blue
-    borderBottomWidth: 4,
-    borderColor: '#1D4ED8',
-    borderRadius: 999,
-    paddingVertical: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-    shadowColor: '#1D4ED8',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  moreBotsBtnText: {
-    ...FONT_CARTOON_HEAVY,
-    color: '#FFFFFF',
-    fontSize: 16,
-    letterSpacing: 0.5,
-  },
-  quitRoomBtn: {
-    width: '100%',
-    backgroundColor: '#FEE2E2',
-    borderWidth: 2,
-    borderColor: '#FCA5A5',
-    borderRadius: 999,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  quitRoomBtnText: {
-    ...FONT_CARTOON_HEAVY,
-    color: '#DC2626',
-    fontSize: 15,
-    letterSpacing: 0.4,
-  },
-  mainMenuBtn: {
-    width: '100%',
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#F1F5F9', // Soft cream/slate secondary pill
     borderWidth: 2,
     borderColor: '#CBD5E1',
     borderRadius: 999,
     paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 4,
+    marginBottom: 8,
   },
-  mainMenuBtnText: {
+  homeBtnText: {
     ...FONT_CARTOON_HEAVY,
-    color: '#475569',
+    color: '#334155',
     fontSize: 15,
     letterSpacing: 0.4,
   },
-  mainMenuLinkBtn: {
+  viewStandingsLink: {
     paddingVertical: 6,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 2,
   },
-  mainMenuLinkText: {
+  viewStandingsLinkText: {
     ...FONT_CARTOON_BOLD,
+    fontSize: 12,
     color: '#64748B',
-    fontSize: 13,
-    letterSpacing: 0.4,
   },
 });

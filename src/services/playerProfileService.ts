@@ -1,5 +1,6 @@
 // src/services/playerProfileService.ts - Persistent Guest Player Profile, Progression, and Economy System
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from './supabase';
 
 export interface PlayerStats {
   gamesPlayed: number;
@@ -410,6 +411,82 @@ class PlayerProfileService {
     await storageRemove(LEGACY_STORAGE_KEY);
     this.cachedProfile = null;
     return this.getProfile(true);
+  }
+
+  /**
+   * Initializes or retrieves default guest profile.
+   */
+  public async initGuestProfile(): Promise<PlayerProfile> {
+    return this.getProfile();
+  }
+
+  /**
+   * Signs out from Supabase Auth and reverts local session to a clean guest state.
+   */
+  public async signOut(): Promise<PlayerProfile> {
+    try {
+      await supabase.auth.signOut().catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    const cleanGuest: PlayerProfile = {
+      id: generateUUID(),
+      nickname: 'Player',
+      avatarId: 'avatar_1',
+      level: 1,
+      currentXp: 0,
+      xpToNextLevel: 100,
+      coins: 250,
+      gems: 10,
+      stats: { gamesPlayed: 0, wins: 0, winStreak: 0 },
+      isGuest: true,
+    };
+    this.cachedProfile = cleanGuest;
+    await storageSet(STORAGE_KEY, JSON.stringify(cleanGuest));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(cleanGuest));
+    await storageRemove('@rivalcard:active_online_match');
+    this.notify();
+    return cleanGuest;
+  }
+
+  /**
+   * Deletes user account, invokes auth wipe, and clears all local storage keys:
+   * @rivalcard:player_profile, @rivalcard:inventory, @rivalcard:settings, @rivalcard:active_online_match.
+   * Resets the app state cleanly to a brand new guest user.
+   */
+  public async deleteAccount(): Promise<PlayerProfile> {
+    try {
+      await supabase.auth.signOut().catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    // Wipe all player keys
+    await storageRemove(STORAGE_KEY);
+    await storageRemove(LEGACY_STORAGE_KEY);
+    await storageRemove('@rivalcard:inventory');
+    await storageRemove('@rivalcard:settings');
+    await storageRemove('@rivalcard:active_online_match');
+    await storageRemove('@rivalcard:onboarding_completed');
+
+    const freshGuest: PlayerProfile = {
+      id: generateUUID(),
+      nickname: 'Player',
+      avatarId: 'avatar_1',
+      level: 1,
+      currentXp: 0,
+      xpToNextLevel: 100,
+      coins: 250,
+      gems: 10,
+      stats: { gamesPlayed: 0, wins: 0, winStreak: 0 },
+      isGuest: true,
+    };
+    this.cachedProfile = freshGuest;
+    await storageSet(STORAGE_KEY, JSON.stringify(freshGuest));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(freshGuest));
+    this.notify();
+    return freshGuest;
   }
 }
 

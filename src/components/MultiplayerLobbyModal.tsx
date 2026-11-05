@@ -21,6 +21,7 @@ import { matchmakingService } from '../services/matchmakingService';
 import { createGame } from '../gameEngine';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import { errorToastService } from '../services/errorToastService';
 import {
   playerProfileService,
   PlayerProfile,
@@ -85,6 +86,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
         setIsBusy(false);
         hapticsService.invalidMove();
         soundService.playError();
+        errorToastService.showError(errMsg);
         Alert.alert('Multiplayer Notice', errMsg);
       },
     });
@@ -130,6 +132,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
             setIsSearching(false);
             soundService.playError();
             hapticsService.invalidMove();
+            errorToastService.showError(errMsg);
             Alert.alert('Matchmaking Notice', errMsg);
           },
         },

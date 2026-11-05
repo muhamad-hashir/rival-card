@@ -1,6 +1,10 @@
 // src/services/hapticsService.ts - Tactile Haptic Feedback Service for Rival Card
-import * as Haptics from 'expo-haptics';
-import { Platform } from 'react-native';
+let ExpoHaptics: typeof import('expo-haptics') | null = null;
+try {
+  ExpoHaptics = require('expo-haptics');
+} catch {
+  ExpoHaptics = null;
+}
 
 class HapticsService {
   private isEnabled: boolean = true;
@@ -17,9 +21,9 @@ class HapticsService {
    * Subtle tick when touching a card or selecting an item.
    */
   public async cardSelection(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.selectionAsync();
+      await ExpoHaptics.selectionAsync();
     } catch {
       // Gracefully ignore if haptics is unsupported
     }
@@ -29,9 +33,9 @@ class HapticsService {
    * Crisp light tap when dragging or snapping a card.
    */
   public async cardSnap(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await ExpoHaptics.impactAsync(ExpoHaptics.ImpactFeedbackStyle.Light);
     } catch {
       // Gracefully ignore
     }
@@ -41,9 +45,9 @@ class HapticsService {
    * Solid medium feedback when successfully playing a card.
    */
   public async validPlay(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      await ExpoHaptics.impactAsync(ExpoHaptics.ImpactFeedbackStyle.Medium);
     } catch {
       // Gracefully ignore
     }
@@ -53,9 +57,9 @@ class HapticsService {
    * Error buzz when attempting an invalid move.
    */
   public async invalidMove(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      await ExpoHaptics.notificationAsync(ExpoHaptics.NotificationFeedbackType.Error);
     } catch {
       // Gracefully ignore
     }
@@ -65,9 +69,9 @@ class HapticsService {
    * Heavy thump when declaring RIVAL!
    */
   public async rivalCallout(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      await ExpoHaptics.impactAsync(ExpoHaptics.ImpactFeedbackStyle.Heavy);
     } catch {
       // Gracefully ignore
     }
@@ -77,9 +81,9 @@ class HapticsService {
    * Warning vibration when catching an opponent who forgot to declare RIVAL!
    */
   public async rivalCatch(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      await ExpoHaptics.notificationAsync(ExpoHaptics.NotificationFeedbackType.Warning);
     } catch {
       // Gracefully ignore
     }
@@ -89,9 +93,9 @@ class HapticsService {
    * Celebratory success feedback when winning the game.
    */
   public async victory(): Promise<void> {
-    if (!this.isEnabled) return;
+    if (!this.isEnabled || !ExpoHaptics) return;
     try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await ExpoHaptics.notificationAsync(ExpoHaptics.NotificationFeedbackType.Success);
     } catch {
       // Gracefully ignore
     }

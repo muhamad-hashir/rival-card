@@ -1,5 +1,5 @@
 // src/services/soundService.ts - Audio Sound Effects Service for Rival Card
-import { Platform } from 'react-native';
+const isWeb = typeof window !== 'undefined' && typeof window.document !== 'undefined';
 
 // Safely require expo-av inside a try/catch block so Audio fails gracefully
 // when running inside Expo Go (where native modules like ExponentAV aren't compiled into the client bundle).
@@ -41,7 +41,7 @@ class SoundService {
   private async ensureAudioMode(): Promise<void> {
     if (this.audioModeConfigured) return;
     try {
-      if (Platform.OS !== 'web' && ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+      if (!isWeb && ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
         await ExpoAudio.setAudioModeAsync({
           playsInSilentModeIOS: true,
           staysActiveInBackground: false,
@@ -70,7 +70,7 @@ class SoundService {
     if (this.isMuted) return;
 
     // Web Audio Fallback for instantaneous playback on web
-    if (Platform.OS === 'web' && typeof window !== 'undefined' && (window as any).AudioContext) {
+    if (isWeb && typeof window !== 'undefined' && (window as any).AudioContext) {
       try {
         this.playWebAudio(type);
         return;

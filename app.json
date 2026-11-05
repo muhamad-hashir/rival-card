@@ -10,6 +10,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.rivalcard.game",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#0F172A"
@@ -20,6 +21,12 @@
     },
     "plugins": [
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0e1cd1b0-4a09-41f5-8ead-93a31c74bd48"
+      }
+    },
+    "owner": "muhammadhashir"
   }
 }
