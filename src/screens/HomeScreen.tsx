@@ -62,7 +62,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   // Check for unexpired active online match session on initial launch (< 10 minutes old)
   useEffect(() => {
-    audioService.playMenuBgm();
+    try {
+      audioService.playMenuBgm().catch((err) => {
+        console.warn('[Audio] Failed to play menu BGM:', err);
+      });
+    } catch (err) {
+      console.warn('[Audio] Synchronous error starting menu BGM:', err);
+    }
 
     async function checkOnboardingAndSession() {
       try {

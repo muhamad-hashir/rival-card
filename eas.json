@@ -10,7 +10,9 @@
         "gradleCommand": ":app:assembleRelease -Dandroid.enableR8.fullMode=false"
       },
       "env": {
-        "EXPO_NO_MINIFY": "1"
+        "EXPO_NO_MINIFY": "1",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://diprmtxrlynniqacapmz.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ"
       }
     }
   }

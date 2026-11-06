@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import 'react-native-gesture-handler';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import {
   useFonts,
   Fredoka_400Regular,
@@ -13,13 +15,30 @@ import { HomeScreen, SetupPreset } from './src/screens/HomeScreen';
 import { GameScreen } from './src/screens/GameScreen';
 import type { GameState } from './src/types';
 
+// Prevent splash screen auto-hiding until assets and fonts are ready
+try {
+  SplashScreen.preventAutoHideAsync().catch(() => {});
+} catch {
+  // Gracefully ignore if splash screen is unsupported or unavailable
+}
+
 export default function App() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Fredoka_400Regular,
     Fredoka_500Medium,
     Fredoka_600SemiBold,
     Fredoka_700Bold,
   });
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) {
+      try {
+        SplashScreen.hideAsync().catch(() => {});
+      } catch {
+        // Gracefully ignore
+      }
+    }
+  }, [fontsLoaded, fontError]);
 
   const [currentScreen, setCurrentScreen] = useState<'home' | 'game'>('home');
   const [activePreset, setActivePreset] = useState<SetupPreset>('vs_bot_2p');
@@ -48,6 +67,11 @@ export default function App() {
     setActiveOnlineMatch(null);
     setCurrentScreen('home');
   };
+
+  // Ensure the app does not render the main UI until fonts and assets are confirmed loaded
+  if (!fontsLoaded && !fontError) {
+    return null;
+  }
 
   return (
     <GestureHandlerRootView style={styles.root}>

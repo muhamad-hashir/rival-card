@@ -338,9 +338,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   }, []);
 
   useEffect(() => {
-    audioService.playGameplayBgm();
+    try {
+      audioService.playGameplayBgm().catch(() => {});
+    } catch {
+      // Audio driver fallback
+    }
     return () => {
-      audioService.playMenuBgm();
+      try {
+        audioService.playMenuBgm().catch(() => {});
+      } catch {
+        // Audio driver fallback
+      }
     };
   }, []);
 
