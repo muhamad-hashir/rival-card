@@ -15,6 +15,7 @@ import {
   FONT_CARTOON_HEAVY,
   FONT_CARTOON_REGULAR,
 } from '../styles/typography';
+import { networkService } from '../services/networkService';
 
 interface ModesModalProps {
   visible: boolean;
@@ -36,6 +37,15 @@ export const ModesModal: React.FC<ModesModalProps> = ({
     soundService.playCardSnap();
     onClose();
     action();
+  };
+
+  const handleSelectMultiplayer = async () => {
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    const canProceed = await networkService.ensureOnline('Online Multiplayer');
+    if (!canProceed) return;
+    onClose();
+    onOpenMultiplayer();
   };
 
   return (
@@ -108,7 +118,7 @@ export const ModesModal: React.FC<ModesModalProps> = ({
 
             <TouchableOpacity
               style={[styles.optionBtn, styles.onlineOptionBtn]}
-              onPress={() => handleSelect(onOpenMultiplayer)}
+              onPress={handleSelectMultiplayer}
               activeOpacity={0.7}
             >
               <Text style={styles.optionIcon}>🌐</Text>

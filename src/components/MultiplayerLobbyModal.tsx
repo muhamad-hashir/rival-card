@@ -22,6 +22,7 @@ import { createGame } from '../gameEngine';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { errorToastService } from '../services/errorToastService';
+import { networkService } from '../services/networkService';
 import {
   playerProfileService,
   PlayerProfile,
@@ -98,6 +99,9 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
   // Handle Quick Match "Find Match"
   const handleFindMatch = async () => {
+    const canProceed = await networkService.ensureOnline('Quick Match');
+    if (!canProceed) return;
+
     try {
       hapticsService.cardSelection();
       soundService.playCardSnap();
@@ -155,6 +159,9 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
   // Private Room: Host creates 4-digit code room
   const handleHostRoom = async () => {
+    const canProceed = await networkService.ensureOnline('Create Room');
+    if (!canProceed) return;
+
     try {
       setIsBusy(true);
       hapticsService.cardSelection();
@@ -188,6 +195,9 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
       Alert.alert('Invalid Code', 'Please enter a 4-digit room code.');
       return;
     }
+
+    const canProceed = await networkService.ensureOnline('Join Room');
+    if (!canProceed) return;
 
     try {
       setIsBusy(true);

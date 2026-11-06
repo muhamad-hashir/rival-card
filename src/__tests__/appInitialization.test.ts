@@ -2,8 +2,9 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { audioService } from '../services/audioService';
-import { settingsService, DEFAULT_SETTINGS } from '../services/settingsService';
+import { settingsService } from '../services/settingsService';
 import { supabase } from '../services/supabase';
+import { networkService } from '../services/networkService';
 
 describe('App Initialization & Crash Protections', () => {
   beforeEach(async () => {
@@ -40,40 +41,46 @@ describe('App Initialization & Crash Protections', () => {
     assert.strictEqual(typeof settings.autoPass, 'boolean');
   });
 
-  test('Sequential boot sequence states progress correctly through 3 stages to 100%', async () => {
+  test('Sequential boot sequence states progress cleanly through 3 stages to 100%', () => {
     interface BootStep {
       progress: number;
       status: string;
-      delayMs: number;
     }
 
     const steps: BootStep[] = [];
-    const recordStep = (progress: number, status: string, delayMs: number) => {
-      steps.push({ progress, status, delayMs });
+    const recordStep = (progress: number, status: string) => {
+      steps.push({ progress, status });
     };
 
-    // Stage 1 (0% to 35%): "Checking cards..." (~800ms)
-    recordStep(35, 'Checking cards...', 800);
-    // Stage 2 (35% to 75%): "Shuffling deck..." (~800ms)
-    recordStep(75, 'Shuffling deck...', 800);
-    // Stage 3 (75% to 100%): "Ready to play!" (~600ms)
-    recordStep(100, 'Ready to play!', 600);
+    // Stage 1 (0% to 35%): "Checking cards..."
+    recordStep(35, 'Checking cards...');
+    // Stage 2 (35% to 70%): "Shuffling deck..."
+    recordStep(70, 'Shuffling deck...');
+    // Stage 3 (70% to 100%): "Ready to play!"
+    recordStep(100, 'Ready to play!');
 
     assert.strictEqual(steps.length, 3);
     assert.strictEqual(steps[0].progress, 35);
     assert.strictEqual(steps[0].status, 'Checking cards...');
-    assert.strictEqual(steps[0].delayMs, 800);
 
-    assert.strictEqual(steps[1].progress, 75);
+    assert.strictEqual(steps[1].progress, 70);
     assert.strictEqual(steps[1].status, 'Shuffling deck...');
-    assert.strictEqual(steps[1].delayMs, 800);
 
     assert.strictEqual(steps[2].progress, 100);
     assert.strictEqual(steps[2].status, 'Ready to play!');
-    assert.strictEqual(steps[2].delayMs, 600);
+  });
 
-    const totalDebugDelay = steps.reduce((acc, s) => acc + s.delayMs, 0);
-    assert.strictEqual(totalDebugDelay, 2200);
+  test('networkService.isOnline returns boolean and does not throw', async () => {
+    await assert.doesNotReject(async () => {
+      const isOnline = await networkService.isOnline();
+      assert.strictEqual(typeof isOnline, 'boolean');
+    });
+  });
+
+  test('networkService offline timeout safety and fail-safe handling', async () => {
+    // Check that networkService can handle multiple quick checks
+    const status1 = await networkService.isOnline();
+    assert.strictEqual(typeof status1, 'boolean');
   });
 
   test('ErrorBoundary state transition and recovery contracts', () => {

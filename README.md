@@ -1,121 +1,186 @@
-# Rival Card ⚡
+# 🃏 RIVAL CARD ⚡
 
-A fast-paced, 2D cartoon mobile card game built with **React Native**, **Expo**, and **Supabase Realtime**. Match colors and values, counter opponents with tactical action cards, call **RIVAL!**, and clear your hand to achieve victory!
+[![React Native](https://img.shields.io/badge/React%20Native-0.88-blue.svg)](https://reactnative.dev/)
+[![Expo](https://img.shields.io/badge/Expo%20SDK-58-black.svg)](https://expo.dev/)
+[![Supabase](https://img.shields.io/badge/Supabase-Realtime-emerald.svg)](https://supabase.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
-
-## 🎮 Core Features
-
-* **Complete 108-Card Engine**:
-  * **Number Cards**: 0–9 across 4 vibrant colors (Red, Blue, Green, Yellow).
-  * **Standard Action Cards**: Skip, Reverse (acts as Skip in 1v1), and Draw 2.
-  * **Wild Cards**: Wild Color Choice and Wild Draw 4.
-  * **Custom Action Cards**:
-    * 🔇 **Mute**: Silences a targeted player for 1 round and skips their turn.
-    * 🔄 **RivalSwap**: Swaps your hand with the opponent who currently holds the fewest cards.
-* **⚡ RIVAL! Callout & Catch System**:
-  * Shouting **RIVAL!** when holding 1 card.
-  * Opponents can tap **CATCH!** on any player who forgot to declare RIVAL! to impose a 2-card draw penalty.
-* **Game Modes**:
-  * 🤖 **Play vs Bot**: Instant offline matches against heuristic AI bots (1v1 or 4-player).
-  * 📱 **Pass & Play**: Local hotseat mode for 2 or 3 players featuring an automated privacy shield between turns.
-  * 🌐 **Online Multiplayer**: Real-time room creation and joining via 4-digit codes, powered by Supabase Realtime WebSocket channels.
-* **⚡ Real-time Quick Taunt Bar**:
-  * Send animated emoji reactions (🔥, 😂, 💀, 😱, 👏, ⚡) synced live across players.
-* **✨ Native Mobile Polish**:
-  * Drag-and-play card mechanics powered by `react-native-reanimated` and `react-native-gesture-handler`.
-  * Haptic feedback via `expo-haptics` on card selections, draws, errors, and RIVAL! callouts.
-  * Resilient sound effects service with Web Audio synthesis fallback for zero-dependency execution across Web, iOS, and Android.
+**Rival Card** is a fast-paced, high-stakes 2D cartoon mobile card game built with **React Native**, **Expo SDK 58**, and **Supabase Realtime**. Match colors and values, trigger disruptive action cards, unleash lightning multi-card combos, shout **RIVAL!** before your opponents catch you sleeping, and claim the championship podium!
 
 ---
 
-## 🛠️ Tech Stack
+## 🎮 Core Gameplay Mechanics
 
-* **Framework**: React Native 0.88, Expo SDK 58, React 19
-* **Language**: TypeScript 6.0
-* **Animations & Gestures**: React Native Reanimated 4, React Native Gesture Handler
-* **Networking & Multiplayer**: Supabase Realtime (`@supabase/supabase-js`)
-* **Audio & Haptics**: Expo AV, Web Audio API, Expo Haptics
-* **Testing**: Node.js Test Runner (`node:test`) + `tsx`
+### 1. The 108-Card Engine
+- **Number Cards (0–9)**: Four vibrant colors (**Ruby Red**, **Electric Blue**, **Emerald Green**, **Golden Yellow**).
+- **Standard Action Cards**:
+  - 🚫 **Skip**: Silences the next player's turn.
+  - 🔁 **Reverse**: Inverts turn order (acts as a Skip in 1v1 duels).
+  - ➕ **Draw 2**: Forces the victim to draw 2 cards and forfeits their turn.
+- **Wild Cards**:
+  - 🌈 **Wild**: Freely change the active table color.
+  - 💥 **Wild Draw 4**: Force a 4-card draw, change table color, and skip the next player.
+- **Special Rival Cards**:
+  - 🔇 **Mute**: Silences a targeted player for 1 round, preventing taunts and skipping their turn.
+  - 🔄 **RivalSwap**: Swaps your current hand with whichever opponent currently holds the fewest cards.
+
+### 2. Multi-Card Identical Combos
+Have two or more identical cards in your hand (same color AND same value)? Play them simultaneously in one swift combo move! Dump your hand faster and swing the game momentum in your favor.
+
+### 3. The 2.5s "CATCH RIVAL!" Penalty Window
+- When a player plays down to their **last remaining card**, they must declare **RIVAL!**.
+- Forgot to call it? All other opponents have an active **2.5-second vulnerability window** to tap **CATCH!** and slap a **+2 card penalty** onto the careless player.
+- Reactive bots will catch careless players with heuristic reaction delays (1.2s to 2.2s).
+
+---
+
+## 🕹️ Game Modes
+
+| Mode | Connectivity | Description |
+| :--- | :--- | :--- |
+| 🤖 **Play VS Bot** | **100% Offline** | Instant offline battle against smart heuristic AI bots (1v1 duel or 4-player brawl). Adjustable bot speeds! |
+| 👥 **Pass & Play** | **100% Offline** | Couch multiplayer on a single physical device with an automatic privacy veil between player turns. |
+| ⚡ **Quick Match** | **Online** | Instant matchmaking queue with 12s automatic fallback to RivalBot if no humans are in queue. |
+| 🌐 **Custom Rooms** | **Online** | Host or join private multiplayer lobbies with 4-digit room codes powered by Supabase WebSockets. |
+
+---
+
+## 🔊 Dynamic Audio & Sound Effects Engine
+
+The game features an arcade sound system managed by `audioService`:
+- **Adaptive Background Music**: Seamlessly cross-fades between the upbeat Menu BGM (`background.mp3`) and suspenseful Match BGM (`match-background.mp3`).
+- **Dedicated Action SFX**:
+  - 📣 `rival_shout.mp3` — Heart-pumping shout upon declaring RIVAL!
+  - 🎨 `color-change.mp3` — High-pitch tinting when choosing a Wild color.
+  - 💥 `plus-four.mp3` & `plus-two.mp3` — Punchy impact on penalty draws.
+  - 🚫 `skip.mp3` & 🔁 `reverse.mp3` — Snappy card action cues.
+  - 🔄 `swap.mp3` — Swift whoosh during RivalSwap hand transfers.
+  - 🔇 `mute.mp3` — Action modifier cue when silencing rivals.
+
+---
+
+## 🛡️ Offline-First Architecture & Zero Data Leaks
+
+- **100% Offline Support**: Booting without an internet connection automatically falls back to guest mode without freezing or infinite spinners. "Play VS Bot" and "Pass & Play" are completely local.
+- **Fail-Fast Network Guards**: Online lobbies and match actions ping connectivity via `networkService.ensureOnline()` and gracefully inform the user if disconnected.
+- **Zero API Credential Exposure**: No secret keys, service roles, or backend credentials are committed to source control. Only safe, anonymous public keys (`EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY`) are utilized.
+- **Global Error Boundary**: Any unexpected runtime failure is caught gracefully by `ErrorBoundary` featuring a warm cartoon aesthetic and an instant "Restart Game" recovery button.
+
+---
+
+## 📁 Repository Structure
+
+```text
+rival-card/
+├── assets/                    # Cartoon vector & raster assets
+│   ├── sounds/                # Background music & match audio
+│   │   └── game-sounds/       # Dedicated action sound effects
+│   ├── icons/                 # Custom action card icon assets
+│   ├── homescreen.png         # Main menu background artwork
+│   └── card_back.png          # Rendered card back design
+├── src/
+│   ├── components/            # Reusable UI components & modals
+│   │   ├── CardView.tsx       # 2D card presentation with 3D gloss highlights
+│   │   ├── DraggableCard.tsx  # Smooth flick & play gesture handler
+│   │   ├── ErrorBoundary.tsx  # Global crash interceptor & recovery UI
+│   │   ├── ErrorToast.tsx     # Cartoon toast alert banners
+│   │   ├── GameOverModal.tsx  # Winner celebration modal with confetti
+│   │   ├── SettingsModal.tsx  # Sound, music, haptics, and account controls
+│   │   └── ...
+│   ├── screens/
+│   │   ├── HomeScreen.tsx     # Main hub, profile banner, modes & cosmetics
+│   │   ├── GameScreen.tsx     # Main table arena, turn timer, opponent docks
+│   │   └── LoadingScreen.tsx  # Comic sunburst animated launch screen
+│   ├── services/
+│   │   ├── audioService.ts    # Dual-channel BGM and action SFX engine
+│   │   ├── networkService.ts  # Cross-platform ping connectivity checker
+│   │   ├── supabase.ts        # Supabase Realtime & Auth client
+│   │   ├── settingsService.ts # Local preferences persistence (AsyncStorage)
+│   │   └── ...
+│   ├── gameEngine.ts          # Pure functional game rules & AI heuristics
+│   ├── types.ts               # Universal TypeScript types & interfaces
+│   └── __tests__/             # Comprehensive unit test suite (150+ tests)
+├── eas.json                   # EAS Build profiles (Universal Multi-ABI APK)
+├── app.json                   # Expo application manifest
+└── package.json               # Dependencies and build scripts
+```
 
 ---
 
 ## 🚀 Getting Started
 
-### 1. Prerequisites
-* [Node.js](https://nodejs.org/) (v18 or higher recommended)
-* [Expo Go](https://expo.dev/go) on iOS or Android (optional for mobile testing)
+### Prerequisites
+- [Node.js](https://nodejs.org/) (v18 or higher recommended)
+- [Expo Go](https://expo.dev/go) on iOS or Android
 
-### 2. Installation
+### Installation
 ```bash
-# Clone repository and enter directory
+# Clone repository
+git clone https://github.com/your-repo/rival-card.git
 cd rival-card
 
-# Install dependencies
+# Install SDK-compatible dependencies
 npm install
 ```
 
-### 3. Environment Configuration (Optional)
-To enable custom online Supabase multiplayer backends, create a `.env` file in the project root:
-```env
-EXPO_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-public-key
-```
-*(The app includes built-in fallback mock and demo channel support for local offline development).*
-
-### 4. Running the App
+### Running Locally
 ```bash
-# Start Expo development server (interactive menu)
+# Start Expo development server
 npx expo start
 
-# Run directly on Web
-npx expo start --web
-
-# Run on Android emulator / connected device
+# Run on Android emulator / device
 npx expo start --android
 
 # Run on iOS simulator
 npx expo start --ios
+
+# Run on Web
+npx expo start --web
 ```
 
 ---
 
 ## 🧪 Testing & Verification
 
-The game engine and multiplayer services are backed by a comprehensive unit test suite:
+Rival Card maintains extensive test coverage across game rules, network disconnection resilience, and bot decision trees:
 
 ```bash
 # Run all unit tests
 npm test
 
-# Type-check TypeScript codebase
+# Run TypeScript type-checker
 npm run typecheck
+
+# Run Expo export bundle verification
+npx expo export --no-bytecode
 ```
 
 ---
 
-## 📁 Project Structure
+## 📦 Building Standalone APK (EAS Build)
 
-```text
-rival-card/
-├── assets/                  # Game artwork, card graphics, and action icons
-│   ├── card_back.png        # Rendered card back design
-│   ├── homescreen.png       # 2D home screen background artwork
-│   ├── icon.png             # Application logo icon
-│   └── icons/               # Custom action card icon assets (Skip, Reverse, Draw2, Mute, Swap, etc.)
-├── src/
-│   ├── components/          # Reusable UI components (CardView, DraggableCard, Modals, TauntBar)
-│   ├── screens/             # HomeScreen (Main Menu) and GameScreen (Main Arena)
-│   ├── services/            # Haptics, SoundService, and Supabase Multiplayer client
-│   ├── types.ts             # Game state, player, card, and network types
-│   ├── gameEngine.ts        # Pure functional game logic, rules engine, and AI bot heuristics
-│   └── __tests__/           # Test suite (deck, action cards, bot turns, 1v1, multiplayer)
-├── App.tsx                  # Root navigation & gesture provider
-├── app.json                 # Expo project configuration
-└── package.json             # Scripts & dependencies
+To generate a standalone, universal Android APK that installs cleanly on 32-bit (armeabi-v7a), 64-bit (arm64-v8a), and Android Go devices:
+
+```bash
+# Authenticate with Expo Application Services
+npx eas login
+
+# Run cloud APK build
+npx eas build -p android --profile preview
 ```
+
+---
+
+## 🛠️ Tech Stack
+
+- **Mobile Framework**: React Native 0.88, Expo SDK 58, React 19
+- **Languages & Typing**: TypeScript 6.0
+- **Animations & Physics**: React Native Reanimated 4, React Native Gesture Handler 3
+- **Multiplayer & Storage**: Supabase Realtime WebSocket Channels & PostgreSQL Auth
+- **Audio & Media**: Expo AV, Web Audio API
+- **Testing**: Node.js Test Runner (`node:test`) & `tsx`
 
 ---
 
 ## 📜 License
-MIT License. Created for Rival Card.
+MIT License. Crafted with ❤️ for Rival Card.

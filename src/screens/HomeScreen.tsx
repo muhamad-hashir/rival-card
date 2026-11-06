@@ -33,6 +33,7 @@ import {
 } from '../services/multiplayerService';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import { networkService } from '../services/networkService';
 import { audioService } from '../services/audioService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 import type { GameState } from '../types';
@@ -97,7 +98,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   }, []);
 
   const handleRejoinSession = async () => {
-    if (!pendingResumeSession) return;
+    if (!pendingResumeSession || isRejoiningSession) return;
+    const canProceed = await networkService.ensureOnline('Rejoining Match');
+    if (!canProceed) return;
+
     try {
       setIsRejoiningSession(true);
       hapticsService.cardSelection();
@@ -204,9 +208,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   };
 
   // Button 3: Online Multiplayer (opens real-time room lobby modal)
-  const handlePressOnlineMultiplayer = () => {
+  const handlePressOnlineMultiplayer = async () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
+    const canProceed = await networkService.ensureOnline('Online Multiplayer');
+    if (!canProceed) return;
     setIsLobbyModalOpen(true);
   };
 
