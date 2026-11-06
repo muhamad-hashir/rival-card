@@ -58,7 +58,7 @@ export class AudioService {
     }
   }
 
-  private async ensureAudioMode(): Promise<void> {
+  public async ensureAudioMode(): Promise<void> {
     if (this.audioModeConfigured) return;
     try {
       if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
@@ -72,6 +72,10 @@ export class AudioService {
     } catch {
       // Ignore if not supported in environment
     }
+  }
+
+  public async initAudio(): Promise<void> {
+    await this.ensureAudioMode();
   }
 
   public getCurrentBgmType(): BgmTrackType {
