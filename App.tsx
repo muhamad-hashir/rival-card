@@ -20,6 +20,10 @@ import { settingsService } from './src/services/settingsService';
 import { audioService } from './src/services/audioService';
 import type { GameState } from './src/types';
 
+// Set to true to preview staged loading screen with artificial delay (~2.5s)
+// Set to false to revert back to instantaneous real loading
+export const DEBUG_SLOW_LOADING_SCREEN = true;
+
 // Prevent splash screen auto-hiding until assets and fonts are ready
 try {
   SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -29,7 +33,7 @@ try {
 
 function MainAppContent() {
   const [isReady, setIsReady] = useState(false);
-  const [loadProgress, setLoadProgress] = useState(10);
+  const [loadProgress, setLoadProgress] = useState(DEBUG_SLOW_LOADING_SCREEN ? 0 : 10);
   const [statusText, setStatusText] = useState('Checking cards...');
 
   const [currentScreen, setCurrentScreen] = useState<'home' | 'game'>('home');
@@ -45,9 +49,9 @@ function MainAppContent() {
 
     async function loadAppResources() {
       try {
-        // Step 1: Custom Typography (Safe Font Loading)
+        // Stage 1 (0% to 35%): "Checking cards..."
         if (isMounted) {
-          setLoadProgress(20);
+          setLoadProgress(35);
           setStatusText('Checking cards...');
         }
         try {
@@ -61,10 +65,14 @@ function MainAppContent() {
           console.warn('[RivalCard Boot] Font loading warning (fallback fonts active):', fontErr);
         }
 
-        // Step 2: Supabase Client & Auth State Validation
+        if (DEBUG_SLOW_LOADING_SCREEN && isMounted) {
+          await new Promise((resolve) => setTimeout(resolve, 800));
+        }
+
+        // Stage 2 (35% to 75%): "Shuffling deck..."
         if (isMounted) {
-          setLoadProgress(50);
-          setStatusText('Connecting to services...');
+          setLoadProgress(75);
+          setStatusText('Shuffling deck...');
         }
         try {
           await supabase.auth.getSession().catch((authErr) => {
@@ -75,11 +83,6 @@ function MainAppContent() {
           console.warn('[RivalCard Boot] Supabase client warning:', supabaseErr);
         }
 
-        // Step 3: Audio Engine & Settings Persistence
-        if (isMounted) {
-          setLoadProgress(75);
-          setStatusText('Shuffling deck...');
-        }
         try {
           await settingsService.getSettings();
         } catch (settingsErr) {
@@ -92,14 +95,22 @@ function MainAppContent() {
           console.warn('[RivalCard Boot] Audio engine initialization warning:', audioErr);
         }
 
-        // Step 4: Finalize & Ready Transition
-        if (isMounted) {
-          setLoadProgress(100);
-          setStatusText('Ready!');
+        if (DEBUG_SLOW_LOADING_SCREEN && isMounted) {
+          await new Promise((resolve) => setTimeout(resolve, 800));
         }
 
-        // Short timeout for seamless visual transition
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // Stage 3 (75% to 100%): "Ready to play!"
+        if (isMounted) {
+          setLoadProgress(100);
+          setStatusText('Ready to play!');
+        }
+
+        if (DEBUG_SLOW_LOADING_SCREEN && isMounted) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+        } else {
+          // Short timeout for seamless visual transition in normal mode
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
       } catch (bootErr) {
         console.warn('[RivalCard Boot] Unhandled resource loading warning:', bootErr);
       } finally {

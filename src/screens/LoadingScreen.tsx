@@ -23,7 +23,7 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({
   useEffect(() => {
     Animated.timing(animProgress, {
       toValue: Math.min(Math.max(progress, 0), 100),
-      duration: 250,
+      duration: 400,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();

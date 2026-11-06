@@ -40,35 +40,40 @@ describe('App Initialization & Crash Protections', () => {
     assert.strictEqual(typeof settings.autoPass, 'boolean');
   });
 
-  test('Sequential boot sequence states progress correctly from 0% to 100%', async () => {
+  test('Sequential boot sequence states progress correctly through 3 stages to 100%', async () => {
     interface BootStep {
       progress: number;
       status: string;
+      delayMs: number;
     }
 
     const steps: BootStep[] = [];
-    const recordStep = (progress: number, status: string) => {
-      steps.push({ progress, status });
+    const recordStep = (progress: number, status: string, delayMs: number) => {
+      steps.push({ progress, status, delayMs });
     };
 
-    // Step 1: Fonts
-    recordStep(20, 'Checking cards...');
-    // Step 2: Supabase & Auth
-    recordStep(50, 'Connecting to services...');
-    // Step 3: Settings & Audio
-    recordStep(75, 'Shuffling deck...');
-    // Step 4: Ready
-    recordStep(100, 'Ready!');
+    // Stage 1 (0% to 35%): "Checking cards..." (~800ms)
+    recordStep(35, 'Checking cards...', 800);
+    // Stage 2 (35% to 75%): "Shuffling deck..." (~800ms)
+    recordStep(75, 'Shuffling deck...', 800);
+    // Stage 3 (75% to 100%): "Ready to play!" (~600ms)
+    recordStep(100, 'Ready to play!', 600);
 
-    assert.strictEqual(steps.length, 4);
-    assert.strictEqual(steps[0].progress, 20);
+    assert.strictEqual(steps.length, 3);
+    assert.strictEqual(steps[0].progress, 35);
     assert.strictEqual(steps[0].status, 'Checking cards...');
-    assert.strictEqual(steps[1].progress, 50);
-    assert.strictEqual(steps[1].status, 'Connecting to services...');
-    assert.strictEqual(steps[2].progress, 75);
-    assert.strictEqual(steps[2].status, 'Shuffling deck...');
-    assert.strictEqual(steps[3].progress, 100);
-    assert.strictEqual(steps[3].status, 'Ready!');
+    assert.strictEqual(steps[0].delayMs, 800);
+
+    assert.strictEqual(steps[1].progress, 75);
+    assert.strictEqual(steps[1].status, 'Shuffling deck...');
+    assert.strictEqual(steps[1].delayMs, 800);
+
+    assert.strictEqual(steps[2].progress, 100);
+    assert.strictEqual(steps[2].status, 'Ready to play!');
+    assert.strictEqual(steps[2].delayMs, 600);
+
+    const totalDebugDelay = steps.reduce((acc, s) => acc + s.delayMs, 0);
+    assert.strictEqual(totalDebugDelay, 2200);
   });
 
   test('ErrorBoundary state transition and recovery contracts', () => {
