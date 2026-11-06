@@ -3,6 +3,7 @@
     "name": "Rival Card",
     "slug": "rival-card",
     "version": "1.0.0",
+    "newArchEnabled": false,
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -11,6 +12,7 @@
     },
     "android": {
       "package": "com.rivalcard.game",
+      "newArchEnabled": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#0F172A"
