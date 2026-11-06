@@ -1,6 +1,7 @@
 // src/components/ProfileModal.tsx - Lightweight profile editor and stats modal
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   ScrollView,
   StyleSheet,
@@ -16,6 +17,9 @@ import {
   getAvatarConfig,
   playerProfileService,
 } from '../services/playerProfileService';
+import { authService } from '../services/authService';
+import { errorToastService } from '../services/errorToastService';
+import { networkService } from '../services/networkService';
 import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
@@ -41,6 +45,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [nickname, setNickname] = useState<string>(profile.nickname);
   const [selectedAvatarId, setSelectedAvatarId] = useState<string>(profile.avatarId);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -50,6 +55,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setNickname(profile.nickname);
       setSelectedAvatarId(profile.avatarId);
       setIsSaving(false);
+      setIsSigningIn(false);
       setSaveStatus('idle');
     }
     return () => {
@@ -64,6 +70,48 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     profile.stats.gamesPlayed > 0
       ? Math.round((profile.stats.wins / profile.stats.gamesPlayed) * 100)
       : 0;
+
+  const handleGoogleSignIn = async () => {
+    if (isSigningIn) return;
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+
+    // Fast offline check
+    const isOnline = await networkService.isOnline();
+    if (!isOnline) {
+      errorToastService.showWarning(
+        "You're disconnected! Please check your connection and try again.",
+        4000
+      );
+      return;
+    }
+
+    setIsSigningIn(true);
+    try {
+      const res = await authService.signInWithGoogle();
+      if (!res.success) {
+        errorToastService.showWarning(
+          res.error || 'Google sign-in was cancelled or timed out.',
+          4000
+        );
+      } else {
+        soundService.playWinChime();
+        errorToastService.show({
+          message: 'Signed in with Google successfully!',
+          type: 'info',
+          durationMs: 3000,
+        });
+        await playerProfileService.getProfile(true);
+      }
+    } catch (err: any) {
+      errorToastService.showWarning(
+        err?.message || 'Google sign-in was cancelled or timed out.',
+        4000
+      );
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
 
   // Auto-save avatar selection immediately
   const handleSelectAvatar = async (avatarId: string) => {
@@ -318,19 +366,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </View>
             </View>
 
-            {/* Link Account Placeholder Button */}
+            {/* Continue with Google Authentication */}
             <TouchableOpacity
               activeOpacity={0.8}
-              style={styles.linkAccountBtn}
-              onPress={() => {
-                hapticsService.cardSnap();
-              }}
+              style={styles.googleAuthBtn}
+              onPress={handleGoogleSignIn}
+              disabled={isSigningIn}
             >
-              <Text style={styles.linkAccountIcon}>☁️</Text>
-              <Text style={styles.linkAccountText}>Link Account</Text>
-              <View style={styles.comingSoonPill}>
-                <Text style={styles.comingSoonText}>Coming Soon</Text>
-              </View>
+              {isSigningIn ? (
+                <ActivityIndicator color="#2D1F17" size="small" />
+              ) : (
+                <View style={styles.googleBtnContent}>
+                  <View style={styles.googleIconCircle}>
+                    <Text style={styles.googleIconText}>G</Text>
+                  </View>
+                  <Text style={styles.googleAuthBtnText}>Continue with Google</Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             {/* Save Profile Button */}
@@ -706,38 +758,51 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 1,
   },
-  linkAccountBtn: {
+  googleAuthBtn: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderBottomWidth: 4,
+    borderColor: '#2D1F17',
+    borderRadius: 999,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 5,
+    shadowColor: '#2D1F17',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  googleBtnContent: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#EEF2FF',
+    gap: 10,
+  },
+  googleIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1.5,
-    borderColor: '#C7D2FE',
-    borderRadius: 999,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    gap: 6,
-    marginVertical: 4,
-    width: '100%',
+    borderColor: '#2D1F17',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  linkAccountIcon: {
-    fontSize: 12,
+  googleIconText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#4285F4',
+    lineHeight: 15,
   },
-  linkAccountText: {
+  googleAuthBtnText: {
     ...FONT_CARTOON_BOLD,
-    color: '#4F46E5',
-    fontSize: 12,
-  },
-  comingSoonPill: {
-    backgroundColor: '#E0E7FF',
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 6,
-  },
-  comingSoonText: {
-    ...FONT_CARTOON_SEMIBOLD,
-    fontSize: 9,
-    color: '#4338CA',
+    fontSize: 13,
+    color: '#2D1F17',
+    letterSpacing: 0.4,
   },
   saveBtn: {
     width: '100%',

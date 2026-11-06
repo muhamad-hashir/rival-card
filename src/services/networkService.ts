@@ -68,7 +68,7 @@ class NetworkService {
   public async ensureOnline(_actionContext: string = 'this feature'): Promise<boolean> {
     const online = await this.isOnline();
     if (!online) {
-      const message = "You're disconnected! Please check your internet connection and try again.";
+      const message = "You're disconnected! Please check your connection and try again.";
       errorToastService.showWarning(message, 5000);
       triggerAlert(
         'Offline Mode Active',

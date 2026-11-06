@@ -72,6 +72,13 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
 
   if (!winner) return null;
 
+  // Determine whether a human player won the match
+  const isHumanWinner = Boolean(
+    winner &&
+      !winner.isBot &&
+      (localPlayerId ? winner.id === localPlayerId : !winner.isBot)
+  );
+
   // Determine whether the local viewer is the winner
   const isLocalWinner = localPlayerId
     ? winner.id === localPlayerId
@@ -135,11 +142,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             {/* ========================================================= */}
             {step === 1 && (
               <View style={styles.stepContentWrapper}>
-                {/* Trophy Section with Localized Confetti Blast directly behind/around the cup */}
+                {/* Trophy Section */}
                 <View style={styles.trophyWrapper}>
-                  {isLocalWinner && (
-                    <ModalConfettiBurst active={visible && isLocalWinner && step === 1} />
-                  )}
                   <View
                     style={[
                       styles.trophyCircle,
@@ -179,8 +183,11 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                     : `${winner.name} emptied their hand and won the match.`}
                 </Text>
 
-                {/* Final Standings Card */}
+                {/* Final Standings / Leaderboard Card with Confetti Constrained to Card Bounds */}
                 <View style={styles.statsContainer}>
+                  {isHumanWinner && (
+                    <ModalConfettiBurst active={visible && isHumanWinner && step === 1} />
+                  )}
                   <Text style={styles.statsHeader}>FINAL STANDINGS</Text>
                   {sortedPlayers.map((p, index) => {
                     const isWinner = p.id === winner.id;
@@ -510,6 +517,8 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderWidth: 1.5,
     borderColor: '#E2E8F0',
+    position: 'relative',
+    overflow: 'hidden',
   },
   statsHeader: {
     ...FONT_CARTOON_BOLD,

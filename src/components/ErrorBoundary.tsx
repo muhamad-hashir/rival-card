@@ -96,7 +96,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 style={styles.restartButton}
                 onPress={this.handleRestart}
               >
-                <Text style={styles.restartButtonText}>Restart Game ➔</Text>
+                <Text style={styles.restartButtonText}>Tap to Restart ➔</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>

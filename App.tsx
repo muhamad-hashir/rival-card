@@ -18,6 +18,7 @@ import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { supabase } from './src/services/supabase';
 import { settingsService } from './src/services/settingsService';
 import { audioService } from './src/services/audioService';
+import { playerProfileService } from './src/services/playerProfileService';
 import type { GameState } from './src/types';
 
 // Prevent splash screen auto-hiding until assets and fonts are ready
@@ -78,11 +79,18 @@ function MainAppContent() {
           console.warn('[RivalCard Boot] Supabase client warning:', supabaseErr);
         }
 
-        // Step 3: Settings & Audio Engine Persistence
+        // Step 3: Settings, Guest Profile & Audio Engine Persistence
         try {
           await settingsService.getSettings();
         } catch (settingsErr) {
           console.warn('[RivalCard Boot] Settings load warning:', settingsErr);
+        }
+
+        try {
+          // Immediately load Guest profile from AsyncStorage
+          await playerProfileService.getProfile();
+        } catch (profileErr) {
+          console.warn('[RivalCard Boot] Profile load warning:', profileErr);
         }
 
         try {
