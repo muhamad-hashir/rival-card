@@ -98,6 +98,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
         audioService.resumeBgm();
       } else {
         audioService.pauseBgm();
+        audioService.playMuteSfx(true);
+      }
+    } else if (key === 'sfxEnabled') {
+      if (!nextVal) {
+        audioService.playMuteSfx(true);
       }
     }
   };

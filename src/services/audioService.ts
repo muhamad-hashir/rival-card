@@ -1,4 +1,4 @@
-// src/services/audioService.ts - Background Music & Speech/SFX Engine for Rival Card
+// src/services/audioService.ts - Background Music & Action Sound Effects Engine for Rival Card
 import { settingsService, UserSettings } from './settingsService';
 
 let ExpoAudio: typeof import('expo-av').Audio | null = null;
@@ -13,6 +13,10 @@ try {
 }
 
 export type BgmTrackType = 'none' | 'menu' | 'gameplay';
+
+// ============================================================================
+// Asset Loaders with Safe Fallback Protection
+// ============================================================================
 
 function getMenuBgmAsset(): any {
   try {
@@ -32,7 +36,67 @@ function getGameplayBgmAsset(): any {
 
 function getRivalShoutAsset(): any {
   try {
-    return require('../../assets/sounds/rival-voice.mp3');
+    return require('../../assets/sounds/game-sounds/rival_shout.mp3');
+  } catch {
+    try {
+      return require('../../assets/sounds/game-sounds/rival-voice.mp3');
+    } catch {
+      return null;
+    }
+  }
+}
+
+function getColorChangeAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/color-change.mp3');
+  } catch {
+    return null;
+  }
+}
+
+function getPlusFourAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/plus-four.mp3');
+  } catch {
+    return null;
+  }
+}
+
+function getPlusTwoAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/plus-two.mp3');
+  } catch {
+    return null;
+  }
+}
+
+function getSkipAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/skip.mp3');
+  } catch {
+    return null;
+  }
+}
+
+function getReverseAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/reverse.mp3');
+  } catch {
+    return null;
+  }
+}
+
+function getSwapAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/swap.mp3');
+  } catch {
+    return null;
+  }
+}
+
+function getMuteAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/mute.mp3');
   } catch {
     return null;
   }
@@ -253,23 +317,29 @@ export class AudioService {
     }
   }
 
-  /**
-   * SFX: 1-second "RIVAL!" shout triggered when tapping the RIVAL! button.
-   * Checks sfxEnabled, plays instantly, and unloads on finish to prevent memory leaks.
-   */
-  public async playRivalShout(): Promise<void> {
-    try {
-      const settings = await settingsService.getSettings();
-      if (!settings.sfxEnabled) return;
+  // ============================================================================
+  // Generic Safe SFX Helper with Lifecycle Unloading
+  // ============================================================================
 
-      const asset = getRivalShoutAsset();
+  private async playSfx(
+    assetGetter: () => any,
+    volume: number = 1.0,
+    force: boolean = false
+  ): Promise<void> {
+    try {
+      if (!force) {
+        const settings = await settingsService.getSettings();
+        if (!settings.sfxEnabled) return;
+      }
+
+      const asset = assetGetter();
       if (!asset || !ExpoAudio) return;
 
       await this.ensureAudioMode();
 
       const { sound } = await ExpoAudio.Sound.createAsync(
         asset,
-        { shouldPlay: true, volume: 1.0 }
+        { shouldPlay: true, volume }
       );
 
       sound.setOnPlaybackStatusUpdate((status: any) => {
@@ -278,8 +348,69 @@ export class AudioService {
         }
       });
     } catch (err) {
-      console.warn('Failed to play rival shout:', err);
+      console.warn('Failed to play SFX:', err);
     }
+  }
+
+  // ============================================================================
+  // Dedicated Action SFX Methods
+  // ============================================================================
+
+  /**
+   * SFX: 1-second "RIVAL!" shout triggered when tapping the RIVAL! button.
+   */
+  public async playRivalShout(): Promise<void> {
+    await this.playSfx(getRivalShoutAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when choosing a color for a standard Wild card.
+   */
+  public async playColorChangeSfx(): Promise<void> {
+    await this.playSfx(getColorChangeAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when a Wild Draw 4 (+4) card is placed on the discard pile.
+   */
+  public async playPlusFourSfx(): Promise<void> {
+    await this.playSfx(getPlusFourAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when a Draw Two (+2) card is played.
+   */
+  public async playPlusTwoSfx(): Promise<void> {
+    await this.playSfx(getPlusTwoAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when a Skip card is played and a player's turn is skipped.
+   */
+  public async playSkipSfx(): Promise<void> {
+    await this.playSfx(getSkipAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when a Reverse card is played and turn direction changes.
+   */
+  public async playReverseSfx(): Promise<void> {
+    await this.playSfx(getReverseAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when cards or hands are swapped / passed.
+   */
+  public async playSwapSfx(): Promise<void> {
+    await this.playSfx(getSwapAsset, 1.0);
+  }
+
+  /**
+   * SFX: Played when toggling mute/audio settings or as an action modifier.
+   * Accepts optional `force` flag to give audio confirmation when turning audio off.
+   */
+  public async playMuteSfx(force: boolean = false): Promise<void> {
+    await this.playSfx(getMuteAsset, 1.0, force);
   }
 }
 

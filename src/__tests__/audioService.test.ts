@@ -45,6 +45,34 @@ describe('Audio & Music Engine (BGM & SFX)', () => {
     });
   });
 
+  test('action SFX methods execute safely when sfxEnabled is true or false', async () => {
+    const sfxMethods = [
+      () => audioService.playColorChangeSfx(),
+      () => audioService.playPlusFourSfx(),
+      () => audioService.playPlusTwoSfx(),
+      () => audioService.playSkipSfx(),
+      () => audioService.playReverseSfx(),
+      () => audioService.playSwapSfx(),
+      () => audioService.playMuteSfx(),
+      () => audioService.playMuteSfx(true),
+    ];
+
+    // 1. When sfxEnabled is true
+    for (const sfx of sfxMethods) {
+      await assert.doesNotReject(async () => {
+        await sfx();
+      });
+    }
+
+    // 2. When sfxEnabled is false
+    await settingsService.updateSetting('sfxEnabled', false);
+    for (const sfx of sfxMethods) {
+      await assert.doesNotReject(async () => {
+        await sfx();
+      });
+    }
+  });
+
   test('handleSettingsChange reacts to bgmEnabled toggle', async () => {
     await audioService.playMenuBgm();
     assert.strictEqual(audioService.getCurrentBgmType(), 'menu');

@@ -64,7 +64,7 @@ import {
   clearActiveMatchSession,
 } from '../services/multiplayerService';
 import { COLOR_HEX } from '../types';
-import type { Card, GameMode, GameState, Player, StandardColor } from '../types';
+import type { Card, CardValue, GameMode, GameState, Player, StandardColor } from '../types';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -372,6 +372,38 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     onGoHome?.();
   };
 
+  // Trigger Action SFX based on card value or color change
+  const triggerCardActionSfx = useCallback((cardValue: CardValue, isColorPicked: boolean = false) => {
+    switch (cardValue) {
+      case 'wild_draw4':
+        audioService.playPlusFourSfx();
+        break;
+      case 'draw2':
+        audioService.playPlusTwoSfx();
+        break;
+      case 'skip':
+        audioService.playSkipSfx();
+        break;
+      case 'reverse':
+        audioService.playReverseSfx();
+        break;
+      case 'rival_swap':
+        audioService.playSwapSfx();
+        break;
+      case 'mute':
+        audioService.playMuteSfx();
+        break;
+      case 'wild':
+        audioService.playColorChangeSfx();
+        break;
+      default:
+        if (isColorPicked) {
+          audioService.playColorChangeSfx();
+        }
+        break;
+    }
+  }, []);
+
   const isOnlineMode = gameState.gameMode === 'multiplayer';
   const currentPlayer = gameState.players[gameState.currentTurnIndex];
   const discardLen = gameState.discardPile.length;
@@ -673,6 +705,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       const nextState = playCard(gameState, timedOutPlayer.id, cardToPlay.id, { chosenColor });
       soundService.playCardSnap();
       hapticsService.cardSnap();
+      triggerCardActionSfx(cardToPlay.value, Boolean(chosenColor));
       showQuickBanner(`Time's up! ${timedOutPlayer.name} auto-played.`);
       commitGameState(
         nextState,
@@ -978,6 +1011,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           } else {
             soundService.playCardSnap();
             hapticsService.cardSnap();
+            const topCard = remoteState.discardPile[remoteState.discardPile.length - 1];
+            if (topCard) {
+              triggerCardActionSfx(topCard.value);
+            }
             if (wasGameOver) {
               setSelectedWildCard(null);
               setIsColorPickerOpen(false);
@@ -1125,6 +1162,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               nextState = playCard(stateToPlay, currentPlayer.id, drawnCard.id, { chosenColor });
             }
             soundService.playCardSnap();
+            triggerCardActionSfx(drawnCard.value, Boolean(chosenColor));
             commitGameState(nextState, `${currentPlayer.name} played ${drawnCard.value}`);
           } else {
             const nextState = playerPassTurn(gameState, currentPlayer.id);
@@ -1215,6 +1253,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           } else {
             soundService.playCardSnap();
           }
+          triggerCardActionSfx(chosenCard.value, Boolean(chosenColor));
           const logMsg = playAsPair && pairCard
             ? `${currentPlayer.name} played pair of ${chosenCard.color} ${chosenCard.value}`
             : `${currentPlayer.name} played ${chosenCard.color} ${chosenCard.value}`;
@@ -1309,6 +1348,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       } else {
         soundService.playCardSnap();
       }
+      triggerCardActionSfx(card.value);
 
       commitGameState(nextState, `${myPlayer.name} played ${card.color} ${card.value}`);
       setPendingPairPlay(null);
@@ -1372,6 +1412,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       } else {
         soundService.playCardSnap();
       }
+      triggerCardActionSfx(card1.value);
 
       commitGameState(nextState, `${myPlayer.name} played pair of ${card1.color} ${card1.value}`);
       setPendingPairPlay(null);
@@ -1465,6 +1506,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         } else {
           soundService.playCardSnap();
         }
+        triggerCardActionSfx(pair.card1.value, true);
 
         commitGameState(nextState, `${myPlayer.name} played pair of ${pair.card1.value} (${color})`);
       } catch (err: any) {
@@ -1479,6 +1521,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       const nextState = chooseWildColor(gameState, myPlayer.id, color);
       hapticsService.validPlay();
       soundService.playCardSnap();
+      audioService.playColorChangeSfx();
 
       if (
         gameState.gameMode === 'pass_and_play' &&
@@ -1541,6 +1584,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         } else {
           soundService.playCardSnap();
         }
+        triggerCardActionSfx(selectedWildCard.value, true);
 
         commitGameState(nextState, `${myPlayer.name} played ${selectedWildCard.value} (${color})`);
       } catch (err: any) {
