@@ -146,17 +146,17 @@ const styles = StyleSheet.create({
   },
   readyButton: {
     width: '100%',
-    backgroundColor: '#22C55E', // Punchy emerald green
-    borderRadius: 999, // Rounded pill
+    backgroundColor: '#10B981', // Modern vibrant emerald green
+    borderRadius: 14,
     borderBottomWidth: 4,
-    borderColor: '#15803D', // Tactile edge
+    borderColor: '#059669', // Tactile edge
     paddingVertical: 14,
     paddingHorizontal: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#15803D',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 6,
     elevation: 4,
   },

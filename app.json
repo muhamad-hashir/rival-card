@@ -29,7 +29,9 @@
             "extraProguardRules": "-dontwarn expo.modules.**\n-keep class expo.modules.** { *; }\n-dontwarn com.facebook.react.**\n-keep class com.facebook.react.** { *; }"
           }
         }
-      ]
+      ],
+      "expo-asset",
+      "expo-audio"
     ],
     "extra": {
       "eas": {

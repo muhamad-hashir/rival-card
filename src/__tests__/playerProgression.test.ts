@@ -146,4 +146,26 @@ describe('Player Progression & Economy System', () => {
     assert.strictEqual(fresh.coins, 410);
     assert.strictEqual(fresh.gems, 15);
   });
+
+  it('Game Economy: Bot matches award strictly 10% of standard match rewards', async () => {
+    // Standard online win: 120 XP, 60 coins -> 10% = 12 XP, 6 coins
+    const winRewards = await playerProfileService.awardMatchRewards(true, 8, 'bot');
+    assert.strictEqual(winRewards.earnedXp, 12);
+    assert.strictEqual(winRewards.earnedCoins, 6);
+
+    // Standard online loss: 50 XP, 20 coins -> 10% = 5 XP, 2 coins
+    const lossRewards = await playerProfileService.awardMatchRewards(false, 10, 'bot');
+    assert.strictEqual(lossRewards.earnedXp, 5);
+    assert.strictEqual(lossRewards.earnedCoins, 2);
+  });
+
+  it('Game Economy: Pass & Play and Custom Private Rooms award 0 XP and 0 Coins', async () => {
+    const passPlayWin = await playerProfileService.awardMatchRewards(true, 5, 'pass_and_play');
+    assert.strictEqual(passPlayWin.earnedXp, 0);
+    assert.strictEqual(passPlayWin.earnedCoins, 0);
+
+    const privateRoomLoss = await playerProfileService.awardMatchRewards(false, 7, 'custom_private');
+    assert.strictEqual(privateRoomLoss.earnedXp, 0);
+    assert.strictEqual(privateRoomLoss.earnedCoins, 0);
+  });
 });

@@ -781,10 +781,11 @@ const styles = StyleSheet.create({
   backBtn: {
     backgroundColor: '#F1F5F9',
     borderWidth: 2,
+    borderBottomWidth: 3,
     borderColor: '#CBD5E1',
-    borderRadius: 999,
+    borderRadius: 14,
     paddingHorizontal: 14,
-    paddingVertical: 7,
+    paddingVertical: 8,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -810,7 +811,7 @@ const styles = StyleSheet.create({
   dotActive: {
     width: 20,
     height: 8,
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981',
   },
   dotInactive: {
     width: 8,
@@ -818,15 +819,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#CBD5E1',
   },
   nextBtn: {
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981', // Modern vibrant emerald green
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
+    borderColor: '#059669',
+    borderRadius: 14,
     paddingHorizontal: 16,
-    paddingVertical: 7,
+    paddingVertical: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#16A34A',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3,

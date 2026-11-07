@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import type { GameMode, Player } from '../types';
+import type { SetupPreset } from '../screens/HomeScreen';
 import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
@@ -34,6 +35,7 @@ export interface GameOverModalProps {
   onQuitRoom?: () => void;
   onPlayWithMoreBots?: () => void;
   onPlay1v1?: () => void;
+  onSelectPreset?: (preset: SetupPreset) => void;
   onMainMenu?: () => void;
 }
 
@@ -51,14 +53,15 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   turnCount: _turnCount,
   players,
   localPlayerId,
-  mode: _mode,
-  gameMode: _gameMode,
+  mode,
+  gameMode,
   isOnlineMode: _isOnlineMode = false,
   matchRewards = null,
   onPlayAgain,
   onQuitRoom,
-  onPlayWithMoreBots: _onPlayWithMoreBots,
-  onPlay1v1: _onPlay1v1,
+  onPlayWithMoreBots,
+  onPlay1v1,
+  onSelectPreset,
   onMainMenu,
 }) => {
   // Step 1: "Victory & Standings" | Step 2: "Rewards & Level Up"
@@ -131,12 +134,13 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
       statusBarTranslucent
     >
       <View style={styles.backdrop}>
-        <ScrollView
-          contentContainerStyle={styles.scrollContainer}
-          showsVerticalScrollIndicator={false}
-          bounces={false}
-        >
-          <View style={styles.dialogCard}>
+        <View style={styles.dialogCard}>
+          <ScrollView
+            style={styles.modalScroll}
+            contentContainerStyle={styles.modalScrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
             {/* ========================================================= */}
             {/* SCREEN 1: VICTORY & STANDINGS                            */}
             {/* ========================================================= */}
@@ -208,10 +212,15 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                           !isWinner && isLocalPlayer && styles.localPlayerRow,
                         ]}
                       >
-                        <View style={styles.playerRowLeft}>
+                        {/* Column 1: Rank */}
+                        <View style={styles.rankColumn}>
                           <Text style={[styles.rankText, isWinner && styles.winnerRankText]}>
                             {getOrdinalRank(index)}
                           </Text>
+                        </View>
+
+                        {/* Column 2: Player Avatar & Name */}
+                        <View style={styles.playerInfoColumn}>
                           {Boolean(p.avatarId) && (
                             <Text style={styles.standingsAvatarEmoji}>
                               {getAvatarConfig(p.avatarId).emoji}
@@ -229,7 +238,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                           </Text>
                         </View>
 
-                        <View style={styles.playerRowRight}>
+                        {/* Column 3: Remaining Cards / Winner Badge */}
+                        <View style={styles.cardCountColumn}>
                           {isWinner ? (
                             <View style={styles.winnerBadge}>
                               <Text style={styles.winnerBadgeText}>1ST • WINNER</Text>
@@ -345,6 +355,92 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                   <Text style={styles.playAgainBtnText}>Play Again</Text>
                 </TouchableOpacity>
 
+                {/* Bot Match Option: Multi-Bot Selection Row */}
+                {Boolean((mode === 'bot' || gameMode === 'vs_bot') && (onSelectPreset || onPlay1v1 || onPlayWithMoreBots)) && (
+                  <View style={styles.botSelectorContainer}>
+                    <Text style={styles.botSelectorLabel}>PLAY VS AI OPPONENTS</Text>
+                    <View style={styles.botSelectorRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        style={[
+                          styles.botSelectorBtn,
+                          players.length === 2 && styles.botSelectorBtnActive,
+                        ]}
+                        onPress={() => {
+                          hapticsService.cardSnap();
+                          soundService.playCardSnap();
+                          if (onSelectPreset) {
+                            onSelectPreset('vs_bot_2p');
+                          } else {
+                            onPlay1v1?.();
+                          }
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.botSelectorBtnText,
+                            players.length === 2 && styles.botSelectorBtnTextActive,
+                          ]}
+                        >
+                          1 Bot (1v1)
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        style={[
+                          styles.botSelectorBtn,
+                          players.length === 3 && styles.botSelectorBtnActive,
+                        ]}
+                        onPress={() => {
+                          hapticsService.cardSnap();
+                          soundService.playCardSnap();
+                          if (onSelectPreset) {
+                            onSelectPreset('vs_bot_3p');
+                          } else {
+                            onPlayAgain();
+                          }
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.botSelectorBtnText,
+                            players.length === 3 && styles.botSelectorBtnTextActive,
+                          ]}
+                        >
+                          2 Bots (3P)
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        style={[
+                          styles.botSelectorBtn,
+                          players.length === 4 && styles.botSelectorBtnActive,
+                        ]}
+                        onPress={() => {
+                          hapticsService.cardSnap();
+                          soundService.playCardSnap();
+                          if (onSelectPreset) {
+                            onSelectPreset('vs_bot_4p');
+                          } else {
+                            onPlayWithMoreBots?.();
+                          }
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.botSelectorBtnText,
+                            players.length === 4 && styles.botSelectorBtnTextActive,
+                          ]}
+                        >
+                          3 Bots (4P)
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
                 {/* 2. Soft Cream/Slate Secondary "Home" Button */}
                 <TouchableOpacity
                   activeOpacity={0.75}
@@ -367,8 +463,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                 </TouchableOpacity>
               </View>
             )}
-          </View>
-        </ScrollView>
+          </ScrollView>
+        </View>
       </View>
     </Modal>
   );
@@ -380,50 +476,52 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.75)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 16,
-  },
-  scrollContainer: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 16,
-    width: '100%',
+    padding: 10,
   },
   dialogCard: {
     width: '100%',
-    maxWidth: 360,
+    maxWidth: 400,
+    maxHeight: '90%',
     backgroundColor: '#FEF6E9', // Warm cream surface matching room creation & homescreen
-    borderRadius: 24,
-    padding: 22,
+    borderRadius: 20,
     alignItems: 'center',
     borderWidth: 3,
     borderColor: '#E2D9C8',
     shadowColor: '#1E293B',
-    shadowOffset: { width: 0, height: 10 },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25,
-    shadowRadius: 18,
+    shadowRadius: 16,
     elevation: 8,
+    overflow: 'hidden',
+  },
+  modalScroll: {
+    width: '100%',
+  },
+  modalScrollContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
   },
   stepContentWrapper: {
     width: '100%',
     alignItems: 'center',
   },
   trophyWrapper: {
-    width: 90,
-    height: 90,
+    width: 60,
+    height: 60,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
     overflow: 'visible',
-    marginVertical: 4,
+    marginVertical: 2,
   },
   trophyCircle: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2.5,
+    borderWidth: 2,
     zIndex: 2,
   },
   trophyCircleVictory: {
@@ -435,15 +533,15 @@ const styles = StyleSheet.create({
     borderColor: '#CBD5E1',
   },
   trophyEmoji: {
-    fontSize: 38,
+    fontSize: 28,
   },
   bannerTagContainer: {
-    paddingHorizontal: 12,
-    paddingVertical: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 2,
     borderRadius: 999,
     borderWidth: 1.5,
-    marginBottom: 6,
-    marginTop: 6,
+    marginBottom: 4,
+    marginTop: 4,
   },
   bannerTagVictory: {
     backgroundColor: '#FEF3C7',
@@ -455,7 +553,7 @@ const styles = StyleSheet.create({
   },
   bannerTagText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 11,
+    fontSize: 10,
     letterSpacing: 1.2,
   },
   bannerTagTextVictory: {
@@ -495,26 +593,26 @@ const styles = StyleSheet.create({
   },
   headline: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 24,
+    fontSize: 20,
     color: '#0F172A',
-    marginBottom: 4,
+    marginBottom: 2,
     textAlign: 'center',
   },
   subtitle: {
     ...FONT_CARTOON_REGULAR,
-    fontSize: 13,
+    fontSize: 12,
     color: '#475569',
     textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 14,
+    lineHeight: 16,
+    marginBottom: 8,
     paddingHorizontal: 8,
   },
   statsContainer: {
     width: '100%',
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 16,
+    borderRadius: 14,
+    padding: 10,
+    marginBottom: 10,
     borderWidth: 1.5,
     borderColor: '#E2E8F0',
     position: 'relative',
@@ -522,17 +620,17 @@ const styles = StyleSheet.create({
   },
   statsHeader: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 11,
+    fontSize: 10,
     color: '#64748B',
     letterSpacing: 0.8,
-    marginBottom: 8,
+    marginBottom: 6,
     textTransform: 'uppercase',
   },
   playerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 6,
+    paddingVertical: 5,
     paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#F1F5F9',
@@ -550,17 +648,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#BAE6FD',
   },
-  playerRowLeft: {
+  rankColumn: {
+    width: 32,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  playerInfoColumn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    flex: 1,
-    gap: 8,
+    paddingHorizontal: 6,
+    gap: 4,
+  },
+  cardCountColumn: {
+    minWidth: 84,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   rankText: {
     ...FONT_CARTOON_BOLD,
     fontSize: 11,
     color: '#64748B',
-    minWidth: 26,
   },
   winnerRankText: {
     color: '#15803D',
@@ -581,9 +689,6 @@ const styles = StyleSheet.create({
   },
   localPlayerRowName: {
     color: '#0369A1',
-  },
-  playerRowRight: {
-    alignItems: 'flex-end',
   },
   winnerBadge: {
     backgroundColor: '#DCFCE7',
@@ -606,14 +711,15 @@ const styles = StyleSheet.create({
   },
   continueBtn: {
     width: '100%',
-    backgroundColor: '#22C55E', // Vibrant emerald green
+    backgroundColor: '#10B981', // Modern vibrant emerald green
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
-    paddingVertical: 14,
+    borderColor: '#059669',
+    borderRadius: 14,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#15803D',
+    marginTop: 8,
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
@@ -622,7 +728,7 @@ const styles = StyleSheet.create({
   continueBtnText: {
     ...FONT_CARTOON_HEAVY,
     color: '#FFFFFF',
-    fontSize: 17,
+    fontSize: 15,
     letterSpacing: 0.5,
   },
   rewardsSummaryRow: {
@@ -702,7 +808,7 @@ const styles = StyleSheet.create({
   },
   levelProgressBarFill: {
     height: '100%',
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981',
     borderRadius: 999,
   },
   levelProgressFootnote: {
@@ -763,15 +869,15 @@ const styles = StyleSheet.create({
   },
   playAgainBtn: {
     width: '100%',
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981', // Modern vibrant emerald green
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
+    borderColor: '#059669',
+    borderRadius: 14,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
-    shadowColor: '#15803D',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
@@ -783,13 +889,83 @@ const styles = StyleSheet.create({
     fontSize: 16,
     letterSpacing: 0.5,
   },
+  switchModeBtn: {
+    width: '100%',
+    backgroundColor: '#FEF6E9',
+    borderWidth: 2,
+    borderBottomWidth: 4,
+    borderColor: '#D97706',
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    shadowColor: '#D97706',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  switchModeBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 14,
+    color: '#92400E',
+    letterSpacing: 0.4,
+  },
+  botSelectorContainer: {
+    width: '100%',
+    backgroundColor: '#FFFDF7',
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: '#E2D9C8',
+    padding: 8,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  botSelectorLabel: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#8A715D',
+    letterSpacing: 0.8,
+    marginBottom: 6,
+  },
+  botSelectorRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 6,
+  },
+  botSelectorBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#FEF6E9',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  botSelectorBtnActive: {
+    backgroundColor: '#10B981',
+    borderColor: '#059669',
+    borderBottomWidth: 3,
+  },
+  botSelectorBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#475569',
+    textAlign: 'center',
+  },
+  botSelectorBtnTextActive: {
+    color: '#FFFFFF',
+  },
   homeBtn: {
     width: '100%',
     backgroundColor: '#F1F5F9', // Soft cream/slate secondary pill
     borderWidth: 2,
+    borderBottomWidth: 3,
     borderColor: '#CBD5E1',
-    borderRadius: 999,
-    paddingVertical: 12,
+    borderRadius: 14,
+    paddingVertical: 11,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,

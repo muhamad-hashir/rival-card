@@ -4,6 +4,7 @@ import {
   ImageBackground,
   Platform,
   Pressable,
+  SafeAreaView,
   StatusBar as RNStatusBar,
   StyleSheet,
   Text,
@@ -11,6 +12,8 @@ import {
   View,
 } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ModesModal } from '../components/ModesModal';
 import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { ProfileModal } from '../components/ProfileModal';
 import { ResumeMatchModal } from '../components/ResumeMatchModal';
@@ -40,17 +43,24 @@ import type { GameState } from '../types';
 
 const HOMESCREEN_IMAGE = require('../../assets/homescreen.png');
 
-export type SetupPreset = 'vs_bot_2p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
+export type SetupPreset = 'vs_bot_2p' | 'vs_bot_3p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
 
 interface HomeScreenProps {
   onStartOfflineGame: (presetKey: SetupPreset) => void;
-  onStartOnlineGame: (initialState: GameState, myPlayerId: string, roomCode: string) => void;
+  onStartOnlineGame: (
+    initialState: GameState,
+    myPlayerId: string,
+    roomCode: string,
+    isQuickMatch?: boolean
+  ) => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   onStartOfflineGame,
   onStartOnlineGame,
 }) => {
+  const insets = useSafeAreaInsets();
+  const [isModesModalOpen, setIsModesModalOpen] = useState(false);
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isHowToPlayOpen, setIsHowToPlayOpen] = useState(false);
@@ -193,11 +203,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     lockPortrait();
   }, []);
 
-  // Button 1: Play vs Bot (triggers offline vs bot mode immediately)
+  // Button 1: Play vs Bot (opens ModesModal to select 1v1 vs Bot or 4-Player vs Bots)
   const handlePressVsBot = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
-    onStartOfflineGame('vs_bot_2p');
+    setIsModesModalOpen(true);
   };
 
   // Button 2: Pass & Play (triggers local 2P mode immediately)
@@ -260,7 +270,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const activeAvatar = getAvatarConfig(profile?.avatarId);
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.safeArea}>
       <ImageBackground
         source={HOMESCREEN_IMAGE}
         style={styles.backgroundImage}
@@ -296,41 +306,41 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           ]}
         />
 
-        {/* Invisible Touch Overlay Button 4: How to Play */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="How to Play"
-          testID="how-to-play-trigger"
-          onPress={handlePressHowToPlay}
-          style={({ pressed }) => [
-            styles.howToPlayOverlay,
-            pressed && styles.touchOverlayPressed,
-          ]}
-        />
+        {/* Invisible Touch Overlay Row matching illustrated buttons in homescreen.png */}
+        <View style={styles.bottomButtonsContainer}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="How to Play"
+            testID="how-to-play-trigger"
+            onPress={handlePressHowToPlay}
+            style={({ pressed }) => [
+              styles.bottomUtilityBtn,
+              pressed && styles.bottomUtilityBtnPressed,
+            ]}
+          />
 
-        {/* Invisible Touch Overlay Button 5: Store / Shop */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Store"
-          testID="store-trigger"
-          onPress={handlePressShop}
-          style={({ pressed }) => [
-            styles.storeOverlay,
-            pressed && styles.touchOverlayPressed,
-          ]}
-        />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Store"
+            testID="store-trigger"
+            onPress={handlePressShop}
+            style={({ pressed }) => [
+              styles.bottomUtilityBtn,
+              pressed && styles.bottomUtilityBtnPressed,
+            ]}
+          />
 
-        {/* Invisible Touch Overlay Button 6: Settings */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Settings"
-          testID="settings-trigger"
-          onPress={handlePressSettings}
-          style={({ pressed }) => [
-            styles.settingsOverlay,
-            pressed && styles.touchOverlayPressed,
-          ]}
-        />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+            testID="settings-trigger"
+            onPress={handlePressSettings}
+            style={({ pressed }) => [
+              styles.bottomUtilityBtn,
+              pressed && styles.bottomUtilityBtnPressed,
+            ]}
+          />
+        </View>
       </ImageBackground>
 
       {/* Top Header Row with Profile Pill, Level Badge, Coins, and Gems */}
@@ -427,9 +437,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <MultiplayerLobbyModal
         visible={isLobbyModalOpen}
         onClose={() => setIsLobbyModalOpen(false)}
-        onGameStart={(initialState, myPlayerId, roomCode) => {
+        onGameStart={(initialState, myPlayerId, roomCode, isQuickMatch) => {
           setIsLobbyModalOpen(false);
-          onStartOnlineGame(initialState, myPlayerId, roomCode);
+          onStartOnlineGame(initialState, myPlayerId, roomCode, isQuickMatch);
         }}
       />
 
@@ -480,14 +490,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         }}
       />
 
+      {/* Game Mode Selector Modal (1v1 vs Bot, 4-Player vs Bots, etc.) */}
+      <ModesModal
+        visible={isModesModalOpen}
+        onClose={() => setIsModesModalOpen(false)}
+        onSelectPreset={(preset) => {
+          setIsModesModalOpen(false);
+          onStartOfflineGame(preset);
+        }}
+        onOpenMultiplayer={() => {
+          setIsModesModalOpen(false);
+          setIsLobbyModalOpen(true);
+        }}
+      />
+
       {/* Global Error & Disconnection Toast */}
       <ErrorToast />
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
     backgroundColor: '#0F172A',
   },
@@ -499,9 +523,9 @@ const styles = StyleSheet.create({
   topHeaderContainer: {
     position: 'absolute',
     top: Platform.select({
-      ios: 52,
-      android: (RNStatusBar.currentHeight || 24) + 12,
-      default: 20,
+      ios: 14,
+      android: 14,
+      default: 14,
     }),
     left: 14,
     right: 14,
@@ -594,7 +618,7 @@ const styles = StyleSheet.create({
   },
   levelFill: {
     height: '100%',
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981',
     borderRadius: 999,
   },
   coinPill: {
@@ -647,49 +671,48 @@ const styles = StyleSheet.create({
   },
   touchOverlay: {
     position: 'absolute',
-    width: '78%',
-    height: '8.8%',
+    width: '74%',
+    height: '12.6%',
     alignSelf: 'center',
     backgroundColor: 'transparent',
-    borderRadius: 999,
+    borderRadius: 24,
   },
   touchOverlayPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    backgroundColor: 'rgba(255, 255, 255, 0.40)',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.85)',
+    transform: [{ scale: 0.98 }],
   },
   btn1: {
-    top: '40.8%',
+    top: '40.6%',
   },
   btn2: {
-    top: '53.0%',
+    top: '53.4%',
   },
   btn3: {
-    top: '65.2%',
+    top: '66.2%',
   },
-  howToPlayOverlay: {
+  bottomButtonsContainer: {
     position: 'absolute',
-    left: '6%',
     top: '84.8%',
-    width: '31.5%',
-    height: '11.5%',
-    backgroundColor: 'transparent',
-    borderRadius: 24,
+    height: '8.4%',
+    left: '12%',
+    right: '12%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'stretch',
+    zIndex: 10,
   },
-  storeOverlay: {
-    position: 'absolute',
-    left: '36.5%',
-    top: '84.8%',
-    width: '28%',
-    height: '11.5%',
+  bottomUtilityBtn: {
+    flex: 1,
+    marginHorizontal: 3,
     backgroundColor: 'transparent',
-    borderRadius: 24,
+    borderRadius: 18,
   },
-  settingsOverlay: {
-    position: 'absolute',
-    left: '64.5%',
-    top: '84.8%',
-    width: '29.5%',
-    height: '11.5%',
-    backgroundColor: 'transparent',
-    borderRadius: 24,
+  bottomUtilityBtnPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.40)',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.85)',
+    transform: [{ scale: 0.96 }],
   },
 });

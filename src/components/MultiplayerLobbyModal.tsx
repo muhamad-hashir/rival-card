@@ -39,7 +39,7 @@ import type { GameState } from '../types';
 interface MultiplayerLobbyModalProps {
   visible: boolean;
   onClose: () => void;
-  onGameStart: (gameState: GameState, myPlayerId: string, roomCode: string) => void;
+  onGameStart: (gameState: GameState, myPlayerId: string, roomCode: string, isQuickMatch?: boolean) => void;
 }
 
 type PrivateRoomTab = 'host' | 'join';
@@ -81,7 +81,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
         soundService.playCardDraw();
         hapticsService.validPlay();
         const code = multiplayerService.getRoomCode() || roomCode;
-        onGameStart(initialState, myPlayerId, code);
+        onGameStart(initialState, myPlayerId, code, false);
       },
       onError: (errMsg) => {
         setIsBusy(false);
@@ -130,7 +130,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
             soundService.playCardDraw();
             hapticsService.validPlay();
             onClose();
-            onGameStart(result.initialState, result.myPlayerId, result.roomCode);
+            onGameStart(result.initialState, result.myPlayerId, result.roomCode, true);
           },
           onError: (errMsg) => {
             setIsSearching(false);
@@ -246,7 +246,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
       await multiplayerService.startGame(initialState);
       setIsBusy(false);
-      onGameStart(initialState, myPlayerId, roomCode);
+      onGameStart(initialState, myPlayerId, roomCode, false);
     } catch (err: any) {
       setIsBusy(false);
       Alert.alert('Start Error', err?.message || 'Could not start match');
@@ -347,7 +347,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                 /* Searching Overlay on Card 1 */
                 <View style={styles.searchingOverlay}>
                   <View style={styles.pulseContainer}>
-                    <ActivityIndicator size="large" color="#22C55E" />
+                    <ActivityIndicator size="large" color="#10B981" />
                   </View>
                   <Text style={styles.searchingTimerText}>
                     Searching for opponent... 0:{searchSeconds < 10 ? `0${searchSeconds}` : searchSeconds}
@@ -698,7 +698,7 @@ const styles = StyleSheet.create({
     marginRight: 5,
   },
   statusConnected: {
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981',
   },
   statusConnecting: {
     backgroundColor: '#F59E0B',
@@ -767,14 +767,19 @@ const styles = StyleSheet.create({
 
   /* Buttons */
   primaryBtn: {
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981', // Modern vibrant emerald green
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
+    borderColor: '#059669',
+    borderRadius: 14,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
     width: '100%',
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
   },
   primaryBtnText: {
     ...FONT_CARTOON_HEAVY,
@@ -786,7 +791,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2B8EEA',
     borderBottomWidth: 4,
     borderColor: '#1D4ED8',
-    borderRadius: 999,
+    borderRadius: 14,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',

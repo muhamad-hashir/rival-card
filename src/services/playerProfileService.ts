@@ -296,19 +296,36 @@ class PlayerProfileService {
 
   /**
    * Awards match rewards (XP and Coins) with Level-Up threshold detection.
-   * Completion XP: +50 XP on defeat, +120 XP on victory.
-   * Completion Coins: +20 coins on defeat, +60 coins on victory.
+   * - Online Ranked / Standard: 100% rewards (+120 XP / +60 coins on win, +50 XP / +20 coins on loss).
+   * - Bot Match (CPU): strictly 10% rewards (Math.floor(reward * 0.10)).
+   * - Pass & Play & Custom Private Rooms: 0 XP and 0 Coins (disabled).
    * When currentXp >= xpToNextLevel: level increments, carry over remainder,
    * next threshold becomes level * 100, bonus +100 Coins & +5 Gems awarded.
    */
   public async awardMatchRewards(
     isWinner: boolean,
-    turnsPlayed: number = 0
+    turnsPlayed: number = 0,
+    matchType: 'online_ranked' | 'bot' | 'custom_private' | 'pass_and_play' = 'online_ranked'
   ): Promise<AwardRewardsResult> {
     const current = await this.getProfile();
 
-    const earnedXp = isWinner ? 120 : 50;
-    const earnedCoins = isWinner ? 60 : 20;
+    const baseXp = isWinner ? 120 : 50;
+    const baseCoins = isWinner ? 60 : 20;
+
+    let earnedXp = 0;
+    let earnedCoins = 0;
+
+    if (matchType === 'online_ranked') {
+      earnedXp = baseXp;
+      earnedCoins = baseCoins;
+    } else if (matchType === 'bot') {
+      earnedXp = Math.floor(baseXp * 0.10);
+      earnedCoins = Math.floor(baseCoins * 0.10);
+    } else {
+      // 'pass_and_play' or 'custom_private': completely disabled
+      earnedXp = 0;
+      earnedCoins = 0;
+    }
 
     let currentXp = current.currentXp + earnedXp;
     let level = current.level;

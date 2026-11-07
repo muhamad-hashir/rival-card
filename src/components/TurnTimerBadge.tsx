@@ -38,9 +38,9 @@ export const TurnTimerBadge: React.FC<TurnTimerBadgeProps> = ({
   }, [seconds, isUrgent, pulseAnim]);
 
   // Determine colors based on urgency state
-  let primaryColor = '#22C55E'; // Normal: Emerald green
-  let bgColor = 'rgba(34, 197, 94, 0.18)';
-  let borderColor = '#22C55E';
+  let primaryColor = '#10B981'; // Normal: Emerald green
+  let bgColor = 'rgba(16, 185, 129, 0.18)';
+  let borderColor = '#10B981';
 
   if (isUrgent) {
     primaryColor = '#EF4444'; // Urgent: Vibrant Red

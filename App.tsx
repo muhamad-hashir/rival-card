@@ -17,7 +17,21 @@ import { LoadingScreen } from './src/screens/LoadingScreen';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { supabase } from './src/services/supabase';
 import { settingsService } from './src/services/settingsService';
+import { Asset } from 'expo-asset';
 import { audioService } from './src/services/audioService';
+import { soundService } from './src/services/soundService';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+let ExpoAudio: typeof import('expo-audio') | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const expoAudio = require('expo-audio');
+  if (expoAudio) {
+    ExpoAudio = expoAudio;
+  }
+} catch {
+  ExpoAudio = null;
+}
 import { playerProfileService } from './src/services/playerProfileService';
 import type { GameState } from './src/types';
 
@@ -39,6 +53,7 @@ function MainAppContent() {
     initialState: GameState;
     playerId: string;
     roomCode: string;
+    isQuickMatch?: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -46,20 +61,55 @@ function MainAppContent() {
 
     async function loadAppResources() {
       try {
-        // Step 1: Custom Typography (Safe Font Loading)
+        // Step 0: Ensure Audio Mode is initialized on root mount
+        try {
+          const modeConfig = {
+            playsInSilentMode: true,
+            shouldDuckAndroid: true,
+            interruptionMode: 'duckOthers',
+          };
+          if (ExpoAudio && (ExpoAudio as any).AudioModule && typeof (ExpoAudio as any).AudioModule.setAudioModeAsync === 'function') {
+            await (ExpoAudio as any).AudioModule.setAudioModeAsync(modeConfig);
+          } else if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+            await ExpoAudio.setAudioModeAsync(modeConfig as any);
+          }
+          await audioService.ensureAudioMode();
+          await soundService.ensureAudioMode();
+        } catch (audioInitErr) {
+          console.warn('[RivalCard Boot] Root audio mode setup warning:', audioInitErr);
+        }
+
+        // Step 1: Custom Typography (Safe Font Loading) & Asset Prefetching
         if (isMounted) {
           setLoadProgress(35);
-          setStatusText('Checking cards...');
+          setStatusText('Checking cards & assets...');
         }
         try {
-          await Font.loadAsync({
-            Fredoka_400Regular,
-            Fredoka_500Medium,
-            Fredoka_600SemiBold,
-            Fredoka_700Bold,
-          });
+          await Promise.allSettled([
+            Font.loadAsync({
+              Fredoka_400Regular,
+              Fredoka_500Medium,
+              Fredoka_600SemiBold,
+              Fredoka_700Bold,
+            }),
+            Asset.loadAsync([
+              require('./assets/background1.png'),
+              require('./assets/homescreen.png'),
+              require('./assets/logo.png'),
+              require('./assets/card_back.png'),
+              require('./assets/icons/icon_skip.png'),
+              require('./assets/icons/icon_reverse.png'),
+              require('./assets/icons/icon_draw2.png'),
+              require('./assets/icons/icon_wild_color_change.png'),
+              require('./assets/icons/icon_wild_4.png'),
+              require('./assets/icons/icon_mute.png'),
+              require('./assets/icons/icon_swap.png'),
+              require('./assets/sounds/background.mp3'),
+              require('./assets/sounds/match-background.mp3'),
+            ]),
+          ]);
         } catch (fontErr) {
-          console.warn('[RivalCard Boot] Font loading warning (fallback fonts active):', fontErr);
+          console.warn('[RivalCard Boot] Font/Asset loading warning (fallback fonts active):', fontErr);
         }
 
         // Step 2: Supabase Client & Auth State Validation with offline timeout guard
@@ -135,8 +185,8 @@ function MainAppContent() {
   }, []);
 
   const handleStartOnlineGame = useCallback(
-    (initialState: GameState, playerId: string, roomCode: string) => {
-      setActiveOnlineMatch({ initialState, playerId, roomCode });
+    (initialState: GameState, playerId: string, roomCode: string, isQuickMatch: boolean = false) => {
+      setActiveOnlineMatch({ initialState, playerId, roomCode, isQuickMatch });
       setCurrentScreen('game');
     },
     []
@@ -171,6 +221,7 @@ function MainAppContent() {
           initialGameState={activeOnlineMatch?.initialState}
           initialLocalOnlinePlayerId={activeOnlineMatch?.playerId}
           initialOnlineRoomCode={activeOnlineMatch?.roomCode}
+          isQuickMatch={activeOnlineMatch?.isQuickMatch}
           onGoHome={handleGoHome}
         />
       )}
@@ -186,9 +237,11 @@ export default function App() {
   }, []);
 
   return (
-    <ErrorBoundary key={remountKey} onReset={handleAppRestart}>
-      <MainAppContent />
-    </ErrorBoundary>
+    <SafeAreaProvider>
+      <ErrorBoundary key={remountKey} onReset={handleAppRestart}>
+        <MainAppContent />
+      </ErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 

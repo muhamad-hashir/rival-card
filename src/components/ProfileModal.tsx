@@ -208,28 +208,30 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       statusBarTranslucent
     >
       <View style={styles.backdrop}>
-        <ScrollView
-          contentContainerStyle={styles.scrollContainer}
-          showsVerticalScrollIndicator={false}
-          bounces={false}
-        >
-          <View style={styles.dialogCard}>
-            {/* Header: Title and Close button */}
-            <View style={styles.headerRow}>
-              <View style={styles.headerTitleRow}>
-                <Text style={styles.headerIcon}>👤</Text>
-                <Text style={styles.headerTitle}>PLAYER PROFILE</Text>
-              </View>
-              <TouchableOpacity
-                onPress={handleClose}
-                style={styles.closeBtn}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.closeBtnText}>✕</Text>
-              </TouchableOpacity>
+        <View style={styles.dialogCard}>
+          {/* Header: Title and Close button */}
+          <View style={styles.headerRow}>
+            <View style={styles.headerTitleRow}>
+              <Text style={styles.headerIcon}>👤</Text>
+              <Text style={styles.headerTitle}>PLAYER PROFILE</Text>
             </View>
+            <TouchableOpacity
+              onPress={handleClose}
+              style={styles.closeBtn}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.closeBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
 
+          {/* Scrollable Modal Body */}
+          <ScrollView
+            style={styles.modalBodyScroll}
+            contentContainerStyle={styles.scrollContainer}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
             {/* Selected Avatar Preview & Guest Badge */}
             <View style={styles.previewSection}>
               <View style={[styles.largeAvatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
@@ -257,7 +259,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             <View style={styles.levelCard}>
               <View style={styles.levelHeaderRow}>
                 <View style={styles.levelBadge}>
-                  <Text style={styles.levelBadgeText}>⭐ Level {profile.level ?? 1}</Text>
+                  <Text style={styles.levelBadgeText}>⭐ LVL {profile.level ?? 1}</Text>
                 </View>
                 <Text style={styles.levelXpText}>
                   {profile.currentXp ?? 0} / {profile.xpToNextLevel ?? 100} XP
@@ -340,28 +342,41 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </View>
             </View>
 
-            {/* Streamlined Career Stats Grid */}
+            {/* Expanded Career Stats 2x2 Grid */}
             <View style={styles.statsCard}>
-              <Text style={styles.statsCardTitle}>CAREER STATS</Text>
-              <View style={styles.statsRow}>
+              <View style={styles.statsCardHeader}>
+                <Text style={styles.statsCardHeaderIcon}>📊</Text>
+                <Text style={styles.statsCardTitle}>CAREER STATISTICS</Text>
+              </View>
+              <View style={styles.statsGrid}>
+                {/* 1. Matches */}
                 <View style={styles.statBox}>
                   <Text style={styles.statNumber}>{profile.stats.gamesPlayed}</Text>
-                  <Text style={styles.statLabel}>Matches</Text>
+                  <Text style={styles.statLabel}>MATCHES</Text>
                 </View>
-                <View style={styles.statDivider} />
+
+                {/* 2. Wins */}
                 <View style={styles.statBox}>
-                  <Text style={[styles.statNumber, styles.statWinsNumber]}>{profile.stats.wins}</Text>
-                  <Text style={styles.statLabel}>Wins 🏆</Text>
+                  <Text style={[styles.statNumber, styles.statWinsNumber]}>
+                    {profile.stats.wins}
+                  </Text>
+                  <Text style={styles.statLabel}>WINS 🏆</Text>
                 </View>
-                <View style={styles.statDivider} />
+
+                {/* 3. Win Rate */}
                 <View style={styles.statBox}>
-                  <Text style={styles.statNumber}>{winRate}%</Text>
-                  <Text style={styles.statLabel}>Win Rate</Text>
+                  <Text style={[styles.statNumber, styles.statRateNumber]}>
+                    {winRate}%
+                  </Text>
+                  <Text style={styles.statLabel}>WIN RATE</Text>
                 </View>
-                <View style={styles.statDivider} />
+
+                {/* 4. Streak */}
                 <View style={styles.statBox}>
-                  <Text style={[styles.statNumber, styles.statStreakNumber]}>{profile.stats.winStreak}</Text>
-                  <Text style={styles.statLabel}>Streak 🔥</Text>
+                  <Text style={[styles.statNumber, styles.statStreakNumber]}>
+                    {profile.stats.winStreak}
+                  </Text>
+                  <Text style={styles.statLabel}>STREAK 🔥</Text>
                 </View>
               </View>
             </View>
@@ -394,8 +409,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             >
               <Text style={styles.saveBtnText}>{isSaving ? 'Saving...' : 'Save Profile'}</Text>
             </TouchableOpacity>
-          </View>
-        </ScrollView>
+          </ScrollView>
+        </View>
       </View>
     </Modal>
   );
@@ -409,19 +424,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
   },
-  scrollContainer: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 16,
-    width: '100%',
-  },
   dialogCard: {
-    width: '100%',
-    maxWidth: 360,
+    width: '90%',
+    maxWidth: 480,
+    maxHeight: '92%',
+    alignSelf: 'center',
     backgroundColor: '#FEF6E9', // Warm cream surface matching design system
     borderRadius: 24,
-    padding: 20,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
     borderWidth: 3,
     borderColor: '#E2D9C8',
     shadowColor: '#1E293B',
@@ -429,6 +441,15 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 18,
     elevation: 8,
+    overflow: 'hidden',
+  },
+  modalBodyScroll: {
+    width: '100%',
+  },
+  scrollContainer: {
+    alignItems: 'center',
+    paddingBottom: 24,
+    width: '100%',
   },
   headerRow: {
     flexDirection: 'row',
@@ -558,7 +579,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 2,
     borderColor: '#E2D9C8',
-    padding: 10,
+    padding: 12,
     marginTop: 6,
     marginBottom: 4,
   },
@@ -566,39 +587,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   levelBadge: {
     backgroundColor: '#FEF6E9',
     borderWidth: 1.5,
     borderColor: '#E2D9C8',
     borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
   },
   levelBadgeText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 11,
+    fontSize: 12,
     color: '#0F172A',
   },
   levelXpText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 11,
+    fontSize: 12,
     color: '#15803D',
   },
   xpTrack: {
     width: '100%',
-    height: 10,
+    height: 12,
     backgroundColor: '#E2E8F0',
-    borderRadius: 999,
+    borderRadius: 6,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
   },
   xpFill: {
     height: '100%',
-    backgroundColor: '#22C55E',
-    borderRadius: 999,
+    backgroundColor: '#10B981',
+    borderRadius: 6,
   },
   inputSection: {
     width: '100%',
@@ -712,68 +731,99 @@ const styles = StyleSheet.create({
   },
   statsCard: {
     width: '100%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 10,
-    marginVertical: 8,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFDF7',
+    borderRadius: 18,
+    padding: 12,
+    marginVertical: 10,
+    borderWidth: 2,
+    borderColor: '#E2D9C8',
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  statsCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 10,
+  },
+  statsCardHeaderIcon: {
+    fontSize: 13,
   },
   statsCardTitle: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 10,
-    color: '#64748B',
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#475569',
     textAlign: 'center',
-    marginBottom: 6,
-    letterSpacing: 0.6,
+    letterSpacing: 0.8,
   },
-  statsRow: {
+  statsGrid: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
   },
   statBox: {
+    width: '48%',
+    backgroundColor: '#1E293B', // Dedicated dark navy/slate card box
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderWidth: 1.5,
+    borderColor: '#334155',
     alignItems: 'center',
-    flex: 1,
-  },
-  statDivider: {
-    width: 1,
-    height: 24,
-    backgroundColor: '#E2E8F0',
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   statNumber: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 15,
-    color: '#0F172A',
+    fontSize: 24, // Big, bold metric values (22 to 26)
+    fontWeight: '900',
+    color: '#FFFFFF', // Bright white
+    marginBottom: 4,
   },
   statWinsNumber: {
-    color: '#D97706',
+    color: '#10B981', // Vibrant emerald
+  },
+  statRateNumber: {
+    color: '#38BDF8', // Vibrant cyan
   },
   statStreakNumber: {
-    color: '#EA580C',
+    color: '#FACC15', // Gold
   },
   statLabel: {
-    ...FONT_CARTOON_REGULAR,
-    fontSize: 10,
-    color: '#64748B',
-    marginTop: 1,
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12, // Clear label
+    fontWeight: '700',
+    color: '#94A3B8', // Muted slate
+    letterSpacing: 1, // Letter spacing 1
+    textAlign: 'center',
+    textTransform: 'uppercase',
   },
   googleAuthBtn: {
-    width: '100%',
+    width: '90%',
+    height: 48,
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
     borderBottomWidth: 4,
     borderColor: '#2D1F17',
-    borderRadius: 999,
-    paddingVertical: 9,
+    borderRadius: 14,
     paddingHorizontal: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    marginVertical: 5,
+    marginVertical: 6,
+    alignSelf: 'center',
     shadowColor: '#2D1F17',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
-    shadowRadius: 2,
+    shadowRadius: 3,
     elevation: 3,
   },
   googleBtnContent: {
@@ -805,25 +855,26 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   saveBtn: {
-    width: '100%',
-    backgroundColor: '#22C55E', // Vibrant emerald green
+    width: '90%',
+    height: 48,
+    backgroundColor: '#10B981', // Vibrant emerald green matching primary actions
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
-    paddingVertical: 11,
+    borderColor: '#059669',
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 6,
-    shadowColor: '#15803D',
+    alignSelf: 'center',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
-    elevation: 3,
+    elevation: 4,
   },
   saveBtnText: {
     ...FONT_CARTOON_HEAVY,
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     letterSpacing: 0.5,
   },
 });

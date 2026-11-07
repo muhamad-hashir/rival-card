@@ -61,7 +61,7 @@ export const ResumeMatchModal: React.FC<ResumeMatchModalProps> = ({
           {/* Action Buttons */}
           {isRejoining ? (
             <View style={styles.rejoiningNotice}>
-              <ActivityIndicator size="small" color="#22C55E" />
+              <ActivityIndicator size="small" color="#10B981" />
               <Text style={styles.rejoiningText}>Rejoining room #{session.roomId}...</Text>
             </View>
           ) : (
@@ -147,13 +147,18 @@ const styles = StyleSheet.create({
   },
   rejoinBtn: {
     width: '100%',
-    backgroundColor: '#22C55E',
+    backgroundColor: '#10B981', // Modern vibrant emerald green
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
+    borderColor: '#059669',
+    borderRadius: 14,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
   },
   rejoinBtnText: {
     ...FONT_CARTOON_HEAVY,
@@ -166,7 +171,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FEE2E2',
     borderWidth: 2,
     borderColor: '#FCA5A5',
-    borderRadius: 999,
+    borderRadius: 14,
     paddingVertical: 11,
     alignItems: 'center',
     justifyContent: 'center',

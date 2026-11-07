@@ -1,17 +1,22 @@
 // src/services/soundService.ts - Audio Sound Effects Service for Rival Card
 const isWeb = typeof window !== 'undefined' && typeof window.document !== 'undefined';
 
-// Safely require expo-av inside a try/catch block so Audio fails gracefully
-// when running inside Expo Go (where native modules like ExponentAV aren't compiled into the client bundle).
-let ExpoAudio: typeof import('expo-av').Audio | null = null;
+// Safely require expo-audio inside a try/catch block so Audio fails gracefully
+let ExpoAudio: typeof import('expo-audio') | null = null;
+let AudioModule: any = null;
+let createAudioPlayer: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const expoAv = require('expo-av');
-  if (expoAv && expoAv.Audio) {
-    ExpoAudio = expoAv.Audio;
+  const expoAudio = require('expo-audio');
+  if (expoAudio) {
+    ExpoAudio = expoAudio;
+    AudioModule = expoAudio.AudioModule;
+    createAudioPlayer = expoAudio.createAudioPlayer;
   }
 } catch {
   ExpoAudio = null;
+  AudioModule = null;
+  createAudioPlayer = null;
 }
 
 type SoundType = 'cardSnap' | 'cardDraw' | 'penalty' | 'rivalCallout' | 'winChime' | 'error';
@@ -38,20 +43,34 @@ class SoundService {
     return this.isMuted;
   }
 
-  private async ensureAudioMode(): Promise<void> {
+  private audioModePromise: Promise<void> | null = null;
+
+  public async ensureAudioMode(): Promise<void> {
     if (this.audioModeConfigured) return;
-    try {
-      if (!isWeb && ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
-        await ExpoAudio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-        });
-      }
-      this.audioModeConfigured = true;
-    } catch {
-      // Ignore if not supported in environment
+    if (this.audioModePromise) {
+      await this.audioModePromise;
+      return;
     }
+    this.audioModePromise = (async () => {
+      try {
+        const modeConfig = {
+          playsInSilentMode: true,
+          shouldDuckAndroid: true,
+          interruptionMode: 'duckOthers',
+        };
+        if (!isWeb && AudioModule && typeof AudioModule.setAudioModeAsync === 'function') {
+          await AudioModule.setAudioModeAsync(modeConfig);
+        } else if (!isWeb && ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+          await ExpoAudio.setAudioModeAsync(modeConfig as any);
+        }
+        this.audioModeConfigured = true;
+      } catch {
+        // Ignore if not supported in environment
+      } finally {
+        this.audioModePromise = null;
+      }
+    })();
+    await this.audioModePromise;
   }
 
   /**
@@ -79,8 +98,8 @@ class SoundService {
       }
     }
 
-    // If ExpoAudio native module is not available (e.g. Expo Go without ExponentAV), gracefully return
-    if (!ExpoAudio || !ExpoAudio.Sound) {
+    // If ExpoAudio native module is not available, gracefully return
+    if (!createAudioPlayer && (!ExpoAudio || typeof ExpoAudio.createAudioPlayer !== 'function')) {
       return;
     }
 
@@ -89,14 +108,33 @@ class SoundService {
       const uri = this.soundCache.get(type);
       if (!uri) return;
 
-      const { sound } = await ExpoAudio.Sound.createAsync(
-        { uri },
-        { shouldPlay: true, volume: 0.85 }
-      );
+      let player: any = null;
+      try {
+        if (createAudioPlayer && typeof createAudioPlayer === 'function') {
+          player = createAudioPlayer({ uri });
+        } else if (ExpoAudio && typeof ExpoAudio.createAudioPlayer === 'function') {
+          player = ExpoAudio.createAudioPlayer({ uri });
+        }
+      } catch {
+        return;
+      }
+      if (!player) return;
 
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded && status.didJustFinish) {
-          sound.unloadAsync().catch(() => {});
+      try {
+        player.volume = 0.85;
+        player.play();
+      } catch {
+        try {
+          player.remove();
+        } catch {}
+        return;
+      }
+
+      player.addListener('playbackStatusUpdate', (status: any) => {
+        if (status && status.didJustFinish) {
+          try {
+            player.remove();
+          } catch {}
         }
       });
     } catch {
@@ -105,27 +143,51 @@ class SoundService {
   }
 
   public async playCardSnap(): Promise<void> {
-    await this.play('cardSnap');
+    try {
+      await this.play('cardSnap');
+    } catch (e) {
+      console.warn('playCardSnap error:', e);
+    }
   }
 
   public async playCardDraw(): Promise<void> {
-    await this.play('cardDraw');
+    try {
+      await this.play('cardDraw');
+    } catch (e) {
+      console.warn('playCardDraw error:', e);
+    }
   }
 
   public async playPenalty(): Promise<void> {
-    await this.play('penalty');
+    try {
+      await this.play('penalty');
+    } catch (e) {
+      console.warn('playPenalty error:', e);
+    }
   }
 
   public async playRivalCallout(): Promise<void> {
-    await this.play('rivalCallout');
+    try {
+      await this.play('rivalCallout');
+    } catch (e) {
+      console.warn('playRivalCallout error:', e);
+    }
   }
 
   public async playWinChime(): Promise<void> {
-    await this.play('winChime');
+    try {
+      await this.play('winChime');
+    } catch (e) {
+      console.warn('playWinChime error:', e);
+    }
   }
 
   public async playError(): Promise<void> {
-    await this.play('error');
+    try {
+      await this.play('error');
+    } catch (e) {
+      console.warn('playError error:', e);
+    }
   }
 
   // ==========================================================================

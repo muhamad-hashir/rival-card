@@ -299,9 +299,9 @@ const styles = StyleSheet.create({
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#22C55E', // Vibrant emerald green
+    backgroundColor: '#10B981', // Vibrant emerald green
     borderBottomWidth: 3,
-    borderBottomColor: '#16A34A', // Darker emerald rim
+    borderBottomColor: '#059669', // Darker emerald rim
     borderRadius: 12,
     position: 'relative',
     overflow: 'hidden',

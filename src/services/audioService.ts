@@ -1,15 +1,21 @@
 // src/services/audioService.ts - Background Music & Action Sound Effects Engine for Rival Card
 import { settingsService, UserSettings } from './settingsService';
 
-let ExpoAudio: typeof import('expo-av').Audio | null = null;
+let ExpoAudio: any = null;
+let AudioModule: any = null;
+let createAudioPlayer: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const expoAv = require('expo-av');
-  if (expoAv && expoAv.Audio) {
-    ExpoAudio = expoAv.Audio;
+  const expoAudio = require('expo-audio');
+  if (expoAudio) {
+    ExpoAudio = expoAudio;
+    AudioModule = expoAudio.AudioModule;
+    createAudioPlayer = expoAudio.createAudioPlayer;
   }
 } catch {
   ExpoAudio = null;
+  AudioModule = null;
+  createAudioPlayer = null;
 }
 
 export type BgmTrackType = 'none' | 'menu' | 'gameplay';
@@ -18,10 +24,23 @@ export type BgmTrackType = 'none' | 'menu' | 'gameplay';
 // Asset Loaders with Safe Fallback Protection
 // ============================================================================
 
+function safeWarn(message: string, err?: any): void {
+  if (
+    typeof process !== 'undefined' &&
+    (process.env?.NODE_ENV === 'test' ||
+      process.env?.npm_lifecycle_event?.includes('test') ||
+      process.argv?.some((a) => a.includes('test')))
+  ) {
+    return;
+  }
+  console.warn(message, err);
+}
+
 function getMenuBgmAsset(): any {
   try {
     return require('../../assets/sounds/background.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load menu BGM asset (background.mp3):', err);
     return null;
   }
 }
@@ -29,7 +48,8 @@ function getMenuBgmAsset(): any {
 function getGameplayBgmAsset(): any {
   try {
     return require('../../assets/sounds/match-background.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load gameplay BGM asset (match-background.mp3):', err);
     return null;
   }
 }
@@ -40,7 +60,8 @@ function getRivalShoutAsset(): any {
   } catch {
     try {
       return require('../../assets/sounds/game-sounds/rival-voice.mp3');
-    } catch {
+    } catch (err) {
+      safeWarn('[AudioService] Failed to load rival shout/voice asset:', err);
       return null;
     }
   }
@@ -49,7 +70,8 @@ function getRivalShoutAsset(): any {
 function getColorChangeAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/color-change.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load color change asset:', err);
     return null;
   }
 }
@@ -57,7 +79,8 @@ function getColorChangeAsset(): any {
 function getPlusFourAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/plus-four.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load plus four asset:', err);
     return null;
   }
 }
@@ -65,7 +88,8 @@ function getPlusFourAsset(): any {
 function getPlusTwoAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/plus-two.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load plus two asset:', err);
     return null;
   }
 }
@@ -73,7 +97,8 @@ function getPlusTwoAsset(): any {
 function getSkipAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/skip.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load skip asset:', err);
     return null;
   }
 }
@@ -81,7 +106,8 @@ function getSkipAsset(): any {
 function getReverseAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/reverse.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load reverse asset:', err);
     return null;
   }
 }
@@ -89,7 +115,8 @@ function getReverseAsset(): any {
 function getSwapAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/swap.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load swap asset:', err);
     return null;
   }
 }
@@ -97,14 +124,15 @@ function getSwapAsset(): any {
 function getMuteAsset(): any {
   try {
     return require('../../assets/sounds/game-sounds/mute.mp3');
-  } catch {
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load mute asset:', err);
     return null;
   }
 }
 
 export class AudioService {
   private currentBgmType: BgmTrackType = 'none';
-  private currentBgmSound: any | null = null;
+  private currentBgmPlayer: any | null = null;
   private audioModeConfigured: boolean = false;
   private isBgmLoading: boolean = false;
 
@@ -122,19 +150,48 @@ export class AudioService {
     }
   }
 
+  private audioModePromise: Promise<void> | null = null;
+
   public async ensureAudioMode(): Promise<void> {
     if (this.audioModeConfigured) return;
-    try {
-      if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
-        await ExpoAudio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
+    if (this.audioModePromise) {
+      await this.audioModePromise;
+      return;
+    }
+    this.audioModePromise = (async () => {
+      try {
+        const modeConfig = {
+          playsInSilentMode: true,
           shouldDuckAndroid: true,
-        });
+          interruptionMode: 'duckOthers',
+        };
+        if (AudioModule && typeof AudioModule.setAudioModeAsync === 'function') {
+          await AudioModule.setAudioModeAsync(modeConfig);
+        } else if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+          await ExpoAudio.setAudioModeAsync(modeConfig);
+        }
+        this.audioModeConfigured = true;
+      } catch (err) {
+        safeWarn('[AudioService] Failed to configure audio mode:', err);
+      } finally {
+        this.audioModePromise = null;
       }
-      this.audioModeConfigured = true;
-    } catch {
-      // Ignore if not supported in environment
+    })();
+    await this.audioModePromise;
+  }
+
+  private safeCreatePlayer(source: any): any | null {
+    try {
+      if (createAudioPlayer && typeof createAudioPlayer === 'function') {
+        return createAudioPlayer(source);
+      }
+      if (ExpoAudio && typeof ExpoAudio.createAudioPlayer === 'function') {
+        return ExpoAudio.createAudioPlayer(source);
+      }
+      return null;
+    } catch (err) {
+      safeWarn('[AudioService] Failed to create AudioPlayer safely:', err);
+      return null;
     }
   }
 
@@ -148,17 +205,18 @@ export class AudioService {
 
   /**
    * Background Music: Menu Loop (plays across HomeScreen, Modals)
-   * Loops seamlessly at volume ~0.35.
+   * Loops seamlessly at volume 1.0.
    */
   public async playMenuBgm(): Promise<void> {
     try {
-      if (this.currentBgmType === 'menu' && this.currentBgmSound) {
+      if (this.currentBgmType === 'menu' && this.currentBgmPlayer) {
         const settings = await settingsService.getSettings();
         if (settings.bgmEnabled) {
-          const status = await this.currentBgmSound.getStatusAsync().catch(() => null);
-          if (status && status.isLoaded && !status.isPlaying) {
-            await this.currentBgmSound.playAsync().catch(() => {});
-          }
+          try {
+            this.currentBgmPlayer.loop = true;
+            this.currentBgmPlayer.volume = 1.0;
+            this.currentBgmPlayer.play();
+          } catch {}
         }
         return;
       }
@@ -169,29 +227,43 @@ export class AudioService {
       await this.stopBgmSoundOnly();
 
       const asset = getMenuBgmAsset();
-      if (!asset || !ExpoAudio) return;
+      if (!asset) {
+        safeWarn('[AudioService] Cannot play menu BGM: asset unavailable');
+        return;
+      }
 
       await this.ensureAudioMode();
       this.isBgmLoading = true;
 
-      const { sound } = await ExpoAudio.Sound.createAsync(
-        asset,
-        {
-          isLooping: true,
-          volume: 0.35,
-          shouldPlay: settings.bgmEnabled,
-        }
-      );
-
-      // If user switched track while loading, unload
-      if (this.currentBgmType !== 'menu') {
-        await sound.unloadAsync().catch(() => {});
+      const player = this.safeCreatePlayer(asset);
+      if (!player) {
+        safeWarn('[AudioService] Cannot play menu BGM: AudioPlayer creation failed');
         return;
       }
 
-      this.currentBgmSound = sound;
+      try {
+        player.loop = true;
+        player.volume = 1.0;
+      } catch {}
+
+      // If user switched track while loading, release
+      if (this.currentBgmType !== 'menu') {
+        try {
+          player.remove();
+        } catch {}
+        return;
+      }
+
+      this.currentBgmPlayer = player;
+      if (settings.bgmEnabled) {
+        try {
+          player.play();
+        } catch (playErr) {
+          safeWarn('[AudioService] Error calling player.play() for menu BGM:', playErr);
+        }
+      }
     } catch (err) {
-      console.warn('Failed to play menu BGM:', err);
+      safeWarn('[AudioService] Failed to play menu BGM:', err);
     } finally {
       this.isBgmLoading = false;
     }
@@ -199,17 +271,18 @@ export class AudioService {
 
   /**
    * Background Music: Match Loop (plays during active match on GameScreen)
-   * Loops comfortably at volume ~0.30.
+   * Loops comfortably at volume 1.0.
    */
   public async playGameplayBgm(): Promise<void> {
     try {
-      if (this.currentBgmType === 'gameplay' && this.currentBgmSound) {
+      if (this.currentBgmType === 'gameplay' && this.currentBgmPlayer) {
         const settings = await settingsService.getSettings();
         if (settings.bgmEnabled) {
-          const status = await this.currentBgmSound.getStatusAsync().catch(() => null);
-          if (status && status.isLoaded && !status.isPlaying) {
-            await this.currentBgmSound.playAsync().catch(() => {});
-          }
+          try {
+            this.currentBgmPlayer.loop = true;
+            this.currentBgmPlayer.volume = 1.0;
+            this.currentBgmPlayer.play();
+          } catch {}
         }
         return;
       }
@@ -220,29 +293,43 @@ export class AudioService {
       await this.stopBgmSoundOnly();
 
       const asset = getGameplayBgmAsset();
-      if (!asset || !ExpoAudio) return;
+      if (!asset) {
+        safeWarn('[AudioService] Cannot play gameplay BGM: asset unavailable');
+        return;
+      }
 
       await this.ensureAudioMode();
       this.isBgmLoading = true;
 
-      const { sound } = await ExpoAudio.Sound.createAsync(
-        asset,
-        {
-          isLooping: true,
-          volume: 0.30,
-          shouldPlay: settings.bgmEnabled,
-        }
-      );
-
-      // If user switched track while loading, unload
-      if (this.currentBgmType !== 'gameplay') {
-        await sound.unloadAsync().catch(() => {});
+      const player = this.safeCreatePlayer(asset);
+      if (!player) {
+        safeWarn('[AudioService] Cannot play gameplay BGM: AudioPlayer creation failed');
         return;
       }
 
-      this.currentBgmSound = sound;
+      try {
+        player.loop = true;
+        player.volume = 1.0;
+      } catch {}
+
+      // If user switched track while loading, release
+      if (this.currentBgmType !== 'gameplay') {
+        try {
+          player.remove();
+        } catch {}
+        return;
+      }
+
+      this.currentBgmPlayer = player;
+      if (settings.bgmEnabled) {
+        try {
+          player.play();
+        } catch (playErr) {
+          safeWarn('[AudioService] Error calling player.play() for gameplay BGM:', playErr);
+        }
+      }
     } catch (err) {
-      console.warn('Failed to play gameplay BGM:', err);
+      safeWarn('[AudioService] Failed to play gameplay BGM:', err);
     } finally {
       this.isBgmLoading = false;
     }
@@ -257,14 +344,14 @@ export class AudioService {
   }
 
   private async stopBgmSoundOnly(): Promise<void> {
-    if (this.currentBgmSound) {
-      const sound = this.currentBgmSound;
-      this.currentBgmSound = null;
+    if (this.currentBgmPlayer) {
+      const player = this.currentBgmPlayer;
+      this.currentBgmPlayer = null;
       try {
-        await sound.stopAsync();
+        player.pause();
       } catch {}
       try {
-        await sound.unloadAsync();
+        player.remove();
       } catch {}
     }
   }
@@ -274,11 +361,11 @@ export class AudioService {
    */
   public async pauseBgm(): Promise<void> {
     try {
-      if (this.currentBgmSound) {
-        await this.currentBgmSound.pauseAsync();
+      if (this.currentBgmPlayer) {
+        this.currentBgmPlayer.pause();
       }
     } catch (err) {
-      console.warn('Failed to pause BGM:', err);
+      safeWarn('[AudioService] Failed to pause BGM:', err);
     }
   }
 
@@ -290,15 +377,17 @@ export class AudioService {
       const settings = await settingsService.getSettings();
       if (!settings.bgmEnabled) return;
 
-      if (this.currentBgmSound) {
-        await this.currentBgmSound.playAsync();
+      if (this.currentBgmPlayer) {
+        this.currentBgmPlayer.loop = true;
+        this.currentBgmPlayer.volume = 1.0;
+        this.currentBgmPlayer.play();
       } else if (this.currentBgmType === 'menu') {
         await this.playMenuBgm();
       } else if (this.currentBgmType === 'gameplay') {
         await this.playGameplayBgm();
       }
     } catch (err) {
-      console.warn('Failed to resume BGM:', err);
+      safeWarn('[AudioService] Failed to resume BGM:', err);
     }
   }
 
@@ -333,22 +422,36 @@ export class AudioService {
       }
 
       const asset = assetGetter();
-      if (!asset || !ExpoAudio) return;
+      if (!asset) {
+        safeWarn('[AudioService] SFX asset unavailable or missing');
+        return;
+      }
 
       await this.ensureAudioMode();
 
-      const { sound } = await ExpoAudio.Sound.createAsync(
-        asset,
-        { shouldPlay: true, volume }
-      );
+      const player = this.safeCreatePlayer(asset);
+      if (!player) return;
 
-      sound.setOnPlaybackStatusUpdate((status: any) => {
-        if (status.isLoaded && status.didJustFinish) {
-          sound.unloadAsync().catch(() => {});
+      try {
+        player.volume = volume;
+        player.play();
+      } catch (playErr) {
+        safeWarn('[AudioService] Error calling player.play() for SFX:', playErr);
+        try {
+          player.remove();
+        } catch {}
+        return;
+      }
+
+      player.addListener('playbackStatusUpdate', (status: any) => {
+        if (status && status.didJustFinish) {
+          try {
+            player.remove();
+          } catch {}
         }
       });
     } catch (err) {
-      console.warn('Failed to play SFX:', err);
+      safeWarn('[AudioService] Failed to play SFX:', err);
     }
   }
 

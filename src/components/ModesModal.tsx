@@ -1,5 +1,5 @@
-// src/components/ModesModal.tsx - Cross-Platform Game Mode Selector Modal (Works on Web & Mobile)
-import React from 'react';
+// src/components/ModesModal.tsx - Arcade-Themed Bot & Opponents Selector Modal
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   StyleSheet,
@@ -15,13 +15,48 @@ import {
   FONT_CARTOON_HEAVY,
   FONT_CARTOON_REGULAR,
 } from '../styles/typography';
-import { networkService } from '../services/networkService';
 
-interface ModesModalProps {
+interface BotOption {
+  preset: SetupPreset;
+  icon: string;
+  badge: string;
+  title: string;
+  subtitle: string;
+  tagline: string;
+}
+
+const BOT_OPTIONS: BotOption[] = [
+  {
+    preset: 'vs_bot_2p',
+    icon: '⚔️',
+    badge: '1v1 DUEL',
+    title: '1 BOT',
+    subtitle: '1v1 Match',
+    tagline: 'Fast-paced duel',
+  },
+  {
+    preset: 'vs_bot_3p',
+    icon: '⚡',
+    badge: '3P BRAWL',
+    title: '2 BOTS',
+    subtitle: '3-Player',
+    tagline: 'Trio clash',
+  },
+  {
+    preset: 'vs_bot_4p',
+    icon: '🔥',
+    badge: '4P CHAOS',
+    title: '3 BOTS',
+    subtitle: '4-Player',
+    tagline: 'Full rumble',
+  },
+];
+
+export interface ModesModalProps {
   visible: boolean;
   onClose: () => void;
   onSelectPreset: (preset: SetupPreset) => void;
-  onOpenMultiplayer: () => void;
+  onOpenMultiplayer?: () => void;
   onGoHome?: () => void;
 }
 
@@ -29,23 +64,34 @@ export const ModesModal: React.FC<ModesModalProps> = ({
   visible,
   onClose,
   onSelectPreset,
-  onOpenMultiplayer,
+  onOpenMultiplayer: _onOpenMultiplayer,
   onGoHome,
 }) => {
-  const handleSelect = (action: () => void) => {
+  const [selectedPreset, setSelectedPreset] = useState<SetupPreset>('vs_bot_2p');
+
+  useEffect(() => {
+    if (visible) {
+      setSelectedPreset('vs_bot_2p');
+    }
+  }, [visible]);
+
+  const handleCardPress = (preset: SetupPreset) => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
-    onClose();
-    action();
+    setSelectedPreset(preset);
   };
 
-  const handleSelectMultiplayer = async () => {
-    hapticsService.cardSelection();
+  const handleStartMatch = () => {
+    hapticsService.victory();
     soundService.playCardSnap();
-    const canProceed = await networkService.ensureOnline('Online Multiplayer');
-    if (!canProceed) return;
     onClose();
-    onOpenMultiplayer();
+    onSelectPreset(selectedPreset);
+  };
+
+  const handleClose = () => {
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+    onClose();
   };
 
   return (
@@ -53,99 +99,135 @@ export const ModesModal: React.FC<ModesModalProps> = ({
       transparent
       animationType="fade"
       visible={visible}
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
       statusBarTranslucent
     >
       <View style={styles.backdrop}>
-        <View style={styles.card}>
-          {/* Header */}
-          <View style={styles.headerRow}>
-            <Text style={styles.title}>SELECT GAME MODE</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <Text style={styles.closeBtnText}>✕</Text>
-            </TouchableOpacity>
+        <View style={styles.cardContainer}>
+          {/* Distinct Cartoon Close Button pinned to top right */}
+          <TouchableOpacity
+            activeOpacity={0.75}
+            onPress={handleClose}
+            style={styles.closeBtn}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Close Bot Selection"
+          >
+            <Text style={styles.closeBtnText}>✕</Text>
+          </TouchableOpacity>
+
+          {/* Modal Header */}
+          <View style={styles.header}>
+            <Text style={styles.title}>PLAY VS BOTS</Text>
+            <Text style={styles.subtitle}>
+              Pick your challenge level to battle against AI Rivals!
+            </Text>
           </View>
 
-          {/* Mode Option Buttons */}
-          <View style={styles.optionsList}>
-            <TouchableOpacity
-              style={styles.optionBtn}
-              onPress={() => handleSelect(() => onSelectPreset('vs_bot_2p'))}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.optionIcon}>🤖</Text>
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>1v1 vs Bot</Text>
-                <Text style={styles.optionSubtitle}>Quick offline duel against CPU</Text>
-              </View>
-            </TouchableOpacity>
+          {/* 3 Bot Selection Cards in a Horizontal Row */}
+          <View style={styles.cardsRow}>
+            {BOT_OPTIONS.map((opt) => {
+              const isSelected = selectedPreset === opt.preset;
+              return (
+                <TouchableOpacity
+                  key={opt.preset}
+                  activeOpacity={0.85}
+                  onPress={() => handleCardPress(opt.preset)}
+                  style={[
+                    styles.botCard,
+                    isSelected ? styles.botCardSelected : styles.botCardUnselected,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${opt.title} ${opt.badge}`}
+                >
+                  {/* Badge */}
+                  <View
+                    style={[
+                      styles.cardBadge,
+                      isSelected ? styles.cardBadgeSelected : styles.cardBadgeUnselected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.cardBadgeText,
+                        isSelected ? styles.cardBadgeTextSelected : styles.cardBadgeTextUnselected,
+                      ]}
+                    >
+                      {opt.badge}
+                    </Text>
+                  </View>
 
-            <TouchableOpacity
-              style={styles.optionBtn}
-              onPress={() => handleSelect(() => onSelectPreset('vs_bot_4p'))}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.optionIcon}>🤖</Text>
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>4-Player vs Bots</Text>
-                <Text style={styles.optionSubtitle}>4-player battle against 3 CPU rivals</Text>
-              </View>
-            </TouchableOpacity>
+                  {/* Icon Circle */}
+                  <View
+                    style={[
+                      styles.iconCircle,
+                      isSelected ? styles.iconCircleSelected : styles.iconCircleUnselected,
+                    ]}
+                  >
+                    <Text style={styles.cardIcon}>{opt.icon}</Text>
+                  </View>
 
-            <TouchableOpacity
-              style={styles.optionBtn}
-              onPress={() => handleSelect(() => onSelectPreset('pass_play_2p'))}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.optionIcon}>👥</Text>
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>Pass & Play (2P)</Text>
-                <Text style={styles.optionSubtitle}>Local multiplayer on one device</Text>
-              </View>
-            </TouchableOpacity>
+                  {/* Title & Subtitle */}
+                  <Text
+                    style={[
+                      styles.cardTitle,
+                      isSelected ? styles.cardTitleSelected : styles.cardTitleUnselected,
+                    ]}
+                  >
+                    {opt.title}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.cardSubtitle,
+                      isSelected && styles.cardSubtitleSelected,
+                    ]}
+                  >
+                    {opt.subtitle}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.cardTagline,
+                      isSelected && styles.cardTaglineSelected,
+                    ]}
+                  >
+                    {opt.tagline}
+                  </Text>
 
-            <TouchableOpacity
-              style={styles.optionBtn}
-              onPress={() => handleSelect(() => onSelectPreset('pass_play_3p'))}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.optionIcon}>👥</Text>
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>Pass & Play (3P)</Text>
-                <Text style={styles.optionSubtitle}>3-player local pass-and-play</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.optionBtn, styles.onlineOptionBtn]}
-              onPress={handleSelectMultiplayer}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.optionIcon}>🌐</Text>
-              <View style={styles.optionTextContainer}>
-                <Text style={[styles.optionTitle, styles.onlineTitle]}>
-                  Online Multiplayer
-                </Text>
-                <Text style={styles.optionSubtitle}>
-                  Host or join a 4-digit room code
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            {onGoHome && (
-              <TouchableOpacity
-                style={[styles.optionBtn, styles.homeOptionBtn]}
-                onPress={() => handleSelect(onGoHome)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.optionIcon}>🏠</Text>
-                <View style={styles.optionTextContainer}>
-                  <Text style={styles.optionTitle}>Return to Home</Text>
-                  <Text style={styles.optionSubtitle}>Exit to main menu screen</Text>
-                </View>
-              </TouchableOpacity>
-            )}
+                  {/* Selected Indicator Pill */}
+                  {isSelected && (
+                    <View style={styles.selectedPill}>
+                      <Text style={styles.selectedPillText}>✓ ACTIVE</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
           </View>
+
+          {/* Primary Action Button: Large Vibrant START MATCH Button */}
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={handleStartMatch}
+            style={styles.startMatchBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Start Match"
+          >
+            <Text style={styles.startMatchBtnText}>START MATCH</Text>
+          </TouchableOpacity>
+
+          {/* Optional Return to Home link (if opened from within in-game) */}
+          {Boolean(onGoHome) && (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => {
+                onClose();
+                onGoHome?.();
+              }}
+              style={styles.returnHomeLink}
+            >
+              <Text style={styles.returnHomeText}>🏠 Return to Main Menu</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Modal>
@@ -155,90 +237,231 @@ export const ModesModal: React.FC<ModesModalProps> = ({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 16,
   },
-  card: {
-    backgroundColor: '#1E293B',
-    borderRadius: 20,
-    padding: 20,
+  cardContainer: {
     width: '100%',
-    maxWidth: 380,
-    borderWidth: 1.5,
-    borderColor: '#334155',
-    shadowColor: '#000',
+    maxWidth: 440,
+    backgroundColor: '#1E293B', // Deep navy/slate rounded dialog
+    borderRadius: 24,
+    borderWidth: 3,
+    borderColor: '#38BDF8', // Stylized cyan border
+    paddingHorizontal: 16,
+    paddingVertical: 22,
+    position: 'relative',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 10,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  title: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 16,
-    color: '#F8FAFC',
-    letterSpacing: 0.8,
+    shadowOpacity: 0.55,
+    shadowRadius: 20,
+    elevation: 12,
   },
   closeBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#334155',
+    borderWidth: 2,
+    borderColor: '#475569',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 10,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 3,
   },
   closeBtnText: {
     ...FONT_CARTOON_HEAVY,
-    color: '#E2E8F0',
-    fontSize: 14,
-  },
-  optionsList: {
-    gap: 10,
-  },
-  optionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#334155',
-    // @ts-ignore
-    cursor: 'pointer',
-  },
-  onlineOptionBtn: {
-    borderColor: '#3B82F6',
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-  },
-  homeOptionBtn: {
-    borderColor: '#64748B',
-  },
-  optionIcon: {
-    fontSize: 22,
-    marginRight: 12,
-  },
-  optionTextContainer: {
-    flex: 1,
-  },
-  optionTitle: {
-    ...FONT_CARTOON_BOLD,
     fontSize: 14,
     color: '#F8FAFC',
+    lineHeight: 16,
   },
-  onlineTitle: {
-    color: '#60A5FA',
+  header: {
+    alignItems: 'center',
+    marginBottom: 18,
+    paddingHorizontal: 20,
   },
-  optionSubtitle: {
+  title: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 22,
+    color: '#FACC15', // Vibrant yellow/gold color
+    letterSpacing: 1.2,
+    textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.85)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
+  },
+  subtitle: {
     ...FONT_CARTOON_REGULAR,
-    fontSize: 11,
+    fontSize: 12,
     color: '#94A3B8',
-    marginTop: 2,
+    textAlign: 'center',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  cardsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'stretch',
+    gap: 8,
+    marginBottom: 18,
+  },
+  botCard: {
+    flex: 1,
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 175,
+  },
+  botCardUnselected: {
+    backgroundColor: '#334155', // Dark frosted surface
+    borderWidth: 2,
+    borderColor: '#475569',
+    transform: [{ scale: 1.0 }],
+  },
+  botCardSelected: {
+    backgroundColor: '#065F46', // Emerald glow background
+    borderWidth: 2.5,
+    borderColor: '#10B981', // Bursting emerald border
+    transform: [{ scale: 1.05 }],
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  cardBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    marginBottom: 8,
+  },
+  cardBadgeUnselected: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
+  cardBadgeSelected: {
+    backgroundColor: '#047857',
+    borderWidth: 1,
+    borderColor: '#34D399',
+  },
+  cardBadgeText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    letterSpacing: 0.6,
+  },
+  cardBadgeTextUnselected: {
+    color: '#94A3B8',
+  },
+  cardBadgeTextSelected: {
+    color: '#A7F3D0',
+  },
+  iconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  iconCircleUnselected: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1.5,
+    borderColor: '#475569',
+  },
+  iconCircleSelected: {
+    backgroundColor: '#047857',
+    borderWidth: 1.5,
+    borderColor: '#10B981',
+  },
+  cardIcon: {
+    fontSize: 22,
+  },
+  cardTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 14,
+    marginBottom: 2,
+    textAlign: 'center',
+  },
+  cardTitleUnselected: {
+    color: '#E2E8F0',
+  },
+  cardTitleSelected: {
+    color: '#FFFFFF',
+  },
+  cardSubtitle: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#CBD5E1',
+    marginBottom: 2,
+    textAlign: 'center',
+  },
+  cardSubtitleSelected: {
+    color: '#D1FAE5',
+  },
+  cardTagline: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 9.5,
+    color: '#94A3B8',
+    textAlign: 'center',
+    lineHeight: 12,
+  },
+  cardTaglineSelected: {
+    color: '#A7F3D0',
+  },
+  selectedPill: {
+    marginTop: 8,
+    backgroundColor: '#10B981',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  selectedPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  startMatchBtn: {
+    width: '100%',
+    backgroundColor: '#10B981', // 3D emerald arcade styling
+    borderBottomWidth: 4,
+    borderColor: '#059669',
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  startMatchBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 17,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  returnHomeLink: {
+    marginTop: 10,
+    alignSelf: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  returnHomeText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#64748B',
   },
 });

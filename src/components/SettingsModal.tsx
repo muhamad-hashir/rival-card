@@ -580,8 +580,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 3,
   },
   toggleTrackOn: {
-    backgroundColor: '#22C55E',
-    borderColor: '#15803D',
+    backgroundColor: '#10B981',
+    borderColor: '#059669',
   },
   toggleTrackOff: {
     backgroundColor: '#E2E8F0',

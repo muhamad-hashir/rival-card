@@ -188,15 +188,15 @@ const styles = StyleSheet.create({
   },
   stayBtn: {
     width: '100%',
-    backgroundColor: '#22C55E', // Vibrant emerald green
+    backgroundColor: '#10B981', // Modern vibrant emerald green
     borderBottomWidth: 4,
-    borderColor: '#15803D',
-    borderRadius: 999,
+    borderColor: '#059669',
+    borderRadius: 14,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 10,
-    shadowColor: '#15803D',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
@@ -212,8 +212,9 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: '#FEE2E2', // Soft slate-red
     borderWidth: 2,
+    borderBottomWidth: 3,
     borderColor: '#FCA5A5',
-    borderRadius: 999,
+    borderRadius: 14,
     paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',

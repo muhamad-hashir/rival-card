@@ -54,7 +54,7 @@ import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { audioService } from '../services/audioService';
-import { playerProfileService, getAvatarConfig, AwardRewardsResult } from '../services/playerProfileService';
+import { playerProfileService, getAvatarConfig, AwardRewardsResult, PlayerProfile } from '../services/playerProfileService';
 import { shopService, ShopItem } from '../services/shopService';
 import { settingsService, UserSettings, DEFAULT_SETTINGS } from '../services/settingsService';
 import {
@@ -71,7 +71,7 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
 const CARD_BACK_IMAGE = require('../../assets/card_back.png');
 
-export type SetupPreset = 'vs_bot_2p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
+export type SetupPreset = 'vs_bot_2p' | 'vs_bot_3p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
 
 export { TURN_DURATION };
 
@@ -85,6 +85,15 @@ const PRESETS: Record<
     players: [
       { id: 'p1', name: 'You', isBot: false },
       { id: 'bot1', name: 'RivalBot 🤖', isBot: true },
+    ],
+  },
+  vs_bot_3p: {
+    name: '3-Player vs Bots',
+    mode: 'vs_bot',
+    players: [
+      { id: 'p1', name: 'You', isBot: false },
+      { id: 'bot1', name: 'CyberBot 🤖', isBot: true },
+      { id: 'bot2', name: 'NovaBot 🤖', isBot: true },
     ],
   },
   vs_bot_4p: {
@@ -153,6 +162,7 @@ export interface GameScreenProps {
   initialGameState?: GameState;
   initialOnlineRoomCode?: string | null;
   initialLocalOnlinePlayerId?: string | null;
+  isQuickMatch?: boolean;
   onGoHome?: () => void;
 }
 
@@ -161,6 +171,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   initialGameState,
   initialOnlineRoomCode = null,
   initialLocalOnlinePlayerId = null,
+  isQuickMatch = false,
   onGoHome,
 }) => {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -282,6 +293,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Bot & Human action processing flags
   const [isBotProcessing, setIsBotProcessing] = useState(false);
   const [isHumanDrawing, setIsHumanDrawing] = useState(false);
+
+  // Player Profile state for coin badge and display
+  const [playerProfile, setPlayerProfile] = useState<PlayerProfile | null>(() =>
+    playerProfileService.getCachedProfile()
+  );
+
+  useEffect(() => {
+    playerProfileService.getProfile().then(setPlayerProfile);
+    const unsubscribe = playerProfileService.subscribe(setPlayerProfile);
+    return () => unsubscribe();
+  }, []);
 
   // Browser testing hook to simulate game ending for verification
   useEffect(() => {
@@ -421,26 +443,32 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       : isOnlineMode
       ? gameState.players.find((p) => p.id === localOnlinePlayerId) || currentPlayer
       : currentPlayer;
+  const myPlayerAvatar = getAvatarConfig(myPlayer.avatarId);
 
-  // 4-Player Clock Seating Positions:
-  // 6 O'Clock: myPlayer (Bottom)
-  // 9 O'Clock: Opponent 1 (Left Edge, e.g., CyberBot)
-  // 12 O'Clock: Opponent 2 (Top Center, e.g., NovaBot)
-  // 3 O'Clock: Opponent 3 (Right Edge, e.g., EchoBot)
-  // In 2-Player matches, Opponent 1 is centered at 12 O'Clock.
+  // 4-Player & Circular Seating Positions:
+  // Bottom (6 O'Clock): myPlayer
+  // Left (9 O'Clock): Opponent 1 (3P and 4P)
+  // Top (12 O'Clock): Opponent 2 (1v1 and 4P)
+  // Right (3 O'Clock): Opponent 3 (3P and 4P)
   const isFourPlayer = gameState.players.length === 4;
+  const isThreePlayer = gameState.players.length === 3;
+  const isTwoPlayer = gameState.players.length === 2;
   const myPlayerIndex = gameState.players.findIndex((p) => p.id === myPlayer.id);
 
   const opponentLeft: Player | null = isFourPlayer
     ? gameState.players[(myPlayerIndex + 1) % 4]
+    : isThreePlayer
+    ? gameState.players[(myPlayerIndex + 1) % 3]
     : null;
   const opponentTop: Player | null = isFourPlayer
     ? gameState.players[(myPlayerIndex + 2) % 4]
-    : gameState.players.length === 2
+    : isTwoPlayer
     ? gameState.players[(myPlayerIndex + 1) % 2]
     : null;
   const opponentRight: Player | null = isFourPlayer
     ? gameState.players[(myPlayerIndex + 3) % 4]
+    : isThreePlayer
+    ? gameState.players[(myPlayerIndex + 2) % 3]
     : null;
 
   const isMyTurn = isOnlineMode
@@ -460,8 +488,21 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       playerProfileService.recordMatchResult(isWinner).catch((err) => {
         console.warn('Failed to record match result:', err);
       });
+      // Rewards Balance according to game mode:
+      // - Pass & Play & Custom Private Rooms: Completely disabled (0 XP, 0 Coins)
+      // - Bot Match (Play vs CPU): Strictly 10% of standard rewards
+      // - Online Ranked (Quick Match): 100% full rewards
+      let matchType: 'online_ranked' | 'bot' | 'custom_private' | 'pass_and_play' = 'bot';
+      if (isOnlineMode) {
+        matchType = isQuickMatch ? 'online_ranked' : 'custom_private';
+      } else if (gameState.gameMode === 'pass_and_play') {
+        matchType = 'pass_and_play';
+      } else {
+        matchType = 'bot';
+      }
+
       playerProfileService
-        .awardMatchRewards(isWinner, turns)
+        .awardMatchRewards(isWinner, turns, matchType)
         .then((rewards) => {
           setMatchRewards(rewards);
         })
@@ -472,7 +513,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       hasRecordedResultRef.current = false;
       setMatchRewards(null);
     }
-  }, [gameState.isGameOver, gameState.winner, gameState.turnCount, myPlayer.id]);
+  }, [gameState.isGameOver, gameState.winner, gameState.turnCount, myPlayer.id, isOnlineMode, isQuickMatch, gameState.gameMode]);
 
   // Pulsing animation for floating "CATCH RIVAL!" button
   useEffect(() => {
@@ -781,12 +822,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         targetX = screenW * 0.5;
         targetY = screenH - 65;
         targetScale = 1.0;
-      } else if (isFourPlayer && (target === opponentLeft?.id || target === 'left')) {
+      } else if ((isFourPlayer || isThreePlayer) && (target === opponentLeft?.id || target === 'left')) {
         // 9 O'Clock (Left Edge): Opponent 1
         targetX = 65;
         targetY = screenH * 0.44;
         targetScale = 0.65;
-      } else if (isFourPlayer && (target === opponentRight?.id || target === 'right')) {
+      } else if ((isFourPlayer || isThreePlayer) && (target === opponentRight?.id || target === 'right')) {
         // 3 O'Clock (Right Edge): Opponent 3
         targetX = screenW - 65;
         targetY = screenH * 0.44;
@@ -812,7 +853,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         },
       ]);
     },
-    [isFourPlayer, myPlayer.id, opponentLeft?.id, opponentRight?.id, windowWidth, windowHeight]
+    [isFourPlayer, isThreePlayer, myPlayer.id, opponentLeft?.id, opponentRight?.id, windowWidth, windowHeight]
   );
 
   // Rapid sequential card dealing animation at game start: hands start empty and each card reveals on arrival
@@ -1740,8 +1781,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Opponents list (all players except local player)
   const opponents = gameState.players.filter((p) => p.id !== myPlayer.id);
 
-  // Helper to render an opponent in horizontal layout (12 O'Clock Top Center) or compact vertical stack (9 O'Clock Left / 3 O'Clock Right)
-  const renderOpponentBox = (opp: Player, layout: 'horizontal' | 'vertical') => {
+  // Helper to render an opponent in horizontal layout (Top Center) or diagonal fan (Left / Right)
+  const renderOpponentBox = (opp: Player, layout: 'top' | 'diagonal-left' | 'diagonal-right') => {
     const isOppTurn = gameState.players[gameState.currentTurnIndex].id === opp.id;
     const isCatchable = opp.hand.length === 1 && !opp.hasDeclaredRival;
     const oppVisibleCount = isDealing
@@ -1750,8 +1791,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       ? Math.max(0, opp.hand.length - pendingPenaltyCount[opp.id])
       : opp.hand.length;
 
-    if (layout === 'vertical') {
+    const isSide = layout === 'diagonal-left' || layout === 'diagonal-right';
+
+    if (isSide) {
       const fanCardCount = Math.min(oppVisibleCount, 4);
+      const isLeft = layout === 'diagonal-left';
       return (
         <View
           key={opp.id}
@@ -1762,9 +1806,16 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         >
           {/* Side Opponent Header (Avatar, Name, Count Badge, Muted, Rival) */}
           <View style={styles.sideOpponentInfo}>
-            <Text style={styles.opponentAvatarEmoji}>
-              {getAvatarConfig(opp.avatarId).emoji}
-            </Text>
+            <View
+              style={[
+                styles.opponentAvatarBadge,
+                { backgroundColor: getAvatarConfig(opp.avatarId).bgColor },
+              ]}
+            >
+              <Text style={styles.opponentAvatarEmoji}>
+                {getAvatarConfig(opp.avatarId).emoji}
+              </Text>
+            </View>
             <Text style={styles.sideOpponentName} numberOfLines={1}>
               {opp.name}
             </Text>
@@ -1791,7 +1842,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             )}
           </View>
 
-          {/* Compact Vertical Stack of Card Backs */}
+          {/* Cards fanned along diagonal */}
           <View style={styles.sideOpponentFanContainer}>
             {fanCardCount > 0 ? (
               Array.from({ length: fanCardCount }).map((_, idx) => (
@@ -1800,8 +1851,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   style={[
                     styles.sideCardWrapper,
                     {
-                      marginTop: idx === 0 ? 0 : -38,
+                      marginTop: idx === 0 ? 0 : -34,
+                      marginLeft: isLeft ? idx * 7 : 0,
+                      marginRight: !isLeft ? idx * 7 : 0,
                       zIndex: idx + 1,
+                      transform: [
+                        {
+                          rotate: isLeft
+                            ? `${(idx - (fanCardCount - 1) / 2) * 8 - 12}deg`
+                            : `${(idx - (fanCardCount - 1) / 2) * 8 + 12}deg`,
+                        },
+                      ],
                     },
                   ]}
                 >
@@ -1852,14 +1912,21 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       >
         {/* Opponent Top Row (Avatar, Name, Count Badge, Muted, Rival) */}
         <View style={styles.opponentTopRow}>
-          <Text style={styles.opponentAvatarEmoji}>
-            {getAvatarConfig(opp.avatarId).emoji}
-          </Text>
+          <View
+            style={[
+              styles.opponentAvatarBadge,
+              { backgroundColor: getAvatarConfig(opp.avatarId).bgColor },
+            ]}
+          >
+            <Text style={styles.opponentAvatarEmoji}>
+              {getAvatarConfig(opp.avatarId).emoji}
+            </Text>
+          </View>
           <Text style={styles.opponentName} numberOfLines={1}>
             {opp.name}
           </Text>
           {isOppTurn && !gameState.isGameOver && !isDealing && (
-            <TurnTimerBadge seconds={turnTimeRemaining} />
+            <TurnTimerBadge seconds={turnTimeRemaining} size="compact" />
           )}
           <View
             style={[
@@ -1881,7 +1948,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           )}
         </View>
 
-        {/* Physical Face-Down Cards Fan */}
+        {/* Physical Face-Down Cards Fan Horizontal */}
         <View style={styles.opponentFanContainer}>
           {fanCardCount > 0 ? (
             Array.from({ length: fanCardCount }).map((_, idx) => (
@@ -1890,8 +1957,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 style={[
                   styles.opponentCardWrapper,
                   {
-                    marginLeft: idx === 0 ? 0 : -27,
+                    marginLeft: idx === 0 ? 0 : -26,
                     zIndex: idx + 1,
+                    transform: [
+                      { rotate: `${(idx - (fanCardCount - 1) / 2) * 4}deg` },
+                    ],
                   },
                 ]}
               >
@@ -1933,27 +2003,27 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const latestLog = gameState.logs[gameState.logs.length - 1];
 
   return (
-    <ImageBackground
-      source={SCENIC_BACKGROUND}
-      style={styles.scenicBackground}
-      resizeMode="cover"
-    >
-      <View
-        style={[
-          styles.scenicOverlay,
-          equippedScenery?.previewStyle?.primaryColor
-            ? {
-                backgroundColor:
-                  equippedScenery.id === 'scenery_midnight'
-                    ? 'rgba(15, 23, 42, 0.72)'
-                    : equippedScenery.id === 'scenery_royal'
-                    ? 'rgba(88, 28, 135, 0.42)'
-                    : 'rgba(21, 128, 61, 0.32)',
-              }
-            : null,
-        ]}
+    <SafeAreaView style={styles.safeArea}>
+      <ImageBackground
+        source={SCENIC_BACKGROUND}
+        style={styles.scenicBackground}
+        resizeMode="cover"
       >
-        <SafeAreaView style={styles.safeArea}>
+        <View
+          style={[
+            styles.scenicOverlay,
+            equippedScenery?.previewStyle?.primaryColor
+              ? {
+                  backgroundColor:
+                    equippedScenery.id === 'scenery_midnight'
+                      ? 'rgba(15, 23, 42, 0.72)'
+                      : equippedScenery.id === 'scenery_royal'
+                      ? 'rgba(88, 28, 135, 0.42)'
+                      : 'rgba(21, 128, 61, 0.32)',
+                }
+              : null,
+          ]}
+        >
           <View style={styles.container}>
             {/* ================================================================= */}
             {/* 1. TOP HEADER & STATUS BAR */}
@@ -1974,32 +2044,49 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   </TouchableOpacity>
                 )}
 
-            {/* Skinned Logo Image replacing text header */}
-            <Image
-              source={require('../../assets/logo.png')}
-              resizeMode="contain"
-              style={styles.headerLogo}
-            />
+                {/* Skinned Logo Image replacing text header */}
+                <Image
+                  source={require('../../assets/logo.png')}
+                  resizeMode="contain"
+                  style={styles.headerLogo}
+                />
 
-            {isOnlineMode && onlineRoomCode && (
-              <View style={styles.onlineRoomBadge}>
-                <View style={styles.liveDot} />
-                <Text style={styles.onlineRoomText}>#{onlineRoomCode}</Text>
+                {isOnlineMode && onlineRoomCode && (
+                  <View style={styles.onlineRoomBadge}>
+                    <View style={styles.liveDot} />
+                    <Text style={styles.onlineRoomText}>#{onlineRoomCode}</Text>
+                  </View>
+                )}
               </View>
-            )}
-          </View>
 
-          <View style={styles.headerRight}>
-            {/* Audio Toggle */}
-            <TouchableOpacity
-              activeOpacity={0.7}
-              onPress={handleToggleSound}
-              style={styles.iconBtn}
-            >
-              <Text style={styles.iconBtnText}>{isAudioMuted ? '🔇' : '🔊'}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+              <View style={styles.headerRight}>
+                {/* Real-time Quick Taunt Bar Button */}
+                <TauntBar
+                  activeTaunt={activeTaunt}
+                  onSendTaunt={(emoji) => {
+                    if (isOnlineMode) {
+                      multiplayerService.broadcastTaunt(emoji);
+                    }
+                    setActiveTaunt({
+                      id: Date.now().toString(),
+                      emoji,
+                      senderId: myPlayer.id,
+                      senderName: myPlayer.name,
+                      timestamp: Date.now(),
+                    });
+                  }}
+                />
+
+                {/* Audio Toggle */}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={handleToggleSound}
+                  style={styles.iconBtn}
+                >
+                  <Text style={styles.iconBtnText}>{isAudioMuted ? '🔇' : '🔊'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
         {/* Turn & Active Color Status Banner */}
         <View style={styles.turnStatusBar}>
@@ -2033,43 +2120,28 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         </View>
 
         {/* ================================================================= */}
-        {/* 2. 12 O'CLOCK POSITION (TOP OPPONENT) */}
+        {/* 2. TOP OPPONENT (12 O'CLOCK POSITION) */}
         {/* ================================================================= */}
-        <View style={styles.opponentsSection}>
-          {isFourPlayer && opponentTop ? (
+        {opponentTop && (
+          <View style={styles.opponentsSection}>
             <View style={styles.topOpponentContainer}>
-              {renderOpponentBox(opponentTop, 'horizontal')}
+              {renderOpponentBox(opponentTop, 'top')}
             </View>
-          ) : opponents.length === 1 ? (
-            <View style={styles.topOpponentContainer}>
-              {renderOpponentBox(opponents[0], 'horizontal')}
-            </View>
-          ) : (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={[
-                styles.opponentsScroll,
-                styles.opponentsScrollCentered,
-              ]}
-            >
-              {opponents.map((opp) => renderOpponentBox(opp, 'horizontal'))}
-            </ScrollView>
-          )}
-        </View>
+          </View>
+        )}
 
         {/* ================================================================= */}
-        {/* 3. PLAY ARENA (9 O'Clock Left, Center Table Arena, 3 O'Clock Right) */}
+        {/* 3. PLAY ARENA (Left Opponent, Center Table Arena, Right Opponent) */}
         {/* ================================================================= */}
-        <View style={[styles.arenaSection, !isFourPlayer && styles.arenaSectionCentered]}>
-          {/* 9 O'Clock (Left Edge): Opponent 1 (e.g., CyberBot) */}
-          {isFourPlayer && opponentLeft && (
+        <View style={[styles.arenaSection, !opponentLeft && !opponentRight && styles.arenaSectionCentered]}>
+          {/* Opponent 1 (Left Edge, Diagonal Fan) */}
+          {opponentLeft && (
             <View style={styles.clockPositionLeft}>
-              {renderOpponentBox(opponentLeft, 'vertical')}
+              {renderOpponentBox(opponentLeft, 'diagonal-left')}
             </View>
           )}
 
-          {/* Center Table: Draw Pile & Discard Pile with clear visual spacing */}
+          {/* Center Table Arena: Discard Pile dead center, Draw Deck top-left, Circular flow arrows */}
           <View
             style={[
               styles.centerTableArena,
@@ -2088,8 +2160,32 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 : null,
             ]}
           >
-            {/* Draw Pile (3D Stack) */}
-            <View style={styles.deckContainer}>
+            {/* Circular Turn Direction Arrows encircling the center cards */}
+            <View
+              style={[
+                styles.turnDirectionRingContainer,
+                { transform: [{ scaleX: gameState.direction === -1 ? -1 : 1 }] },
+              ]}
+              pointerEvents="none"
+            >
+              <View style={styles.turnDirectionRing}>
+                <View style={styles.flowArrowTop}>
+                  <Text style={styles.flowArrowText}>➔</Text>
+                </View>
+                <View style={styles.flowArrowRight}>
+                  <Text style={styles.flowArrowText}>➔</Text>
+                </View>
+                <View style={styles.flowArrowBottom}>
+                  <Text style={styles.flowArrowText}>➔</Text>
+                </View>
+                <View style={styles.flowArrowLeft}>
+                  <Text style={styles.flowArrowText}>➔</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Draw Deck: Positioned top-left of discard pile with counter badge */}
+            <View style={styles.drawDeckAbsoluteAnchor}>
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={handleDrawCard}
@@ -2098,34 +2194,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   styles.deckTouchArea,
                   (!isHumanTurn || gameState.hasDrawnThisTurn) && styles.drawDeckDisabled,
                 ]}
+                accessibilityRole="button"
+                accessibilityLabel="Draw Card"
               >
-                {/* 3D Physical Stack Layer 3 */}
-                {gameState.deck.length > 4 && (
-                  <View
-                    style={[
-                      styles.deckLayerCard,
-                      styles.deckLayer3,
-                      equippedCardBack?.previewStyle?.primaryColor
-                        ? { backgroundColor: equippedCardBack.previewStyle.primaryColor }
-                        : null,
-                      equippedCardBack?.previewStyle?.borderColor
-                        ? { borderColor: equippedCardBack.previewStyle.borderColor }
-                        : null,
-                    ]}
-                  >
-                    <Image
-                      source={CARD_BACK_IMAGE}
-                      style={[
-                        styles.drawDeckBackImage,
-                        equippedCardBack?.id !== 'card_back_classic' && equippedCardBack?.previewStyle?.primaryColor
-                          ? { tintColor: equippedCardBack.previewStyle.primaryColor }
-                          : null,
-                      ]}
-                      resizeMode="cover"
-                    />
-                  </View>
-                )}
-
                 {/* 3D Physical Stack Layer 2 */}
                 {gameState.deck.length > 2 && (
                   <View
@@ -2153,7 +2224,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   </View>
                 )}
 
-                {/* Active Top Card Layer 1 */}
+                {/* Top Draw Card */}
                 <View
                   style={[
                     styles.drawDeckCard,
@@ -2180,10 +2251,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   </View>
                 </View>
               </TouchableOpacity>
-              <Text style={styles.deckLabel}>Draw Pile</Text>
             </View>
 
-            {/* Active Discard Pile (Center Table with 3D Stack) */}
+            {/* Discard Pile: Dead center with clean border/elevation */}
             <View style={styles.discardContainer}>
               {topDiscardCard ? (
                 <View style={styles.discardStackContainer}>
@@ -2237,40 +2307,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             </View>
           </View>
 
-          {/* 3 O'Clock (Right Edge): Opponent 3 (e.g., EchoBot) */}
-          {isFourPlayer && opponentRight && (
+          {/* Opponent 3 (Right Edge, Diagonal Fan) */}
+          {opponentRight && (
             <View style={styles.clockPositionRight}>
-              {renderOpponentBox(opponentRight, 'vertical')}
+              {renderOpponentBox(opponentRight, 'diagonal-right')}
             </View>
           )}
-        </View>
-
-        {/* Mid Controls Row: Live Event Ticker + Real-time Quick Taunt Bar */}
-        <View style={styles.midControlsRow}>
-          <View style={styles.tickerContainer}>
-            <Text style={styles.tickerIcon}>📢</Text>
-            <Text style={styles.tickerText} numberOfLines={1}>
-              {latestLog?.message || 'Match in progress'}
-            </Text>
-          </View>
-
-          <View style={styles.tauntSection}>
-            <TauntBar
-              activeTaunt={activeTaunt}
-              onSendTaunt={(emoji) => {
-                if (isOnlineMode) {
-                  multiplayerService.broadcastTaunt(emoji);
-                }
-                setActiveTaunt({
-                  id: Date.now().toString(),
-                  emoji,
-                  senderId: myPlayer.id,
-                  senderName: myPlayer.name,
-                  timestamp: Date.now(),
-                });
-              }}
-            />
-          </View>
         </View>
 
         {/* ================================================================= */}
@@ -2285,59 +2327,74 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
           return (
             <View style={styles.playerSection}>
-              {/* Floating Compact Pill Matching RivalBot's Minimal Style */}
-              <View style={styles.playerFloatingBadge}>
-                <View style={styles.playerBadgeRow}>
-                  <Text style={styles.playerAvatarEmoji}>
-                    {getAvatarConfig(myPlayer.avatarId).emoji}
-                  </Text>
-                  <Text style={styles.playerBadgeName}>
-                    {myPlayer.name === 'You' ? 'You' : myPlayer.name} • {visiblePlayerHand.length} card{visiblePlayerHand.length === 1 ? '' : 's'}
-                  </Text>
-                  {isMyTurn && !gameState.isGameOver && !isDealing && !gameState.privacyMask.isActive && (
-                    <TurnTimerBadge seconds={turnTimeRemaining} />
-                  )}
-                  {isDealing ? (
-                    <Text style={styles.dragHintWaitingText}>• Dealing cards...</Text>
-                  ) : isHumanTurn ? (
-                    <Text style={styles.dragHintText}>• Your Turn (drag/tap)</Text>
-                  ) : (
-                    <Text style={styles.dragHintWaitingText}>
-                      {isOnlineMode ? '• Waiting for turn' : '• Bot taking turn'}
+              {/* Player Avatar, Name & Coins pinned to bottom-left */}
+              <View style={styles.playerBottomLeftBadge}>
+                <View
+                  style={[
+                    styles.playerAvatarCircle,
+                    { backgroundColor: myPlayerAvatar.bgColor },
+                  ]}
+                >
+                  <Text style={styles.playerAvatarEmoji}>{myPlayerAvatar.emoji}</Text>
+                </View>
+                <View style={styles.playerInfoColumn}>
+                  <View style={styles.playerNameCoinsRow}>
+                    <Text style={styles.playerBottomName} numberOfLines={1}>
+                      {myPlayer.name === 'You' ? 'You' : myPlayer.name}
                     </Text>
-                  )}
-                </View>
-
-                {/* Quick Actions (Call RIVAL & Pass Turn) */}
-                <View style={styles.actionButtonsRow}>
-                  {/* RIVAL Callout Button */}
-                  {isHumanTurn && !isDealing && (
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handleDeclareRival}
-                      style={[
-                        styles.rivalCalloutBtn,
-                        (visiblePlayerHand.length <= 2 || rivalCountdown !== null) &&
-                          styles.rivalCalloutActive,
-                      ]}
-                    >
-                      <Text style={styles.rivalCalloutBtnText}>
-                        ⚡ CALL RIVAL! {rivalCountdown !== null ? `(${rivalCountdown}s)` : ''}
+                    <View style={styles.playerCoinBadge}>
+                      <Text style={styles.playerCoinIcon}>🪙</Text>
+                      <Text style={styles.playerCoinText}>
+                        {playerProfile?.coins !== undefined ? playerProfile.coins.toLocaleString() : '0'}
                       </Text>
-                    </TouchableOpacity>
-                  )}
-
-                  {/* Pass Turn Button (Available after drawing a card) */}
-                  {isHumanTurn && gameState.hasDrawnThisTurn && !isDealing && (
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handlePassTurn}
-                      style={styles.passTurnBtn}
-                    >
-                      <Text style={styles.passTurnBtnText}>Pass Turn ➔</Text>
-                    </TouchableOpacity>
-                  )}
+                    </View>
+                  </View>
+                  <View style={styles.playerCardCountRow}>
+                    <Text style={styles.playerCardCountText}>
+                      {visiblePlayerHand.length} card{visiblePlayerHand.length === 1 ? '' : 's'}
+                    </Text>
+                    {isMyTurn && !gameState.isGameOver && !isDealing && !gameState.privacyMask.isActive && (
+                      <TurnTimerBadge seconds={turnTimeRemaining} size="compact" />
+                    )}
+                  </View>
                 </View>
+              </View>
+
+              {/* CALL RIVAL! Buzzer button & Pass Turn pinned to bottom-right */}
+              <View style={styles.playerBottomRightControls}>
+                {/* Pass Turn Button (Available after drawing a card) */}
+                {isHumanTurn && gameState.hasDrawnThisTurn && !isDealing && (
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={handlePassTurn}
+                    style={styles.passTurnBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Pass Turn"
+                  >
+                    <Text style={styles.passTurnBtnText}>Pass ➔</Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* Large 3D Circular CALL RIVAL! Buzzer Button */}
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={handleDeclareRival}
+                  disabled={!isHumanTurn || isDealing}
+                  style={[
+                    styles.rivalBuzzerBtn,
+                    (visiblePlayerHand.length <= 2 || rivalCountdown !== null) && styles.rivalBuzzerActive,
+                    (!isHumanTurn || isDealing) && styles.rivalBuzzerDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Call Rival"
+                >
+                  <View style={styles.rivalBuzzerInner}>
+                    <Text style={styles.rivalBuzzerIcon}>⚡</Text>
+                    <Text style={styles.rivalBuzzerText}>
+                      {rivalCountdown !== null ? `${rivalCountdown}s` : 'RIVAL!'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
               </View>
 
               {/* Floating Pair Play Quick-Action Pill */}
@@ -2371,7 +2428,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </View>
               )}
 
-              {/* Horizontal Card List Sitting Directly Over Scenic Background */}
+              {/* Hand anchored to bottom-center with smooth fan overlap */}
               <FlatList
                 horizontal
                 data={visiblePlayerHand}
@@ -2491,6 +2548,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           onQuitRoom={handleQuitGame}
           onPlayWithMoreBots={() => handleStartGame('vs_bot_4p')}
           onPlay1v1={() => handleStartGame('vs_bot_2p')}
+          onSelectPreset={(preset) => handleStartGame(preset)}
           onMainMenu={handleExitToHome}
         />
 
@@ -2540,9 +2598,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         {/* Global Error & Network Toast Notification Banner */}
         <ErrorToast />
           </View>
-        </SafeAreaView>
-      </View>
-    </ImageBackground>
+        </View>
+      </ImageBackground>
+    </SafeAreaView>
   );
 };
 
@@ -2820,13 +2878,22 @@ const styles = StyleSheet.create({
   opponentTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    marginBottom: 2,
+    gap: 6,
+    marginBottom: 6,
     justifyContent: 'center',
+  },
+  opponentAvatarBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 2,
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
   },
   opponentAvatarEmoji: {
     fontSize: 12,
-    marginRight: 2,
   },
   opponentName: {
     fontSize: 11,
@@ -2930,21 +2997,6 @@ const styles = StyleSheet.create({
   arenaSectionCentered: {
     justifyContent: 'center',
   },
-  centerTableArena: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 28,
-    zIndex: 10,
-  },
-  tableFeltMat: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 24,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    backgroundColor: 'rgba(15, 23, 42, 0.35)',
-  },
   clockPositionLeft: {
     alignItems: 'flex-start',
     justifyContent: 'center',
@@ -3007,34 +3059,134 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '900',
   },
-  deckContainer: {
+  centerTableArena: {
+    width: 250,
+    height: 180,
     alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    zIndex: 10,
+    overflow: 'visible',
+  },
+  tableFeltMat: {
+    borderRadius: 36,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+    overflow: 'visible',
+  },
+  turnDirectionRingContainer: {
+    position: 'absolute',
+    width: 250,
+    height: 180,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  turnDirectionRing: {
+    width: 240,
+    height: 170,
+    borderRadius: 85,
+    borderWidth: 1.5,
+    borderColor: 'rgba(16, 185, 129, 0.35)',
+    borderStyle: 'dashed',
+    position: 'relative',
+  },
+  flowArrowTop: {
+    position: 'absolute',
+    top: -10,
+    alignSelf: 'center',
+    backgroundColor: '#10B981',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  flowArrowRight: {
+    position: 'absolute',
+    right: -10,
+    top: '50%',
+    marginTop: -10,
+    backgroundColor: '#10B981',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ rotate: '90deg' }],
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  flowArrowBottom: {
+    position: 'absolute',
+    bottom: -10,
+    alignSelf: 'center',
+    backgroundColor: '#10B981',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ rotate: '180deg' }],
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  flowArrowLeft: {
+    position: 'absolute',
+    left: -10,
+    top: '50%',
+    marginTop: -10,
+    backgroundColor: '#10B981',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ rotate: '270deg' }],
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  flowArrowText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  drawDeckAbsoluteAnchor: {
+    position: 'absolute',
+    top: 10,
+    left: 14,
+    transform: [{ rotate: '-6deg' }],
+    zIndex: 15,
   },
   deckTouchArea: {
     position: 'relative',
-    width: 84,
-    height: 122,
+    width: 74,
+    height: 108,
   },
   deckLayerCard: {
     position: 'absolute',
-    width: 84,
-    height: 122,
-    borderRadius: 12,
+    width: 74,
+    height: 108,
+    borderRadius: 10,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.22)',
     overflow: 'hidden',
     backgroundColor: '#0F172A',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  deckLayer3: {
-    top: -6,
-    left: -6,
-    zIndex: 1,
-    opacity: 0.75,
   },
   deckLayer2: {
     top: -3,
@@ -3046,21 +3198,21 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     left: 0,
-    width: 84,
-    height: 122,
-    borderRadius: 12,
+    width: 74,
+    height: 108,
+    borderRadius: 10,
     borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.45)',
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.45,
-    shadowRadius: 8,
-    elevation: 6,
     backgroundColor: '#0F172A',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 5,
   },
   drawDeckDisabled: {
     opacity: 0.7,
@@ -3071,51 +3223,49 @@ const styles = StyleSheet.create({
   },
   drawDeckBadge: {
     position: 'absolute',
-    bottom: 5,
+    bottom: 4,
     backgroundColor: 'rgba(15, 23, 42, 0.92)',
-    paddingHorizontal: 8,
+    paddingHorizontal: 7,
     paddingVertical: 1,
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   drawDeckCount: {
     color: '#F8FAFC',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '900',
-  },
-  deckLabel: {
-    marginTop: 4,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#E2E8F0',
-    textShadowColor: 'rgba(0, 0, 0, 0.5)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
   },
   discardContainer: {
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
+    overflow: 'visible',
   },
   discardStackContainer: {
     width: 92,
-    height: 138,
+    height: 136,
     position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'visible',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 8,
+    elevation: 8,
   },
   discardLayerCard: {
     position: 'absolute',
     top: 0,
-    left: 0,
-    width: 92,
-    height: 138,
+    left: 1,
+    width: 90,
+    height: 134,
   },
   discardLayerMinus2: {
     zIndex: 1,
     opacity: 0.88,
-    transform: [{ rotate: '-7deg' }, { translateX: -6 }, { translateY: 2 }],
+    transform: [{ rotate: '-7deg' }, { translateX: -5 }, { translateY: 2 }],
   },
   discardLayerMinus1: {
     zIndex: 2,
@@ -3127,8 +3277,8 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '-1deg' }],
   },
   emptyDiscard: {
-    width: 92,
-    height: 138,
+    width: 90,
+    height: 134,
     borderRadius: 12,
     borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.25)',
@@ -3141,131 +3291,163 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  midControlsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    gap: 12,
-    marginVertical: 2,
-    zIndex: 14,
-  },
-  tickerContainer: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.7)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  tickerIcon: {
-    fontSize: 12,
-    marginRight: 6,
-  },
-  tickerText: {
-    fontSize: 11,
-    color: '#E2E8F0',
-    fontWeight: '600',
-    flex: 1,
-  },
-  tauntSection: {
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-  },
   playerSection: {
     backgroundColor: 'transparent',
     borderTopWidth: 0,
-    paddingTop: 2,
-    paddingBottom: 6,
+    paddingTop: 4,
+    paddingBottom: 4,
     zIndex: 20,
-    alignItems: 'center',
+    position: 'relative',
+    minHeight: 140,
+    justifyContent: 'flex-end',
   },
-  playerFloatingBadge: {
+  playerBottomLeftBadge: {
+    position: 'absolute',
+    bottom: 8,
+    left: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.20)',
     borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-    gap: 10,
-    marginBottom: 2,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    gap: 8,
+    zIndex: 35,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.35,
     shadowRadius: 4,
-    elevation: 4,
+    elevation: 5,
   },
-  playerBadgeRow: {
-    flexDirection: 'row',
+  playerAvatarCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
   playerAvatarEmoji: {
-    fontSize: 13,
-    marginRight: 4,
+    fontSize: 16,
   },
-  playerBadgeName: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#F8FAFC',
+  playerInfoColumn: {
+    justifyContent: 'center',
   },
-  dragHintText: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#34D399',
-    marginLeft: 8,
-  },
-  dragHintWaitingText: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#94A3B8',
-    marginLeft: 8,
-  },
-  actionButtonsRow: {
+  playerNameCoinsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
   },
-  rivalCalloutBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
-    marginRight: 6,
-  },
-  rivalCalloutActive: {
-    backgroundColor: '#F59E0B',
-    borderColor: '#FBBF24',
-    shadowColor: '#F59E0B',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.45,
-    shadowRadius: 5,
-    elevation: 4,
-  },
-  rivalCalloutBtnText: {
-    fontSize: 11,
-    fontWeight: '900',
+  playerBottomName: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
     color: '#FFFFFF',
+    maxWidth: 80,
+  },
+  playerCoinBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 999,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    gap: 2,
+  },
+  playerCoinIcon: {
+    fontSize: 9,
+  },
+  playerCoinText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 9.5,
+    color: '#92400E',
+  },
+  playerCardCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  playerCardCountText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#94A3B8',
+  },
+  playerBottomRightControls: {
+    position: 'absolute',
+    bottom: 8,
+    right: 10,
+    alignItems: 'center',
+    gap: 6,
+    zIndex: 35,
+  },
+  rivalBuzzerBtn: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: '#EF4444',
+    borderWidth: 3,
+    borderBottomWidth: 5,
+    borderColor: '#B91C1C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#B91C1C',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  rivalBuzzerActive: {
+    backgroundColor: '#F59E0B',
+    borderColor: '#B45309',
+    shadowColor: '#F59E0B',
+    transform: [{ scale: 1.05 }],
+  },
+  rivalBuzzerDisabled: {
+    opacity: 0.75,
+  },
+  rivalBuzzerInner: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rivalBuzzerIcon: {
+    fontSize: 16,
+    lineHeight: 18,
+  },
+  rivalBuzzerText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
   },
   passTurnBtn: {
-    backgroundColor: '#3B82F6',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
+    backgroundColor: '#2563EB',
+    borderWidth: 1.5,
+    borderBottomWidth: 3,
+    borderColor: '#1D4ED8',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 4,
   },
   passTurnBtnText: {
+    ...FONT_CARTOON_BOLD,
     fontSize: 11,
-    fontWeight: '800',
     color: '#FFFFFF',
   },
   handScrollList: {
-    paddingHorizontal: 24,
-    paddingTop: 10,
+    paddingLeft: 105,
+    paddingRight: 88,
+    paddingTop: 8,
     paddingBottom: 4,
     alignItems: 'center',
   },
