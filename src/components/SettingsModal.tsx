@@ -88,22 +88,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
 
   const handleToggle = async <K extends keyof UserSettings>(key: K) => {
     hapticsService.cardSelection();
-    soundService.playCardSnap();
+    if (key !== 'sfxEnabled' || settings.sfxEnabled) {
+      soundService.playCardSnap();
+    }
     const nextVal = !settings[key];
     const updated = await settingsService.updateSetting(key, nextVal);
     setSettings(updated);
 
     if (key === 'bgmEnabled') {
       if (nextVal) {
-        audioService.resumeBgm();
+        await audioService.resumeBgm();
       } else {
-        audioService.pauseBgm();
-        audioService.playMuteSfx(true);
+        await audioService.pauseBgm();
       }
     } else if (key === 'sfxEnabled') {
-      if (!nextVal) {
-        audioService.playMuteSfx(true);
-      }
+      soundService.setMuted(!nextVal);
     }
   };
 

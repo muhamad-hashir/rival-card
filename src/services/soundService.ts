@@ -24,6 +24,7 @@ type SoundType = 'cardSnap' | 'cardDraw' | 'penalty' | 'rivalCallout' | 'winChim
 class SoundService {
   private isMuted: boolean = false;
   private soundCache: Map<SoundType, string> = new Map();
+  private players: Map<SoundType, any> = new Map();
   private audioModeConfigured: boolean = false;
 
   constructor() {
@@ -85,6 +86,39 @@ class SoundService {
     this.soundCache.set('error', this.generateErrorDataUri());
   }
 
+  /**
+   * Preloads dedicated player instances on startup for common SFX.
+   */
+  public async preloadSounds(): Promise<void> {
+    if (isWeb) return;
+    if (!createAudioPlayer && (!ExpoAudio || typeof ExpoAudio.createAudioPlayer !== 'function')) return;
+    try {
+      await this.ensureAudioMode();
+      const soundTypes: SoundType[] = ['cardSnap', 'cardDraw', 'penalty', 'rivalCallout', 'winChime', 'error'];
+      for (const type of soundTypes) {
+        if (this.players.has(type)) continue;
+        const uri = this.soundCache.get(type);
+        if (!uri) continue;
+        try {
+          let player: any = null;
+          if (createAudioPlayer && typeof createAudioPlayer === 'function') {
+            player = createAudioPlayer({ uri });
+          } else if (ExpoAudio && typeof ExpoAudio.createAudioPlayer === 'function') {
+            player = ExpoAudio.createAudioPlayer({ uri });
+          }
+          if (player) {
+            player.volume = 0.85;
+            this.players.set(type, player);
+          }
+        } catch {
+          // Fall back gracefully
+        }
+      }
+    } catch {
+      // Ignore preloading errors
+    }
+  }
+
   public async play(type: SoundType): Promise<void> {
     if (this.isMuted) return;
 
@@ -94,7 +128,7 @@ class SoundService {
         this.playWebAudio(type);
         return;
       } catch {
-        // Fall back to expo-av or silent
+        // Fall back to silent
       }
     }
 
@@ -105,38 +139,41 @@ class SoundService {
 
     try {
       await this.ensureAudioMode();
-      const uri = this.soundCache.get(type);
-      if (!uri) return;
+      let player = this.players.get(type);
 
-      let player: any = null;
-      try {
-        if (createAudioPlayer && typeof createAudioPlayer === 'function') {
-          player = createAudioPlayer({ uri });
-        } else if (ExpoAudio && typeof ExpoAudio.createAudioPlayer === 'function') {
-          player = ExpoAudio.createAudioPlayer({ uri });
+      // If not yet preloaded, lazy-create and cache instance
+      if (!player) {
+        const uri = this.soundCache.get(type);
+        if (!uri) return;
+        try {
+          if (createAudioPlayer && typeof createAudioPlayer === 'function') {
+            player = createAudioPlayer({ uri });
+          } else if (ExpoAudio && typeof ExpoAudio.createAudioPlayer === 'function') {
+            player = ExpoAudio.createAudioPlayer({ uri });
+          }
+          if (player) {
+            player.volume = 0.85;
+            this.players.set(type, player);
+          }
+        } catch {
+          return;
         }
-      } catch {
-        return;
       }
+
       if (!player) return;
 
+      // Reuse pattern: rewind to 0 and play without constructing fresh AudioPlayer
       try {
         player.volume = 0.85;
-        player.play();
-      } catch {
-        try {
-          player.remove();
-        } catch {}
-        return;
-      }
-
-      player.addListener('playbackStatusUpdate', (status: any) => {
-        if (status && status.didJustFinish) {
+        if (typeof player.seekTo === 'function') {
           try {
-            player.remove();
+            await player.seekTo(0);
           } catch {}
         }
-      });
+        player.play();
+      } catch {
+        // Guard check: fallback silently without breaking game logic
+      }
     } catch {
       // Gracefully ignore audio errors (e.g. on headless simulator/Expo Go environments)
     }
@@ -148,6 +185,18 @@ class SoundService {
     } catch (e) {
       console.warn('playCardSnap error:', e);
     }
+  }
+
+  public async playCardPlay(): Promise<void> {
+    await this.playCardSnap();
+  }
+
+  public async playButtonClick(): Promise<void> {
+    await this.playCardSnap();
+  }
+
+  public async playTurnAlert(): Promise<void> {
+    await this.playRivalCallout();
   }
 
   public async playCardDraw(): Promise<void> {

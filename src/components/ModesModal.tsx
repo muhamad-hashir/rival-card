@@ -237,7 +237,7 @@ export const ModesModal: React.FC<ModesModalProps> = ({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 16,
@@ -245,43 +245,45 @@ const styles = StyleSheet.create({
   cardContainer: {
     width: '100%',
     maxWidth: 440,
-    backgroundColor: '#1E293B', // Deep navy/slate rounded dialog
+    backgroundColor: '#FFFDF0', // Light warm cream / parchment background
     borderRadius: 24,
-    borderWidth: 3,
-    borderColor: '#38BDF8', // Stylized cyan border
+    borderWidth: 4,
+    borderBottomWidth: 7, // Heavy cartoon outline + solid 3D depth
+    borderColor: '#2D1B4E', // Heavy dark cartoon outline
     paddingHorizontal: 16,
     paddingVertical: 22,
     position: 'relative',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.55,
-    shadowRadius: 20,
-    elevation: 12,
+    shadowColor: '#2D1B4E',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 10,
   },
   closeBtn: {
     position: 'absolute',
     top: 14,
     right: 14,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#334155',
-    borderWidth: 2,
-    borderColor: '#475569',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#EF4444', // Vibrant cartoon red/coral button
+    borderWidth: 2.5,
+    borderBottomWidth: 3.5,
+    borderColor: '#2D1B4E',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
-    shadowColor: '#000000',
+    shadowColor: '#2D1B4E',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 3,
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
+    elevation: 4,
   },
   closeBtnText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 14,
-    color: '#F8FAFC',
-    lineHeight: 16,
+    fontSize: 15,
+    color: '#FFFFFF',
+    lineHeight: 17,
   },
   header: {
     alignItems: 'center',
@@ -290,21 +292,21 @@ const styles = StyleSheet.create({
   },
   title: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 22,
-    color: '#FACC15', // Vibrant yellow/gold color
+    fontSize: 24,
+    color: '#D97706', // Thick cartoon text in vibrant golden yellow/orange
     letterSpacing: 1.2,
     textAlign: 'center',
-    textShadowColor: 'rgba(0, 0, 0, 0.85)',
+    textShadowColor: 'rgba(45, 27, 78, 0.25)',
     textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 4,
+    textShadowRadius: 3,
   },
   subtitle: {
     ...FONT_CARTOON_REGULAR,
-    fontSize: 12,
-    color: '#94A3B8',
+    fontSize: 12.5,
+    color: '#475569', // Readable dark slate
     textAlign: 'center',
     marginTop: 4,
-    lineHeight: 16,
+    lineHeight: 17,
   },
   cardsRow: {
     flexDirection: 'row',
@@ -323,37 +325,44 @@ const styles = StyleSheet.create({
     minHeight: 175,
   },
   botCardUnselected: {
-    backgroundColor: '#334155', // Dark frosted surface
-    borderWidth: 2,
-    borderColor: '#475569',
+    backgroundColor: '#FFFFFF', // Clean light warm surface
+    borderWidth: 2.5,
+    borderBottomWidth: 4,
+    borderColor: '#CBD5E1', // Clean cartoon border
     transform: [{ scale: 1.0 }],
+    shadowColor: '#2D1B4E',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 2,
   },
   botCardSelected: {
-    backgroundColor: '#065F46', // Emerald glow background
-    borderWidth: 2.5,
+    backgroundColor: '#ECFDF5', // Bright emerald active glow
+    borderWidth: 3,
+    borderBottomWidth: 5,
     borderColor: '#10B981', // Bursting emerald border
-    transform: [{ scale: 1.05 }],
+    transform: [{ scale: 1.04 }],
     shadowColor: '#10B981',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
+    shadowOpacity: 0.45,
     shadowRadius: 8,
     elevation: 6,
   },
   cardBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
     borderRadius: 999,
     marginBottom: 8,
   },
   cardBadgeUnselected: {
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#475569',
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
   },
   cardBadgeSelected: {
-    backgroundColor: '#047857',
-    borderWidth: 1,
-    borderColor: '#34D399',
+    backgroundColor: '#10B981',
+    borderWidth: 1.5,
+    borderColor: '#059669',
   },
   cardBadgeText: {
     ...FONT_CARTOON_HEAVY,
@@ -361,10 +370,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   cardBadgeTextUnselected: {
-    color: '#94A3B8',
+    color: '#475569',
   },
   cardBadgeTextSelected: {
-    color: '#A7F3D0',
+    color: '#FFFFFF',
   },
   iconCircle: {
     width: 44,
@@ -375,13 +384,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   iconCircleUnselected: {
-    backgroundColor: '#1E293B',
-    borderWidth: 1.5,
-    borderColor: '#475569',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
   },
   iconCircleSelected: {
-    backgroundColor: '#047857',
-    borderWidth: 1.5,
+    backgroundColor: '#D1FAE5',
+    borderWidth: 2,
     borderColor: '#10B981',
   },
   cardIcon: {
@@ -394,20 +403,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   cardTitleUnselected: {
-    color: '#E2E8F0',
+    color: '#1E293B', // Dark bold text
   },
   cardTitleSelected: {
-    color: '#FFFFFF',
+    color: '#065F46', // Bold emerald text
   },
   cardSubtitle: {
     ...FONT_CARTOON_BOLD,
     fontSize: 11,
-    color: '#CBD5E1',
+    color: '#64748B',
     marginBottom: 2,
     textAlign: 'center',
   },
   cardSubtitleSelected: {
-    color: '#D1FAE5',
+    color: '#059669',
   },
   cardTagline: {
     ...FONT_CARTOON_REGULAR,
@@ -417,7 +426,7 @@ const styles = StyleSheet.create({
     lineHeight: 12,
   },
   cardTaglineSelected: {
-    color: '#A7F3D0',
+    color: '#047857',
   },
   selectedPill: {
     marginTop: 8,
@@ -435,17 +444,18 @@ const styles = StyleSheet.create({
   startMatchBtn: {
     width: '100%',
     backgroundColor: '#10B981', // 3D emerald arcade styling
-    borderBottomWidth: 4,
-    borderColor: '#059669',
+    borderWidth: 2.5,
+    borderBottomWidth: 5,
+    borderColor: '#065F46',
     borderRadius: 16,
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#059669',
+    shadowColor: '#065F46',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.35,
     shadowRadius: 6,
-    elevation: 5,
+    elevation: 6,
   },
   startMatchBtnText: {
     ...FONT_CARTOON_HEAVY,

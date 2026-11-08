@@ -13,7 +13,7 @@
       "package": "com.rivalcard.game",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#0F172A"
+        "backgroundColor": "#1E1B4B"
       }
     },
     "web": {

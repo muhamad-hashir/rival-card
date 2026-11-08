@@ -1,5 +1,6 @@
 // src/services/audioService.ts - Background Music & Action Sound Effects Engine for Rival Card
 import { settingsService, UserSettings } from './settingsService';
+import { soundService } from './soundService';
 
 let ExpoAudio: any = null;
 let AudioModule: any = null;
@@ -133,6 +134,7 @@ function getMuteAsset(): any {
 export class AudioService {
   private currentBgmType: BgmTrackType = 'none';
   private currentBgmPlayer: any | null = null;
+  private sfxPlayers: Map<string, any> = new Map();
   private audioModeConfigured: boolean = false;
   private isBgmLoading: boolean = false;
 
@@ -197,6 +199,47 @@ export class AudioService {
 
   public async initAudio(): Promise<void> {
     await this.ensureAudioMode();
+    await this.preloadSfx();
+    try {
+      await soundService.preloadSounds();
+    } catch {}
+  }
+
+  /**
+   * Preloads dedicated player instances for action sound effects on startup.
+   */
+  public async preloadSfx(): Promise<void> {
+    if (!createAudioPlayer && (!ExpoAudio || typeof ExpoAudio.createAudioPlayer !== 'function')) return;
+    try {
+      await this.ensureAudioMode();
+      const sfxAssets: Array<[string, () => any]> = [
+        ['rival_shout', getRivalShoutAsset],
+        ['color_change', getColorChangeAsset],
+        ['plus_four', getPlusFourAsset],
+        ['plus_two', getPlusTwoAsset],
+        ['skip', getSkipAsset],
+        ['reverse', getReverseAsset],
+        ['swap', getSwapAsset],
+        ['mute', getMuteAsset],
+      ];
+
+      for (const [key, getter] of sfxAssets) {
+        if (this.sfxPlayers.has(key)) continue;
+        try {
+          const asset = getter();
+          if (!asset) continue;
+          const player = this.safeCreatePlayer(asset);
+          if (player) {
+            player.volume = 1.0;
+            this.sfxPlayers.set(key, player);
+          }
+        } catch {
+          // Gracefully continue
+        }
+      }
+    } catch {
+      // Gracefully continue
+    }
   }
 
   public getCurrentBgmType(): BgmTrackType {
@@ -362,7 +405,12 @@ export class AudioService {
   public async pauseBgm(): Promise<void> {
     try {
       if (this.currentBgmPlayer) {
-        this.currentBgmPlayer.pause();
+        try {
+          this.currentBgmPlayer.pause();
+        } catch {}
+        try {
+          this.currentBgmPlayer.volume = 0.0;
+        } catch {}
       }
     } catch (err) {
       safeWarn('[AudioService] Failed to pause BGM:', err);
@@ -378,9 +426,11 @@ export class AudioService {
       if (!settings.bgmEnabled) return;
 
       if (this.currentBgmPlayer) {
-        this.currentBgmPlayer.loop = true;
-        this.currentBgmPlayer.volume = 1.0;
-        this.currentBgmPlayer.play();
+        try {
+          this.currentBgmPlayer.loop = true;
+          this.currentBgmPlayer.volume = 1.0;
+          this.currentBgmPlayer.play();
+        } catch {}
       } else if (this.currentBgmType === 'menu') {
         await this.playMenuBgm();
       } else if (this.currentBgmType === 'gameplay') {
@@ -407,10 +457,11 @@ export class AudioService {
   }
 
   // ============================================================================
-  // Generic Safe SFX Helper with Lifecycle Unloading
+  // Reusable Dedicated SFX Player Engine with Seek Rewind
   // ============================================================================
 
   private async playSfx(
+    key: string,
     assetGetter: () => any,
     volume: number = 1.0,
     force: boolean = false
@@ -419,39 +470,40 @@ export class AudioService {
       if (!force) {
         const settings = await settingsService.getSettings();
         if (!settings.sfxEnabled) return;
-      }
-
-      const asset = assetGetter();
-      if (!asset) {
-        safeWarn('[AudioService] SFX asset unavailable or missing');
-        return;
+        if (soundService.getMuted()) return;
       }
 
       await this.ensureAudioMode();
 
-      const player = this.safeCreatePlayer(asset);
-      if (!player) return;
-
-      try {
-        player.volume = volume;
-        player.play();
-      } catch (playErr) {
-        safeWarn('[AudioService] Error calling player.play() for SFX:', playErr);
-        try {
-          player.remove();
-        } catch {}
-        return;
+      let player = this.sfxPlayers.get(key);
+      if (!player) {
+        const asset = assetGetter();
+        if (!asset) {
+          safeWarn('[AudioService] SFX asset unavailable or missing for ' + key);
+          return;
+        }
+        player = this.safeCreatePlayer(asset);
+        if (player) {
+          this.sfxPlayers.set(key, player);
+        }
       }
 
-      player.addListener('playbackStatusUpdate', (status: any) => {
-        if (status && status.didJustFinish) {
+      if (!player) return;
+
+      // Reuse pattern: rewind to 0s and play
+      try {
+        player.volume = volume;
+        if (typeof player.seekTo === 'function') {
           try {
-            player.remove();
+            await player.seekTo(0);
           } catch {}
         }
-      });
+        player.play();
+      } catch (playErr) {
+        safeWarn('[AudioService] Error calling player.play() for SFX ' + key + ':', playErr);
+      }
     } catch (err) {
-      safeWarn('[AudioService] Failed to play SFX:', err);
+      safeWarn('[AudioService] Failed to play SFX ' + key + ':', err);
     }
   }
 
@@ -463,49 +515,49 @@ export class AudioService {
    * SFX: 1-second "RIVAL!" shout triggered when tapping the RIVAL! button.
    */
   public async playRivalShout(): Promise<void> {
-    await this.playSfx(getRivalShoutAsset, 1.0);
+    await this.playSfx('rival_shout', getRivalShoutAsset, 1.0);
   }
 
   /**
    * SFX: Played when choosing a color for a standard Wild card.
    */
   public async playColorChangeSfx(): Promise<void> {
-    await this.playSfx(getColorChangeAsset, 1.0);
+    await this.playSfx('color_change', getColorChangeAsset, 1.0);
   }
 
   /**
    * SFX: Played when a Wild Draw 4 (+4) card is placed on the discard pile.
    */
   public async playPlusFourSfx(): Promise<void> {
-    await this.playSfx(getPlusFourAsset, 1.0);
+    await this.playSfx('plus_four', getPlusFourAsset, 1.0);
   }
 
   /**
    * SFX: Played when a Draw Two (+2) card is played.
    */
   public async playPlusTwoSfx(): Promise<void> {
-    await this.playSfx(getPlusTwoAsset, 1.0);
+    await this.playSfx('plus_two', getPlusTwoAsset, 1.0);
   }
 
   /**
    * SFX: Played when a Skip card is played and a player's turn is skipped.
    */
   public async playSkipSfx(): Promise<void> {
-    await this.playSfx(getSkipAsset, 1.0);
+    await this.playSfx('skip', getSkipAsset, 1.0);
   }
 
   /**
    * SFX: Played when a Reverse card is played and turn direction changes.
    */
   public async playReverseSfx(): Promise<void> {
-    await this.playSfx(getReverseAsset, 1.0);
+    await this.playSfx('reverse', getReverseAsset, 1.0);
   }
 
   /**
    * SFX: Played when cards or hands are swapped / passed.
    */
   public async playSwapSfx(): Promise<void> {
-    await this.playSfx(getSwapAsset, 1.0);
+    await this.playSfx('swap', getSwapAsset, 1.0);
   }
 
   /**
@@ -513,7 +565,40 @@ export class AudioService {
    * Accepts optional `force` flag to give audio confirmation when turning audio off.
    */
   public async playMuteSfx(force: boolean = false): Promise<void> {
-    await this.playSfx(getMuteAsset, 1.0, force);
+    await this.playSfx('mute', getMuteAsset, 1.0, force);
+  }
+
+  /**
+   * Common SFX Convenience Methods (card play, draw, clicks, win chime)
+   */
+  public async playCardDraw(): Promise<void> {
+    try {
+      await soundService.playCardDraw();
+    } catch {}
+  }
+
+  public async playCardPlay(): Promise<void> {
+    try {
+      await soundService.playCardSnap();
+    } catch {}
+  }
+
+  public async playButtonClick(): Promise<void> {
+    try {
+      await soundService.playCardSnap();
+    } catch {}
+  }
+
+  public async playTurnAlert(): Promise<void> {
+    try {
+      await soundService.playRivalCallout();
+    } catch {}
+  }
+
+  public async playWinChime(): Promise<void> {
+    try {
+      await soundService.playWinChime();
+    } catch {}
   }
 }
 

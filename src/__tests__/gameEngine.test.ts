@@ -233,6 +233,7 @@ describe('Action Cards Mechanics', () => {
       },
       logs: [],
       turnCount: 1,
+      pendingDrawCount: 0,
     };
   }
 

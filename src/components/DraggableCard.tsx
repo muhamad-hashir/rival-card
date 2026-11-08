@@ -83,8 +83,8 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
       isPressed.value = false;
       scale.value = withSpring(1);
 
-      // If dragged upwards past the drop threshold (-55px)
-      if (isPlayable && event.translationY < -55) {
+      // If dragged upwards past the drop threshold (-48px)
+      if (isPlayable && event.translationY < -48) {
         runOnJS(handlePlayCardJS)();
       }
 
@@ -168,6 +168,7 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
 
 const styles = StyleSheet.create({
   cardContainer: {
-    paddingVertical: 6,
+    paddingTop: 2,
+    paddingBottom: 0,
   },
 });

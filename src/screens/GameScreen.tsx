@@ -28,6 +28,7 @@ import {
   dismissPrivacyMask,
   getDominantColor,
   hasIdenticalPair,
+  hasStackableCard,
   isValidMove,
   isWildCard,
   makeBotMove,
@@ -36,6 +37,7 @@ import {
   playPairCards,
   playerDrawCard,
   playerPassTurn,
+  resolvePendingDraw,
   TURN_DURATION,
 } from '../gameEngine';
 import { CardView } from '../components/CardView';
@@ -48,6 +50,7 @@ import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { ErrorToast } from '../components/ErrorToast';
 import { errorToastService } from '../services/errorToastService';
 import { ModesModal } from '../components/ModesModal';
+import { SettingsModal } from '../components/SettingsModal';
 import { TauntBar } from '../components/TauntBar';
 import { TurnTimerBadge } from '../components/TurnTimerBadge';
 import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
@@ -148,13 +151,13 @@ export function getPresetPlayers(
 
 function getCardOverlapMargin(cardCount: number): number {
   if (cardCount <= 1) return 0;
-  if (cardCount === 2) return -26;
-  if (cardCount === 3) return -32;
-  if (cardCount === 4) return -36;
-  if (cardCount === 5) return -39;
-  if (cardCount <= 7) return -42;
-  if (cardCount <= 9) return -45;
-  return -48;
+  if (cardCount === 2) return -22;
+  if (cardCount === 3) return -27;
+  if (cardCount === 4) return -31;
+  if (cardCount === 5) return -34;
+  if (cardCount <= 7) return -37;
+  if (cardCount <= 9) return -40;
+  return -42;
 }
 
 export interface GameScreenProps {
@@ -178,7 +181,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [currentPresetKey, setCurrentPresetKey] = useState<SetupPreset>(initialPresetKey);
   const [gameState, setGameState] = useState<GameState>(() =>
     initialGameState ||
-    createGame(getPresetPlayers(initialPresetKey), PRESETS[initialPresetKey].mode)
+    createGame(getPresetPlayers(initialPresetKey), PRESETS[initialPresetKey].mode, {
+      allowStacking: true,
+    })
   );
 
   // Sound mute state
@@ -197,6 +202,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Multiplayer Online & Modes states
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isModesModalOpen, setIsModesModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
   const [onlineRoomCode, setOnlineRoomCode] = useState<string | null>(initialOnlineRoomCode);
   const [localOnlinePlayerId, setLocalOnlinePlayerId] = useState<string | null>(initialLocalOnlinePlayerId);
@@ -212,8 +218,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
 
   useEffect(() => {
-    settingsService.getSettings().then(setSettings);
-    const unsub = settingsService.subscribe(setSettings);
+    settingsService.getSettings().then((s) => {
+      setSettings(s);
+      setIsAudioMuted(!s.sfxEnabled && !s.bgmEnabled);
+    });
+    const unsub = settingsService.subscribe((s) => {
+      setSettings(s);
+      setIsAudioMuted(!s.sfxEnabled && !s.bgmEnabled);
+    });
     return () => unsub();
   }, []);
 
@@ -635,10 +647,31 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     });
   }, []);
 
-  // Toggle Audio
-  const handleToggleSound = () => {
-    const newMute = soundService.toggleMute();
-    setIsAudioMuted(newMute);
+  // Keep audio mute state synchronized with persistent settings
+  useEffect(() => {
+    settingsService.getSettings().then((s) => {
+      setIsAudioMuted(!s.sfxEnabled && !s.bgmEnabled);
+    });
+    const unsubscribe = settingsService.subscribe((s) => {
+      setIsAudioMuted(!s.sfxEnabled && !s.bgmEnabled);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Toggle Audio (Mute / Unmute both SFX and BGM immediately and persist)
+  const handleToggleSound = async () => {
+    const currentMute = soundService.getMuted();
+    const nextMute = !currentMute;
+    soundService.setMuted(nextMute);
+    setIsAudioMuted(nextMute);
+
+    if (nextMute) {
+      await audioService.pauseBgm();
+    } else {
+      await audioService.resumeBgm();
+    }
+    await settingsService.updateSetting('sfxEnabled', !nextMute);
+    await settingsService.updateSetting('bgmEnabled', !nextMute);
     hapticsService.cardSnap();
   };
 
@@ -903,7 +936,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setCurrentPresetKey(presetKey);
     const preset = PRESETS[presetKey];
     const players = getPresetPlayers(presetKey);
-    setGameState(createGame(players, preset.mode));
+    setGameState(createGame(players, preset.mode, { allowStacking: true }));
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
     setPendingPairPlay(null);
@@ -944,7 +977,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         name: p.name,
         isBot: false,
       }));
-      const freshState = createGame(playerConfigs, 'multiplayer');
+      const freshState = createGame(playerConfigs, 'multiplayer', { allowStacking: true });
       setGameState(freshState);
       try {
         await multiplayerService.broadcastGameState(freshState, 'Restarted Match');
@@ -1234,8 +1267,101 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           }
         }
 
+        // 2. Active Draw Penalty Stack Defense (+2 / +4 Stacking):
+        if ((stateForBot.pendingDrawCount || 0) > 0) {
+          const stackableCards = currentPlayer.hand.filter((c) =>
+            isValidMove(c, topDiscardCard, stateForBot.activeColor, stateForBot.pendingDrawCount)
+          );
+
+          // Bot AI Stacking Logic: Prioritize playing stackable card with ~88% probability
+          const shouldStack = stackableCards.length > 0 && Math.random() < 0.88;
+
+          if (shouldStack) {
+            const cardToStack = stackableCards[0];
+            const identicalPair = hasIdenticalPair(currentPlayer.hand, cardToStack);
+            const playAsPair = Boolean(identicalPair);
+            const pairCard = identicalPair;
+
+            const remainingAfterPlay = currentPlayer.hand.length - (playAsPair ? 2 : 1);
+            if (remainingAfterPlay === 1 && Math.random() < 0.75) {
+              stateForBot = declareRival(stateForBot, currentPlayer.id);
+            }
+
+            const chosenColor = isWildCard(cardToStack)
+              ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== cardToStack.id && (!pairCard || c.id !== pairCard.id)))
+              : undefined;
+
+            let nextState: GameState;
+            if (playAsPair && pairCard) {
+              nextState = playPairCards(stateForBot, currentPlayer.id, cardToStack.id, pairCard.id, { chosenColor });
+            } else {
+              nextState = playCard(stateForBot, currentPlayer.id, cardToStack.id, { chosenColor });
+            }
+
+            // If next player cannot stack, deliver detonated penalty cards
+            const targetIndex = nextState.currentTurnIndex;
+            const victim = nextState.players[targetIndex];
+            if (nextState.pendingDrawCount === 0 && victim) {
+              const addedPenalty = playAsPair ? (cardToStack.value === 'draw2' ? 4 : 8) : (cardToStack.value === 'draw2' ? 2 : 4);
+              const totalDrawn = (stateForBot.pendingDrawCount || 0) + addedPenalty;
+              setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalDrawn }));
+              for (let i = 0; i < totalDrawn; i++) {
+                setTimeout(() => {
+                  triggerFlyingCard(victim.id, () => {
+                    soundService.playCardSnap();
+                    setPendingPenaltyCount((prev) => ({
+                      ...prev,
+                      [victim.id]: Math.max(0, (prev[victim.id] || 1) - 1),
+                    }));
+                  });
+                }, i * 110);
+              }
+            }
+
+            soundService.playCardSnap();
+            audioService.playPlusTwoSfx();
+            soundService.playRivalCallout();
+            triggerCardActionSfx(cardToStack.value, Boolean(chosenColor));
+
+            const logMsg = playAsPair && pairCard
+              ? `⚡ ${currentPlayer.name} stacked pair of ${cardToStack.value}!`
+              : `⚡ ${currentPlayer.name} stacked ${cardToStack.value}!`;
+            commitGameState(nextState, logMsg);
+            setIsBotProcessing(false);
+            return;
+          } else {
+            // Bot cannot stack or voluntarily accepts penalty
+            const count = stateForBot.pendingDrawCount || 1;
+            setPendingPenaltyCount((prev) => ({ ...prev, [currentPlayer.id]: count }));
+            for (let i = 0; i < count; i++) {
+              setTimeout(() => {
+                triggerFlyingCard(currentPlayer.id, () => {
+                  soundService.playCardSnap();
+                  setPendingPenaltyCount((prev) => ({
+                    ...prev,
+                    [currentPlayer.id]: Math.max(0, (prev[currentPlayer.id] || 1) - 1),
+                  }));
+                });
+              }, i * 110);
+            }
+
+            setTimeout(() => {
+              try {
+                const nextState = resolvePendingDraw(stateForBot, currentPlayer.id);
+                soundService.playPenalty();
+                commitGameState(nextState, `${currentPlayer.name} took +${count} cards from stack`);
+              } catch (err) {
+                console.error('Error during bot resolve draw:', err);
+              } finally {
+                setIsBotProcessing(false);
+              }
+            }, Math.min(count * 110 + 60, 600));
+            return;
+          }
+        }
+
         const playableCards = currentPlayer.hand.filter((c) =>
-          isValidMove(c, topDiscardCard, stateForBot.activeColor)
+          isValidMove(c, topDiscardCard, stateForBot.activeColor, stateForBot.pendingDrawCount || 0)
         );
 
         if (playableCards.length > 0) {
@@ -1260,25 +1386,31 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           // If action card causes draw on victim (+2, +4)
           const targetIndex = (stateForBot.currentTurnIndex + stateForBot.direction + stateForBot.players.length) % stateForBot.players.length;
           const victim = stateForBot.players[targetIndex];
-          let penaltyCards = 0;
-          if (chosenCard.value === 'draw2') {
-            penaltyCards = playAsPair ? 4 : 2;
-          } else if (chosenCard.value === 'wild_draw4') {
-            penaltyCards = playAsPair ? 8 : 4;
-          }
+          const isDrawAction = chosenCard.value === 'draw2' || chosenCard.value === 'wild_draw4';
+          const canVictimStack = victim && victim.hand.some((c) => c.value === chosenCard.value);
 
-          if (penaltyCards > 0 && victim) {
-            setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: penaltyCards }));
-            for (let i = 0; i < penaltyCards; i++) {
-              setTimeout(() => {
-                triggerFlyingCard(victim.id, () => {
-                  soundService.playCardSnap();
-                  setPendingPenaltyCount((prev) => ({
-                    ...prev,
-                    [victim.id]: Math.max(0, (prev[victim.id] || 1) - 1),
-                  }));
-                });
-              }, i * 110);
+          // Deliver flying cards immediately ONLY if victim cannot stack
+          if (isDrawAction && victim && !canVictimStack) {
+            let penaltyCards = 0;
+            if (chosenCard.value === 'draw2') {
+              penaltyCards = playAsPair ? 4 : 2;
+            } else if (chosenCard.value === 'wild_draw4') {
+              penaltyCards = playAsPair ? 8 : 4;
+            }
+
+            if (penaltyCards > 0) {
+              setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: penaltyCards }));
+              for (let i = 0; i < penaltyCards; i++) {
+                setTimeout(() => {
+                  triggerFlyingCard(victim.id, () => {
+                    soundService.playCardSnap();
+                    setPendingPenaltyCount((prev) => ({
+                      ...prev,
+                      [victim.id]: Math.max(0, (prev[victim.id] || 1) - 1),
+                    }));
+                  });
+                }, i * 110);
+              }
             }
           }
 
@@ -1349,9 +1481,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       if (card.value === 'draw2') {
         const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
         const victim = gameState.players[targetIndex];
-        if (victim) {
-          setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 2 }));
-          for (let i = 0; i < 2; i++) {
+        const isEscalation = (gameState.pendingDrawCount || 0) > 0;
+        const totalPenalty = (gameState.pendingDrawCount || 0) + 2;
+        const canVictimStack = victim && victim.hand.some((c) => c.value === 'draw2');
+
+        if (victim && !canVictimStack) {
+          setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalPenalty }));
+          for (let i = 0; i < totalPenalty; i++) {
             setTimeout(() => {
               triggerFlyingCard(victim.id, () => {
                 soundService.playCardSnap();
@@ -1362,6 +1498,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               });
             }, i * 110);
           }
+        }
+        if (isEscalation) {
+          audioService.playPlusTwoSfx();
+          soundService.playRivalCallout();
+          hapticsService.rivalCallout();
         }
       }
 
@@ -1415,9 +1556,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       if (card1.value === 'draw2') {
         const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
         const victim = gameState.players[targetIndex];
-        if (victim) {
-          setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 4 }));
-          for (let i = 0; i < 4; i++) {
+        const isEscalation = (gameState.pendingDrawCount || 0) > 0;
+        const totalPenalty = (gameState.pendingDrawCount || 0) + 4;
+        const canVictimStack = victim && victim.hand.some((c) => c.value === 'draw2');
+
+        if (victim && !canVictimStack) {
+          setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalPenalty }));
+          for (let i = 0; i < totalPenalty; i++) {
             setTimeout(() => {
               triggerFlyingCard(victim.id, () => {
                 soundService.playCardSnap();
@@ -1428,6 +1573,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               });
             }, i * 110);
           }
+        }
+        if (isEscalation) {
+          audioService.playPlusTwoSfx();
+          soundService.playRivalCallout();
+          hapticsService.rivalCallout();
         }
       }
 
@@ -1585,9 +1735,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         if (selectedWildCard.value === 'wild_draw4') {
           const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
           const victim = gameState.players[targetIndex];
-          if (victim) {
-            setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 4 }));
-            for (let i = 0; i < 4; i++) {
+          const isEscalation = (gameState.pendingDrawCount || 0) > 0;
+          const totalPenalty = (gameState.pendingDrawCount || 0) + 4;
+          const canVictimStack = victim && victim.hand.some((c) => c.value === 'wild_draw4');
+
+          if (victim && !canVictimStack) {
+            setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalPenalty }));
+            for (let i = 0; i < totalPenalty; i++) {
               setTimeout(() => {
                 triggerFlyingCard(victim.id, () => {
                   soundService.playCardSnap();
@@ -1598,6 +1752,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 });
               }, i * 110);
             }
+          }
+          if (isEscalation) {
+            audioService.playPlusFourSfx();
+            soundService.playRivalCallout();
+            hapticsService.rivalCallout();
           }
         }
 
@@ -1638,11 +1797,55 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   };
 
+  // Take Active Draw Penalty Stack (Voluntary or Forced Draw)
+  const handleTakePenaltyStack = () => {
+    if (!isHumanTurn || isHumanDrawing || isDealing) return;
+    const count = gameState.pendingDrawCount || 0;
+    if (count <= 0) return;
+
+    setPendingPairPlay(null);
+    setPendingWildPair(null);
+    setIsHumanDrawing(true);
+    hapticsService.rivalCallout();
+
+    setPendingPenaltyCount((prev) => ({ ...prev, [myPlayer.id]: count }));
+    for (let i = 0; i < count; i++) {
+      setTimeout(() => {
+        triggerFlyingCard(myPlayer.id, () => {
+          soundService.playCardSnap();
+          setPendingPenaltyCount((prev) => ({
+            ...prev,
+            [myPlayer.id]: Math.max(0, (prev[myPlayer.id] || 1) - 1),
+          }));
+        });
+      }, i * 110);
+    }
+
+    setTimeout(() => {
+      try {
+        const nextState = resolvePendingDraw(gameState, myPlayer.id);
+        soundService.playPenalty();
+        commitGameState(nextState, `${myPlayer.name} took +${count} cards from stack`);
+      } catch (err: any) {
+        Alert.alert('Draw Error', err?.message || 'Unable to draw stack penalty');
+      } finally {
+        setIsHumanDrawing(false);
+      }
+    }, Math.min(count * 110 + 60, 600));
+  };
+
   // Draw Card from Deck: Spawn flying card and commit to state only upon landing
   const handleDrawCard = () => {
     if (!isHumanTurn || isHumanDrawing || isDealing) return;
     setPendingPairPlay(null);
     setPendingWildPair(null);
+
+    // If facing active draw penalty stack (+2 or +4), voluntarily draw full stack
+    if ((gameState.pendingDrawCount || 0) > 0) {
+      handleTakePenaltyStack();
+      return;
+    }
+
     if (gameState.hasDrawnThisTurn) {
       hapticsService.invalidMove();
       soundService.playError();
@@ -1820,6 +2023,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               {opp.name}
             </Text>
             {isOppTurn && !gameState.isGameOver && !isDealing && (
+              <View style={styles.miniTurnBadge}>
+                <View style={styles.miniTurnDot} />
+                <Text style={styles.miniTurnText}>THINKING...</Text>
+              </View>
+            )}
+            {isOppTurn && !gameState.isGameOver && !isDealing && (
               <TurnTimerBadge seconds={turnTimeRemaining} size="compact" />
             )}
             <View
@@ -1850,6 +2059,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   key={idx}
                   style={[
                     styles.sideCardWrapper,
+                    isOppTurn && styles.activeOpponentCardWrapper,
                     {
                       marginTop: idx === 0 ? 0 : -34,
                       marginLeft: isLeft ? idx * 7 : 0,
@@ -1926,6 +2136,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             {opp.name}
           </Text>
           {isOppTurn && !gameState.isGameOver && !isDealing && (
+            <View style={styles.miniTurnBadge}>
+              <View style={styles.miniTurnDot} />
+              <Text style={styles.miniTurnText}>THINKING...</Text>
+            </View>
+          )}
+          {isOppTurn && !gameState.isGameOver && !isDealing && (
             <TurnTimerBadge seconds={turnTimeRemaining} size="compact" />
           )}
           <View
@@ -1956,8 +2172,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 key={idx}
                 style={[
                   styles.opponentCardWrapper,
+                  isOppTurn && styles.activeOpponentCardWrapper,
                   {
-                    marginLeft: idx === 0 ? 0 : -26,
+                    marginLeft: idx === 0 ? 0 : -22,
                     zIndex: idx + 1,
                     transform: [
                       { rotate: `${(idx - (fanCardCount - 1) / 2) * 4}deg` },
@@ -2082,48 +2299,33 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   activeOpacity={0.7}
                   onPress={handleToggleSound}
                   style={styles.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Toggle Audio"
                 >
                   <Text style={styles.iconBtnText}>{isAudioMuted ? '🔇' : '🔊'}</Text>
                 </TouchableOpacity>
+
+                {/* In-Game Settings Button */}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    hapticsService.cardSnap();
+                    setIsSettingsOpen(true);
+                  }}
+                  style={styles.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Settings"
+                >
+                  <Text style={styles.iconBtnText}>⚙️</Text>
+                </TouchableOpacity>
               </View>
             </View>
-
-        {/* Turn & Active Color Status Banner */}
-        <View style={styles.turnStatusBar}>
-          <View style={styles.turnIndicator}>
-            <View
-              style={[
-                styles.turnDot,
-                {
-                  backgroundColor: isOnlineMode
-                    ? isMyTurn
-                      ? '#10B981'
-                      : '#F59E0B'
-                    : currentPlayer.isBot
-                    ? '#F59E0B'
-                    : '#10B981',
-                },
-              ]}
-            />
-            <Text style={styles.turnText}>
-              {isOnlineMode
-                ? isMyTurn
-                  ? '🟢 Your Turn (Play or Draw)'
-                  : `⏳ ${currentPlayer.name}'s turn...`
-                : currentPlayer.isBot
-                ? `${currentPlayer.name}'s turn...`
-                : currentPlayer.name === 'You'
-                ? '🟢 Your Turn (Play or Draw)'
-                : `${currentPlayer.name}'s Turn`}
-            </Text>
-          </View>
-        </View>
 
         {/* ================================================================= */}
         {/* 2. TOP OPPONENT (12 O'CLOCK POSITION) */}
         {/* ================================================================= */}
         {opponentTop && (
-          <View style={styles.opponentsSection}>
+          <View style={styles.opponentsSection} pointerEvents="box-none">
             <View style={styles.topOpponentContainer}>
               {renderOpponentBox(opponentTop, 'top')}
             </View>
@@ -2133,7 +2335,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         {/* ================================================================= */}
         {/* 3. PLAY ARENA (Left Opponent, Center Table Arena, Right Opponent) */}
         {/* ================================================================= */}
-        <View style={[styles.arenaSection, !opponentLeft && !opponentRight && styles.arenaSectionCentered]}>
+        <View style={styles.arenaSection} pointerEvents="box-none">
           {/* Opponent 1 (Left Edge, Diagonal Fan) */}
           {opponentLeft && (
             <View style={styles.clockPositionLeft}>
@@ -2160,6 +2362,18 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 : null,
             ]}
           >
+            {/* Floating Cartoon Stack Indicator Badge (+2 / +4 Stacking Rule) */}
+            {(gameState.pendingDrawCount || 0) > 0 && (
+              <View style={styles.floatingStackBadgeContainer} pointerEvents="none">
+                <View style={styles.floatingStackBadge}>
+                  <Text style={styles.floatingStackIcon}>⚡</Text>
+                  <Text style={styles.floatingStackText}>
+                    STACK: +{gameState.pendingDrawCount}
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {/* Circular Turn Direction Arrows encircling the center cards */}
             <View
               style={[
@@ -2328,7 +2542,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           return (
             <View style={styles.playerSection}>
               {/* Player Avatar, Name & Coins pinned to bottom-left */}
-              <View style={styles.playerBottomLeftBadge}>
+              <View
+                style={[
+                  styles.playerBottomLeftBadge,
+                  isMyTurn && !gameState.isGameOver && !isDealing && styles.playerBottomLeftBadgeActive,
+                ]}
+              >
                 <View
                   style={[
                     styles.playerAvatarCircle,
@@ -2353,6 +2572,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                     <Text style={styles.playerCardCountText}>
                       {visiblePlayerHand.length} card{visiblePlayerHand.length === 1 ? '' : 's'}
                     </Text>
+                    {isMyTurn && !gameState.isGameOver && !isDealing && (
+                      <View style={styles.miniTurnBadge}>
+                        <View style={styles.miniTurnDot} />
+                        <Text style={styles.miniTurnText}>YOUR TURN</Text>
+                      </View>
+                    )}
                     {isMyTurn && !gameState.isGameOver && !isDealing && !gameState.privacyMask.isActive && (
                       <TurnTimerBadge seconds={turnTimeRemaining} size="compact" />
                     )}
@@ -2397,6 +2622,24 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </TouchableOpacity>
               </View>
 
+              {/* Dedicated Arcade Action Button: TAKE +X CARDS (Voluntary Draw Option) */}
+              {isHumanTurn && !isDealing && !gameState.isGameOver && (gameState.pendingDrawCount || 0) > 0 && !pendingPairPlay && (
+                <View style={styles.takePenaltyContainer}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    style={styles.takePenaltyBtn}
+                    onPress={handleTakePenaltyStack}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Take ${gameState.pendingDrawCount} cards`}
+                  >
+                    <Text style={styles.takePenaltyIcon}>⚠️</Text>
+                    <Text style={styles.takePenaltyText}>
+                      TAKE +{gameState.pendingDrawCount} CARDS
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* Floating Pair Play Quick-Action Pill */}
               {pendingPairPlay && isHumanTurn && !isDealing && !gameState.isGameOver && (
                 <View style={styles.pairPlayPillContainer}>
@@ -2440,7 +2683,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 ]}
                 renderItem={({ item, index }) => {
                   const playable =
-                    isHumanTurn && !isDealing && isValidMove(item, topDiscardCard, gameState.activeColor);
+                    isHumanTurn &&
+                    !isDealing &&
+                    isValidMove(item, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0);
                   const overlapMargin = index === 0 ? 0 : getCardOverlapMargin(visiblePlayerHand.length);
                   const isPairSelected = Boolean(
                     pendingPairPlay &&
@@ -2564,6 +2809,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             setIsLeaveModalOpen(false);
             await handleQuitGame();
           }}
+        />
+
+        {/* In-Game Settings Modal */}
+        <SettingsModal
+          visible={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
         />
 
         {/* Network Reconnecting Amber Banner */}
@@ -2830,11 +3081,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   opponentsSection: {
-    paddingVertical: 2,
-    backgroundColor: 'transparent',
-    zIndex: 12,
+    position: 'absolute',
+    top: 4,
+    left: 0,
+    right: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 22,
+    backgroundColor: 'transparent',
   },
   topOpponentContainer: {
     alignItems: 'center',
@@ -2850,10 +3104,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   opponentCard: {
-    backgroundColor: 'rgba(15, 23, 42, 0.65)',
-    borderRadius: 12,
-    padding: 6,
-    minWidth: 110,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    borderRadius: 10,
+    padding: 3,
+    minWidth: 100,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.15)',
     shadowColor: '#000',
@@ -2864,28 +3118,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   opponentCardSingle: {
-    minWidth: 130,
-    paddingHorizontal: 12,
+    minWidth: 115,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
   opponentCardActive: {
-    borderColor: '#38BDF8',
-    backgroundColor: 'rgba(30, 58, 138, 0.7)',
-    shadowColor: '#38BDF8',
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 3,
+    borderColor: '#10B981',
+    borderWidth: 2.5,
+    backgroundColor: 'rgba(6, 95, 70, 0.55)',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.65,
+    shadowRadius: 8,
+    elevation: 6,
   },
   opponentTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
+    gap: 4,
+    marginBottom: 1,
     justifyContent: 'center',
   },
   opponentAvatarBadge: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 2,
@@ -2893,13 +3150,13 @@ const styles = StyleSheet.create({
     borderColor: '#FFFFFF',
   },
   opponentAvatarEmoji: {
-    fontSize: 12,
+    fontSize: 11,
   },
   opponentName: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#F8FAFC',
-    maxWidth: 80,
+    maxWidth: 75,
   },
   opponentCountBadge: {
     backgroundColor: 'rgba(255, 255, 255, 0.15)',
@@ -2931,8 +3188,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 2,
-    minHeight: 52,
+    paddingVertical: 0,
+    minHeight: 38,
+    marginTop: -3,
   },
   opponentCardWrapper: {
     shadowColor: '#000',
@@ -2940,6 +3198,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3,
     elevation: 2,
+  },
+  activeOpponentCardWrapper: {
+    shadowColor: '#34D399',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.85,
+    shadowRadius: 6,
+    elevation: 6,
   },
   opponentOverflowPill: {
     backgroundColor: 'rgba(15, 23, 42, 0.9)',
@@ -2954,10 +3219,10 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   opponentEmptyText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     color: '#34D399',
-    paddingVertical: 14,
+    paddingVertical: 8,
   },
   rivalDeclaredBadge: {
     backgroundColor: '#FEF3C7',
@@ -2987,31 +3252,37 @@ const styles = StyleSheet.create({
   arenaSection: {
     flex: 1,
     position: 'relative',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 4,
+    paddingVertical: 0,
+    marginTop: 0,
     zIndex: 10,
   },
   arenaSectionCentered: {
     justifyContent: 'center',
   },
   clockPositionLeft: {
-    alignItems: 'flex-start',
+    position: 'absolute',
+    left: 14,
+    alignSelf: 'center',
     justifyContent: 'center',
+    alignItems: 'flex-start',
     zIndex: 15,
   },
   clockPositionRight: {
-    alignItems: 'flex-end',
+    position: 'absolute',
+    right: 14,
+    alignSelf: 'center',
     justifyContent: 'center',
+    alignItems: 'flex-end',
     zIndex: 15,
   },
   sideOpponentCard: {
     backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    borderRadius: 12,
-    padding: 6,
-    width: 88,
+    borderRadius: 10,
+    padding: 4,
+    width: 82,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.15)',
     shadowColor: '#000',
@@ -3024,21 +3295,21 @@ const styles = StyleSheet.create({
   },
   sideOpponentInfo: {
     alignItems: 'center',
-    gap: 3,
-    marginBottom: 3,
+    gap: 2,
+    marginBottom: 2,
   },
   sideOpponentName: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '700',
     color: '#F8FAFC',
-    maxWidth: 78,
+    maxWidth: 72,
     textAlign: 'center',
   },
   sideOpponentFanContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 2,
-    minHeight: 58,
+    paddingVertical: 1,
+    minHeight: 50,
   },
   sideCardWrapper: {
     shadowColor: '#000',
@@ -3060,16 +3331,19 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   centerTableArena: {
-    width: 250,
-    height: 180,
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    width: 220,
+    height: 154,
+    transform: [{ translateX: -110 }, { translateY: -77 }],
     alignItems: 'center',
     justifyContent: 'center',
-    position: 'relative',
     zIndex: 10,
     overflow: 'visible',
   },
   tableFeltMat: {
-    borderRadius: 36,
+    borderRadius: 28,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.15)',
     backgroundColor: 'rgba(15, 23, 42, 0.35)',
@@ -3077,16 +3351,16 @@ const styles = StyleSheet.create({
   },
   turnDirectionRingContainer: {
     position: 'absolute',
-    width: 250,
-    height: 180,
+    width: 220,
+    height: 154,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2,
   },
   turnDirectionRing: {
-    width: 240,
-    height: 170,
-    borderRadius: 85,
+    width: 206,
+    height: 144,
+    borderRadius: 72,
     borderWidth: 1.5,
     borderColor: 'rgba(16, 185, 129, 0.35)',
     borderStyle: 'dashed',
@@ -3094,12 +3368,12 @@ const styles = StyleSheet.create({
   },
   flowArrowTop: {
     position: 'absolute',
-    top: -10,
+    top: -9,
     alignSelf: 'center',
     backgroundColor: '#10B981',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#10B981',
@@ -3110,13 +3384,13 @@ const styles = StyleSheet.create({
   },
   flowArrowRight: {
     position: 'absolute',
-    right: -10,
+    right: -9,
     top: '50%',
-    marginTop: -10,
+    marginTop: -9,
     backgroundColor: '#10B981',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     transform: [{ rotate: '90deg' }],
@@ -3128,12 +3402,12 @@ const styles = StyleSheet.create({
   },
   flowArrowBottom: {
     position: 'absolute',
-    bottom: -10,
+    bottom: -9,
     alignSelf: 'center',
     backgroundColor: '#10B981',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     transform: [{ rotate: '180deg' }],
@@ -3145,13 +3419,13 @@ const styles = StyleSheet.create({
   },
   flowArrowLeft: {
     position: 'absolute',
-    left: -10,
+    left: -9,
     top: '50%',
-    marginTop: -10,
+    marginTop: -9,
     backgroundColor: '#10B981',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     transform: [{ rotate: '270deg' }],
@@ -3163,34 +3437,36 @@ const styles = StyleSheet.create({
   },
   flowArrowText: {
     color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '900',
   },
   drawDeckAbsoluteAnchor: {
     position: 'absolute',
-    top: 10,
-    left: 14,
-    transform: [{ rotate: '-6deg' }],
+    top: '50%',
+    left: '50%',
+    marginLeft: -98,
+    marginTop: -46,
+    transform: [{ rotate: '-4deg' }],
     zIndex: 15,
   },
   deckTouchArea: {
     position: 'relative',
-    width: 74,
-    height: 108,
+    width: 63,
+    height: 92,
   },
   deckLayerCard: {
     position: 'absolute',
-    width: 74,
-    height: 108,
-    borderRadius: 10,
+    width: 63,
+    height: 92,
+    borderRadius: 8,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.22)',
     overflow: 'hidden',
     backgroundColor: '#0F172A',
   },
   deckLayer2: {
-    top: -3,
-    left: -3,
+    top: -2.5,
+    left: -2.5,
     zIndex: 2,
     opacity: 0.9,
   },
@@ -3198,9 +3474,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     left: 0,
-    width: 74,
-    height: 108,
-    borderRadius: 10,
+    width: 63,
+    height: 92,
+    borderRadius: 8,
     borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.45)',
     overflow: 'hidden',
@@ -3209,9 +3485,9 @@ const styles = StyleSheet.create({
     zIndex: 3,
     backgroundColor: '#0F172A',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.4,
-    shadowRadius: 6,
+    shadowRadius: 5,
     elevation: 5,
   },
   drawDeckDisabled: {
@@ -3223,17 +3499,17 @@ const styles = StyleSheet.create({
   },
   drawDeckBadge: {
     position: 'absolute',
-    bottom: 4,
+    bottom: 3,
     backgroundColor: 'rgba(15, 23, 42, 0.92)',
-    paddingHorizontal: 7,
+    paddingHorizontal: 6,
     paddingVertical: 1,
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   drawDeckCount: {
     color: '#F8FAFC',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '900',
   },
   discardContainer: {
@@ -3243,24 +3519,24 @@ const styles = StyleSheet.create({
     overflow: 'visible',
   },
   discardStackContainer: {
-    width: 92,
-    height: 136,
+    width: 78,
+    height: 114,
     position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'visible',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
+    shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.45,
-    shadowRadius: 8,
+    shadowRadius: 7,
     elevation: 8,
   },
   discardLayerCard: {
     position: 'absolute',
     top: 0,
-    left: 1,
-    width: 90,
-    height: 134,
+    left: 0,
+    width: 78,
+    height: 114,
   },
   discardLayerMinus2: {
     zIndex: 1,
@@ -3277,9 +3553,9 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '-1deg' }],
   },
   emptyDiscard: {
-    width: 90,
-    height: 134,
-    borderRadius: 12,
+    width: 78,
+    height: 114,
+    borderRadius: 10,
     borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.25)',
     borderStyle: 'dashed',
@@ -3294,26 +3570,27 @@ const styles = StyleSheet.create({
   playerSection: {
     backgroundColor: 'transparent',
     borderTopWidth: 0,
-    paddingTop: 4,
-    paddingBottom: 4,
+    paddingTop: 0,
+    paddingBottom: 0,
+    marginBottom: 0,
     zIndex: 20,
     position: 'relative',
-    minHeight: 140,
+    minHeight: 94,
     justifyContent: 'flex-end',
   },
   playerBottomLeftBadge: {
     position: 'absolute',
-    bottom: 8,
-    left: 10,
+    bottom: 2,
+    left: 8,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(15, 23, 42, 0.85)',
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.20)',
-    borderRadius: 20,
-    paddingVertical: 5,
-    paddingHorizontal: 8,
-    gap: 8,
+    borderRadius: 18,
+    paddingVertical: 4,
+    paddingHorizontal: 7,
+    gap: 6,
     zIndex: 35,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -3321,17 +3598,50 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
   },
+  playerBottomLeftBadgeActive: {
+    borderColor: '#10B981',
+    borderWidth: 2.5,
+    backgroundColor: 'rgba(6, 95, 70, 0.75)',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.7,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  miniTurnBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.25)',
+    borderWidth: 1,
+    borderColor: '#10B981',
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    gap: 3,
+  },
+  miniTurnDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#10B981',
+  },
+  miniTurnText: {
+    fontSize: 8.5,
+    fontWeight: '900',
+    color: '#34D399',
+    letterSpacing: 0.4,
+  },
   playerAvatarCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
     borderColor: '#FFFFFF',
   },
   playerAvatarEmoji: {
-    fontSize: 16,
+    fontSize: 14,
   },
   playerInfoColumn: {
     justifyContent: 'center',
@@ -3378,26 +3688,26 @@ const styles = StyleSheet.create({
   },
   playerBottomRightControls: {
     position: 'absolute',
-    bottom: 8,
-    right: 10,
+    bottom: 2,
+    right: 8,
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
     zIndex: 35,
   },
   rivalBuzzerBtn: {
-    width: 66,
-    height: 66,
-    borderRadius: 33,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     backgroundColor: '#EF4444',
-    borderWidth: 3,
-    borderBottomWidth: 5,
+    borderWidth: 2.5,
+    borderBottomWidth: 4,
     borderColor: '#B91C1C',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#B91C1C',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.5,
-    shadowRadius: 6,
+    shadowRadius: 5,
     elevation: 8,
   },
   rivalBuzzerActive: {
@@ -3414,23 +3724,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   rivalBuzzerIcon: {
-    fontSize: 16,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 16,
   },
   rivalBuzzerText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 10,
+    fontSize: 9,
     color: '#FFFFFF',
     letterSpacing: 0.5,
   },
   passTurnBtn: {
     backgroundColor: '#2563EB',
     borderWidth: 1.5,
-    borderBottomWidth: 3,
+    borderBottomWidth: 2.5,
     borderColor: '#1D4ED8',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
@@ -3441,14 +3751,14 @@ const styles = StyleSheet.create({
   },
   passTurnBtnText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 11,
+    fontSize: 10,
     color: '#FFFFFF',
   },
   handScrollList: {
-    paddingLeft: 105,
-    paddingRight: 88,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingLeft: 96,
+    paddingRight: 84,
+    paddingTop: 2,
+    paddingBottom: 0,
     alignItems: 'center',
   },
   handScrollListCentered: {
@@ -3457,7 +3767,7 @@ const styles = StyleSheet.create({
   },
   catchRivalFloatingContainer: {
     position: 'absolute',
-    bottom: 95,
+    bottom: 78,
     alignSelf: 'center',
     zIndex: 99,
   },
@@ -3542,5 +3852,75 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_HEAVY,
     fontSize: 14,
     color: '#94A3B8',
+  },
+  floatingStackBadgeContainer: {
+    position: 'absolute',
+    top: -24,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 25,
+  },
+  floatingStackBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 16,
+    borderWidth: 2.5,
+    borderColor: '#FEF08A',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.6,
+    shadowRadius: 5,
+    elevation: 9,
+  },
+  floatingStackIcon: {
+    fontSize: 14,
+    marginRight: 4,
+  },
+  floatingStackText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FFFFFF',
+    letterSpacing: 0.8,
+    textShadowColor: '#7F1D1D',
+    textShadowOffset: { width: 0, height: 1.5 },
+    textShadowRadius: 3,
+  },
+  takePenaltyContainer: {
+    position: 'absolute',
+    top: -46,
+    alignSelf: 'center',
+    zIndex: 55,
+  },
+  takePenaltyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    borderRadius: 18,
+    borderWidth: 2.5,
+    borderColor: '#FEF08A',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.55,
+    shadowRadius: 6,
+    elevation: 10,
+  },
+  takePenaltyIcon: {
+    fontSize: 15,
+    marginRight: 6,
+  },
+  takePenaltyText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FFFFFF',
+    letterSpacing: 0.8,
+    textShadowColor: '#7F1D1D',
+    textShadowOffset: { width: 0, height: 1.5 },
+    textShadowRadius: 3,
   },
 });

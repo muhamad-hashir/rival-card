@@ -98,4 +98,6 @@ export interface GameState {
   logs: GameEventLog[];
   turnCount: number;
   lastActionTimestamp?: number;
+  pendingDrawCount?: number;
+  allowStacking?: boolean;
 }

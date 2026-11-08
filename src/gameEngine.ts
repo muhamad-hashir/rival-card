@@ -151,11 +151,30 @@ export function isWildCard(card: Card): boolean {
 
 /**
  * Validates whether a card can be legally played onto the discard pile:
- * - Any Wild or Rival card can be played on any card.
- * - Otherwise, the card's color must match `activeColor`, OR
- * - The card's value must match `topCard.value`.
+ * - If pendingDrawCount > 0 (active draw penalty stack):
+ *   - Only matching Draw Two ('draw2' on 'draw2') or Wild Draw 4 ('wild_draw4' on 'wild_draw4') can be stacked.
+ *   - All other cards are invalid until penalty is resolved.
+ * - Otherwise:
+ *   - Any Wild or Rival card can be played on any card.
+ *   - The card's color must match `activeColor`, OR
+ *   - The card's value must match `topCard.value`.
  */
-export function isValidMove(card: Card, topCard: Card, activeColor: StandardColor): boolean {
+export function isValidMove(
+  card: Card,
+  topCard: Card,
+  activeColor: StandardColor,
+  pendingDrawCount: number = 0
+): boolean {
+  if (pendingDrawCount > 0) {
+    if (topCard.value === 'draw2') {
+      return card.value === 'draw2';
+    }
+    if (topCard.value === 'wild_draw4') {
+      return card.value === 'wild_draw4';
+    }
+    return false;
+  }
+
   if (isWildCard(card)) {
     return true;
   }
@@ -164,6 +183,19 @@ export function isValidMove(card: Card, topCard: Card, activeColor: StandardColo
   }
   if (card.value === topCard.value) {
     return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a player's hand holds a card that can stack on top of an active penalty card.
+ */
+export function hasStackableCard(hand: readonly Card[], topCard: Card): boolean {
+  if (topCard.value === 'draw2') {
+    return hand.some((c) => c.value === 'draw2');
+  }
+  if (topCard.value === 'wild_draw4') {
+    return hand.some((c) => c.value === 'wild_draw4');
   }
   return false;
 }
@@ -265,6 +297,10 @@ export interface PlayerConfig {
   avatarId?: string;
 }
 
+export interface CreateGameOptions {
+  allowStacking?: boolean;
+}
+
 /**
  * Creates and initializes a new Rival Card game:
  * - Deals 7 cards to each player.
@@ -274,7 +310,8 @@ export interface PlayerConfig {
  */
 export function createGame(
   playerConfigs: PlayerConfig[],
-  gameMode: GameMode = 'vs_bot'
+  gameMode: GameMode = 'vs_bot',
+  options?: CreateGameOptions
 ): GameState {
   if (playerConfigs.length < 2 || playerConfigs.length > 4) {
     throw new Error('Rival Card requires between 2 and 4 players.');
@@ -390,6 +427,8 @@ export function createGame(
     logs: initialLogs,
     turnCount: 1,
     lastActionTimestamp: Date.now(),
+    pendingDrawCount: 0,
+    allowStacking: options?.allowStacking ?? false,
   };
 }
 
@@ -422,9 +461,66 @@ export function dismissPrivacyMask(state: GameState): GameState {
 // ============================================================================
 
 /**
+ * Resolves an active draw penalty stack (+2 or +4):
+ * The player draws the entire accumulated amount, resets pendingDrawCount to 0,
+ * and immediately ends their turn (advancing to the next player).
+ */
+export function resolvePendingDraw(state: GameState, playerId: string): GameState {
+  if (state.isGameOver) return state;
+
+  const currentPlayer = state.players[state.currentTurnIndex];
+  if (currentPlayer.id !== playerId) {
+    throw new Error(`It is not ${playerId}'s turn.`);
+  }
+
+  const penaltyCount = (state.pendingDrawCount && state.pendingDrawCount > 0) ? state.pendingDrawCount : 1;
+  const { drawnCards, remainingDeck, remainingDiscard, didReshuffle } = drawFromDeck(
+    state.deck,
+    state.discardPile,
+    penaltyCount
+  );
+
+  const updatedPlayers = state.players.map((p) =>
+    p.id === playerId
+      ? { ...p, hand: [...p.hand, ...drawnCards], hasDeclaredRival: false }
+      : p
+  );
+
+  const newLogs = [...state.logs];
+  if (didReshuffle) {
+    newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Draw deck was empty. Discard pile reshuffled!'));
+  }
+  newLogs.push(
+    createLogEntry(
+      'DRAW_CARD',
+      `${currentPlayer.name} drew ${drawnCards.length} penalty card${drawnCards.length > 1 ? 's' : ''} from stack!`,
+      {
+        playerId,
+        playerName: currentPlayer.name,
+      }
+    )
+  );
+
+  const intermediateState: GameState = {
+    ...state,
+    deck: remainingDeck,
+    discardPile: remainingDiscard,
+    players: updatedPlayers,
+    pendingDrawCount: 0,
+    hasDrawnThisTurn: false,
+    drawnCard: null,
+    logs: newLogs,
+    lastActionTimestamp: Date.now(),
+  };
+
+  return advanceToNextTurn(intermediateState, 1);
+}
+
+/**
  * Executes a player drawing a card from the deck.
  * If the deck is empty, reshuffles the discard pile (except top card).
- * Sets hasDrawnThisTurn = true so player can either play the drawn card or pass.
+ * If facing an active draw stack, draws all pending cards and ends turn.
+ * Otherwise sets hasDrawnThisTurn = true so player can either play the drawn card or pass.
  */
 export function playerDrawCard(state: GameState, playerId: string): GameState {
   if (state.isGameOver) return state;
@@ -432,6 +528,11 @@ export function playerDrawCard(state: GameState, playerId: string): GameState {
   const currentPlayer = state.players[state.currentTurnIndex];
   if (currentPlayer.id !== playerId) {
     throw new Error(`It is not ${playerId}'s turn.`);
+  }
+
+  // If facing a pending draw stack (+2 or +4 penalty), resolve it immediately
+  if ((state.pendingDrawCount || 0) > 0) {
+    return resolvePendingDraw(state, playerId);
   }
 
   if (state.hasDrawnThisTurn) {
@@ -522,6 +623,8 @@ export interface PlayCardOptions {
   chosenColor?: StandardColor; // Required for wild cards played by human
   targetPlayerId?: string; // Optional target for Mute
   pairCardId?: string; // Optional identical card to play as a pair (Card Stacking rule)
+  forcePendingDraw?: boolean; // Force penalty to remain pending (e.g. for testing stacking mechanics)
+  allowStacking?: boolean; // Explicit toggle for Draw Card Stacking
 }
 
 /**
@@ -557,8 +660,9 @@ export function playCard(
 
   const cardToPlay = currentPlayer.hand[cardIndex];
   const topCard = state.discardPile[state.discardPile.length - 1];
+  const currentPending = state.pendingDrawCount || 0;
 
-  if (!isValidMove(cardToPlay, topCard, state.activeColor)) {
+  if (!isValidMove(cardToPlay, topCard, state.activeColor, currentPending)) {
     throw new Error(`Card ${cardToPlay.color} ${cardToPlay.value} cannot be played on ${topCard.color} ${topCard.value} (active color: ${state.activeColor}).`);
   }
 
@@ -652,6 +756,7 @@ export function playCard(
   let newDirection = state.direction;
   let currentDeck = state.deck;
   let currentDiscard = updatedDiscardPile;
+  let newPendingDrawCount = 0;
 
   switch (cardToPlay.value) {
     case 'skip': {
@@ -696,54 +801,114 @@ export function playCard(
     }
 
     case 'draw2': {
-      nextSteps = 2;
+      const penalty = currentPending + 2;
       const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
       const targetPlayer = updatedPlayers[targetIndex];
+      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
+      const canTargetStack = Boolean(
+        options?.forcePendingDraw ||
+        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'draw2'))
+      );
 
-      const drawResult = drawFromDeck(currentDeck, currentDiscard, 2);
-      currentDeck = drawResult.remainingDeck;
-      currentDiscard = drawResult.remainingDiscard;
+      if (canTargetStack) {
+        nextSteps = 1;
+        newPendingDrawCount = penalty;
+        newLogs.push(
+          createLogEntry(
+            'PLAY_CARD',
+            `⚡ STACK ESCALATED! ${currentPlayer.name} stacked +2 (Total: +${penalty}) onto ${targetPlayer.name}!`,
+            {
+              playerId,
+              playerName: currentPlayer.name,
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
+      } else {
+        nextSteps = 2;
+        newPendingDrawCount = 0;
+        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
+        currentDeck = drawResult.remainingDeck;
+        currentDiscard = drawResult.remainingDiscard;
 
-      if (drawResult.didReshuffle) {
-        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Draw 2.'));
+        if (drawResult.didReshuffle) {
+          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Draw 2.'));
+        }
+
+        updatedPlayers = updatedPlayers.map((p, idx) =>
+          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+        );
+
+        newLogs.push(
+          createLogEntry(
+            'DRAW_CARD',
+            penalty > 2
+              ? `💥 STACK DETONATION! ${targetPlayer.name} could not stack and drew ${penalty} cards!`
+              : `${targetPlayer.name} drew 2 cards and lost their turn!`,
+            {
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
       }
-
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-      );
-
-      newLogs.push(
-        createLogEntry('DRAW_CARD', `${targetPlayer.name} drew 2 cards and lost their turn!`, {
-          targetPlayerId: targetPlayer.id,
-          targetPlayerName: targetPlayer.name,
-        })
-      );
       break;
     }
 
     case 'wild_draw4': {
-      nextSteps = 2;
+      const penalty = currentPending + 4;
       const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
       const targetPlayer = updatedPlayers[targetIndex];
+      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
+      const canTargetStack = Boolean(
+        options?.forcePendingDraw ||
+        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'wild_draw4'))
+      );
 
-      const drawResult = drawFromDeck(currentDeck, currentDiscard, 4);
-      currentDeck = drawResult.remainingDeck;
-      currentDiscard = drawResult.remainingDiscard;
+      if (canTargetStack) {
+        nextSteps = 1;
+        newPendingDrawCount = penalty;
+        newLogs.push(
+          createLogEntry(
+            'PLAY_CARD',
+            `⚡ WILD STACK ESCALATED! ${currentPlayer.name} stacked +4 (Total: +${penalty}) onto ${targetPlayer.name}!`,
+            {
+              playerId,
+              playerName: currentPlayer.name,
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
+      } else {
+        nextSteps = 2;
+        newPendingDrawCount = 0;
+        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
+        currentDeck = drawResult.remainingDeck;
+        currentDiscard = drawResult.remainingDiscard;
 
-      if (drawResult.didReshuffle) {
-        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Wild Draw 4.'));
+        if (drawResult.didReshuffle) {
+          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Wild Draw 4.'));
+        }
+
+        updatedPlayers = updatedPlayers.map((p, idx) =>
+          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+        );
+
+        newLogs.push(
+          createLogEntry(
+            'DRAW_CARD',
+            penalty > 4
+              ? `💥 STACK DETONATION! ${targetPlayer.name} could not stack and drew ${penalty} cards!`
+              : `${targetPlayer.name} drew 4 cards and lost their turn!`,
+            {
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
       }
-
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-      );
-
-      newLogs.push(
-        createLogEntry('DRAW_CARD', `${targetPlayer.name} drew 4 cards and lost their turn!`, {
-          targetPlayerId: targetPlayer.id,
-          targetPlayerName: targetPlayer.name,
-        })
-      );
       break;
     }
 
@@ -851,6 +1016,7 @@ export function playCard(
     players: updatedPlayers,
     direction: newDirection,
     activeColor: newActiveColor,
+    pendingDrawCount: newPendingDrawCount,
     hasDrawnThisTurn: false,
     drawnCard: null,
     pendingColorChoice: false,
@@ -904,7 +1070,8 @@ export function playPairCards(
   }
 
   const topCard = state.discardPile[state.discardPile.length - 1];
-  if (!isValidMove(card1, topCard, state.activeColor)) {
+  const currentPending = state.pendingDrawCount || 0;
+  if (!isValidMove(card1, topCard, state.activeColor, currentPending)) {
     throw new Error(`Card ${card1.color} ${card1.value} cannot be played on ${topCard.color} ${topCard.value}.`);
   }
 
@@ -995,6 +1162,7 @@ export function playPairCards(
   let newDirection = state.direction;
   let currentDeck = state.deck;
   let currentDiscard = updatedDiscardPile;
+  let newPendingDrawCount = 0;
 
   switch (card1.value) {
     case 'skip': {
@@ -1026,54 +1194,102 @@ export function playPairCards(
     }
 
     case 'draw2': {
-      nextSteps = 2;
+      const penalty = currentPending + 4;
       const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
       const targetPlayer = updatedPlayers[targetIndex];
+      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
+      const canTargetStack = Boolean(
+        options?.forcePendingDraw ||
+        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'draw2'))
+      );
 
-      const drawResult = drawFromDeck(currentDeck, currentDiscard, 4);
-      currentDeck = drawResult.remainingDeck;
-      currentDiscard = drawResult.remainingDiscard;
+      if (canTargetStack) {
+        nextSteps = 1;
+        newPendingDrawCount = penalty;
+        newLogs.push(
+          createLogEntry(
+            'PLAY_CARD',
+            `⚡ DOUBLE STACK ESCALATED! ${currentPlayer.name} played pair of Draw 2 (Total: +${penalty}) onto ${targetPlayer.name}!`,
+            {
+              playerId,
+              playerName: currentPlayer.name,
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
+      } else {
+        nextSteps = 2;
+        newPendingDrawCount = 0;
+        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
+        currentDeck = drawResult.remainingDeck;
+        currentDiscard = drawResult.remainingDiscard;
 
-      if (drawResult.didReshuffle) {
-        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Draw 2.'));
+        if (drawResult.didReshuffle) {
+          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Draw 2.'));
+        }
+
+        updatedPlayers = updatedPlayers.map((p, idx) =>
+          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+        );
+
+        newLogs.push(
+          createLogEntry('DRAW_CARD', `💥 DOUBLE DRAW 2! ${targetPlayer.name} drew ${penalty} cards and lost their turn!`, {
+            targetPlayerId: targetPlayer.id,
+            targetPlayerName: targetPlayer.name,
+          })
+        );
       }
-
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-      );
-
-      newLogs.push(
-        createLogEntry('DRAW_CARD', `💥 DOUBLE DRAW 2! ${targetPlayer.name} drew 4 cards and lost their turn!`, {
-          targetPlayerId: targetPlayer.id,
-          targetPlayerName: targetPlayer.name,
-        })
-      );
       break;
     }
 
     case 'wild_draw4': {
-      nextSteps = 2;
+      const penalty = currentPending + 8;
       const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
       const targetPlayer = updatedPlayers[targetIndex];
+      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
+      const canTargetStack = Boolean(
+        options?.forcePendingDraw ||
+        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'wild_draw4'))
+      );
 
-      const drawResult = drawFromDeck(currentDeck, currentDiscard, 8);
-      currentDeck = drawResult.remainingDeck;
-      currentDiscard = drawResult.remainingDiscard;
+      if (canTargetStack) {
+        nextSteps = 1;
+        newPendingDrawCount = penalty;
+        newLogs.push(
+          createLogEntry(
+            'PLAY_CARD',
+            `⚡ DOUBLE WILD STACK ESCALATED! ${currentPlayer.name} played pair of Wild Draw 4 (Total: +${penalty}) onto ${targetPlayer.name}!`,
+            {
+              playerId,
+              playerName: currentPlayer.name,
+              targetPlayerId: targetPlayer.id,
+              targetPlayerName: targetPlayer.name,
+            }
+          )
+        );
+      } else {
+        nextSteps = 2;
+        newPendingDrawCount = 0;
+        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
+        currentDeck = drawResult.remainingDeck;
+        currentDiscard = drawResult.remainingDiscard;
 
-      if (drawResult.didReshuffle) {
-        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Wild Draw 4.'));
+        if (drawResult.didReshuffle) {
+          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Wild Draw 4.'));
+        }
+
+        updatedPlayers = updatedPlayers.map((p, idx) =>
+          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+        );
+
+        newLogs.push(
+          createLogEntry('DRAW_CARD', `💥 DOUBLE WILD DRAW 4! ${targetPlayer.name} drew ${penalty} cards and lost their turn!`, {
+            targetPlayerId: targetPlayer.id,
+            targetPlayerName: targetPlayer.name,
+          })
+        );
       }
-
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-      );
-
-      newLogs.push(
-        createLogEntry('DRAW_CARD', `💥 DOUBLE WILD DRAW 4! ${targetPlayer.name} drew 8 cards and lost their turn!`, {
-          targetPlayerId: targetPlayer.id,
-          targetPlayerName: targetPlayer.name,
-        })
-      );
       break;
     }
 
@@ -1151,6 +1367,7 @@ export function playPairCards(
     players: updatedPlayers,
     direction: newDirection,
     activeColor: newActiveColor,
+    pendingDrawCount: newPendingDrawCount,
     hasDrawnThisTurn: false,
     drawnCard: null,
     pendingColorChoice: false,
@@ -1196,29 +1413,59 @@ export function chooseWildColor(
     }),
   ];
 
+  let newPendingDrawCount = 0;
   if (wildCard.value === 'wild_draw4') {
-    nextSteps = 2;
+    const penalty = (state.pendingDrawCount || 0) + 4;
     const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
     const targetPlayer = updatedPlayers[targetIndex];
+    const isStackingAllowed = state.allowStacking ?? false;
+    const canTargetStack = Boolean(
+      isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'wild_draw4')
+    );
 
-    const drawResult = drawFromDeck(currentDeck, currentDiscard, 4);
-    currentDeck = drawResult.remainingDeck;
-    currentDiscard = drawResult.remainingDiscard;
+    if (canTargetStack) {
+      nextSteps = 1;
+      newPendingDrawCount = penalty;
+      newLogs.push(
+        createLogEntry(
+          'PLAY_CARD',
+          `⚡ WILD STACK ESCALATED! ${currentPlayer.name} stacked +4 (Total: +${penalty}) onto ${targetPlayer.name}!`,
+          {
+            playerId,
+            playerName: currentPlayer.name,
+            targetPlayerId: targetPlayer.id,
+            targetPlayerName: targetPlayer.name,
+          }
+        )
+      );
+    } else {
+      nextSteps = 2;
+      newPendingDrawCount = 0;
+      const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
+      currentDeck = drawResult.remainingDeck;
+      currentDiscard = drawResult.remainingDiscard;
 
-    if (drawResult.didReshuffle) {
-      newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck reshuffled during Wild Draw 4.'));
+      if (drawResult.didReshuffle) {
+        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck reshuffled during Wild Draw 4.'));
+      }
+
+      updatedPlayers = updatedPlayers.map((p, idx) =>
+        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
+      );
+
+      newLogs.push(
+        createLogEntry(
+          'DRAW_CARD',
+          penalty > 4
+            ? `💥 STACK DETONATION! ${targetPlayer.name} could not stack and drew ${penalty} cards!`
+            : `${targetPlayer.name} drew 4 cards and lost their turn!`,
+          {
+            targetPlayerId: targetPlayer.id,
+            targetPlayerName: targetPlayer.name,
+          }
+        )
+      );
     }
-
-    updatedPlayers = updatedPlayers.map((p, idx) =>
-      idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-    );
-
-    newLogs.push(
-      createLogEntry('DRAW_CARD', `${targetPlayer.name} drew 4 cards and lost their turn!`, {
-        targetPlayerId: targetPlayer.id,
-        targetPlayerName: targetPlayer.name,
-      })
-    );
   }
 
   const intermediateState: GameState = {
@@ -1229,6 +1476,7 @@ export function chooseWildColor(
     activeColor: chosenColor,
     pendingColorChoice: false,
     pendingWildCard: null,
+    pendingDrawCount: newPendingDrawCount,
     logs: newLogs,
   };
 
@@ -1444,6 +1692,39 @@ export function makeBotMove(state: GameState): GameState {
   }
 
   const topCard = currentState.discardPile[currentState.discardPile.length - 1];
+
+  // Draw Card Stacking Defense:
+  // If bot faces an active draw penalty stack (+2 or +4):
+  if ((currentState.pendingDrawCount || 0) > 0) {
+    const stackableCards = botPlayer.hand.filter((c) =>
+      isValidMove(c, topCard, currentState.activeColor, currentState.pendingDrawCount)
+    );
+
+    // AI Bot Stacking Logic: Prioritize playing stackable card with 85-90% probability
+    const shouldStack = stackableCards.length > 0 && Math.random() < 0.88;
+
+    if (shouldStack) {
+      const cardToStack = stackableCards[0];
+      const identicalPair = hasIdenticalPair(botPlayer.hand, cardToStack);
+
+      if (botPlayer.hand.length === (identicalPair ? 3 : 2)) {
+        currentState = declareRival(currentState, botPlayer.id);
+      }
+
+      const chosenColor = isWildCard(cardToStack)
+        ? getDominantColor(botPlayer.hand.filter((c) => c.id !== cardToStack.id))
+        : undefined;
+
+      if (identicalPair) {
+        return playPairCards(currentState, botPlayer.id, cardToStack.id, identicalPair.id, { chosenColor });
+      }
+      return playCard(currentState, botPlayer.id, cardToStack.id, { chosenColor });
+    }
+
+    // Otherwise (no matching stackable card or voluntarily takes cards): draw the accumulated stack!
+    return resolvePendingDraw(currentState, botPlayer.id);
+  }
+
   const activeColor = currentState.activeColor;
   const playableCards = botPlayer.hand.filter((c) => isValidMove(c, topCard, activeColor));
 

@@ -196,28 +196,28 @@ function getCardDimensions(size: 'small' | 'medium' | 'large') {
   switch (size) {
     case 'small':
       return {
-        container: { width: 36, height: 54, borderRadius: 6 },
-        centerOval: { width: 22, height: 32, borderRadius: 11 },
-        centerText: { fontSize: 11 },
-        cornerText: { fontSize: 7 },
-        actionIcon: { width: 14, height: 14 },
+        container: { width: 34, height: 50, borderRadius: 6 },
+        centerOval: { width: 20, height: 30, borderRadius: 10 },
+        centerText: { fontSize: 10 },
+        cornerText: { fontSize: 6.5 },
+        actionIcon: { width: 13, height: 13 },
       };
     case 'large':
       return {
-        container: { width: 92, height: 138, borderRadius: 12 },
-        centerOval: { width: 68, height: 96, borderRadius: 34 },
-        centerText: { fontSize: 26 },
-        cornerText: { fontSize: 13 },
-        actionIcon: { width: 48, height: 48 },
+        container: { width: 78, height: 114, borderRadius: 10 },
+        centerOval: { width: 56, height: 80, borderRadius: 28 },
+        centerText: { fontSize: 22 },
+        cornerText: { fontSize: 11 },
+        actionIcon: { width: 38, height: 38 },
       };
     case 'medium':
     default:
       return {
-        container: { width: 72, height: 108, borderRadius: 10 },
-        centerOval: { width: 52, height: 74, borderRadius: 26 },
-        centerText: { fontSize: 20 },
-        cornerText: { fontSize: 11 },
-        actionIcon: { width: 34, height: 34 },
+        container: { width: 62, height: 90, borderRadius: 9 },
+        centerOval: { width: 44, height: 62, borderRadius: 22 },
+        centerText: { fontSize: 17 },
+        cornerText: { fontSize: 9.5 },
+        actionIcon: { width: 28, height: 28 },
       };
   }
 }
@@ -283,17 +283,17 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   playableCard: {
-    borderColor: '#38BDF8',
+    borderColor: '#34D399',
     borderWidth: 2.5,
-    shadowColor: '#38BDF8',
-    shadowOpacity: 0.45,
-    shadowRadius: 8,
-    elevation: 7,
+    shadowColor: '#10B981',
+    shadowOpacity: 0.7,
+    shadowRadius: 10,
+    elevation: 8,
     opacity: 1.0,
-    transform: [{ translateY: -4 }],
+    transform: [{ translateY: -6 }],
   },
   unplayableCard: {
-    opacity: 0.90,
+    opacity: 0.72,
   },
   selectedCard: {
     borderColor: '#F59E0B',

@@ -61,7 +61,7 @@ function MainAppContent() {
 
     async function loadAppResources() {
       try {
-        // Step 0: Ensure Audio Mode is initialized on root mount
+        // Step 0: Ensure Audio Mode is initialized and preload common SFX on root mount
         try {
           const modeConfig = {
             playsInSilentMode: true,
@@ -75,6 +75,8 @@ function MainAppContent() {
           }
           await audioService.ensureAudioMode();
           await soundService.ensureAudioMode();
+          await soundService.preloadSounds();
+          await audioService.preloadSfx();
         } catch (audioInitErr) {
           console.warn('[RivalCard Boot] Root audio mode setup warning:', audioInitErr);
         }
