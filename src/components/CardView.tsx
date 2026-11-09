@@ -11,6 +11,7 @@ import {
 import { COLOR_HEX } from '../types';
 import type { Card } from '../types';
 import { hapticsService } from '../services/hapticsService';
+import { FONT_CARTOON_HEAVY } from '../styles/typography';
 
 const CARD_BACK_IMAGE = require('../../assets/card_back.png');
 
@@ -147,13 +148,19 @@ export const CardView: React.FC<CardViewProps> = ({
             isWild && activeHex ? { borderWidth: 2.5, borderColor: activeHex } : null,
           ]}
         >
-          {actionIcon && !imageError ? (
-            <Image
-              source={actionIcon}
-              style={dimensions.actionIcon}
-              resizeMode="contain"
-              onError={() => setImageError(true)}
-            />
+          {card.value === 'reverse' ? (
+            <View style={styles.actionIconContainer}>
+              <ReverseArrowsMotif size={size} color={bgColor} />
+            </View>
+          ) : actionIcon && !imageError ? (
+            <View style={styles.actionIconContainer}>
+              <Image
+                source={actionIcon}
+                style={dimensions.actionIcon}
+                resizeMode="contain"
+                onError={() => setImageError(true)}
+              />
+            </View>
           ) : isWild ? (
             <View style={styles.wildCenterContainer}>
               <View style={styles.wildBadgeGrid}>
@@ -248,7 +255,7 @@ function getCornerDisplayLabel(value: string): string {
     case 'skip':
       return '⊘';
     case 'reverse':
-      return '⇄';
+      return '↺';
     case 'draw2':
       return '+2';
     case 'wild':
@@ -263,6 +270,81 @@ function getCornerDisplayLabel(value: string): string {
       return value;
   }
 }
+
+// Iconic curved, dynamic circular looping vector arrows for Reverse cards
+const ReverseArrowsMotif: React.FC<{ size: 'small' | 'medium' | 'large'; color: string }> = ({
+  size,
+  color,
+}) => {
+  const isSmall = size === 'small';
+  const isLarge = size === 'large';
+  const stroke = isSmall ? 2 : isLarge ? 3.5 : 2.8;
+  const boxW = isSmall ? 15 : isLarge ? 34 : 26;
+  const boxH = isSmall ? 14 : isLarge ? 30 : 23;
+  const arrowHead = isSmall ? 3 : isLarge ? 6 : 4.5;
+
+  return (
+    <View style={[styles.reverseMotifBox, { width: boxW, height: boxH }]}>
+      {/* Top curving arrow looping counter-clockwise to left */}
+      <View style={[styles.reverseArrowGroupTop, { height: boxH * 0.6 }]}>
+        <View
+          style={[
+            styles.reverseArcTop,
+            {
+              borderColor: color,
+              borderTopWidth: stroke,
+              borderRightWidth: stroke,
+              borderTopRightRadius: boxW * 0.5,
+              borderTopLeftRadius: boxW * 0.3,
+            },
+          ]}
+        />
+        <View
+          style={[
+            styles.reverseArrowHeadLeft,
+            {
+              borderTopWidth: arrowHead,
+              borderBottomWidth: arrowHead,
+              borderRightWidth: arrowHead * 1.6,
+              borderRightColor: color,
+              top: -arrowHead + stroke / 2,
+              left: -1,
+            },
+          ]}
+        />
+      </View>
+
+      {/* Bottom curving arrow looping counter-clockwise to right */}
+      <View style={[styles.reverseArrowGroupBottom, { height: boxH * 0.6 }]}>
+        <View
+          style={[
+            styles.reverseArcBottom,
+            {
+              borderColor: color,
+              borderBottomWidth: stroke,
+              borderLeftWidth: stroke,
+              borderBottomLeftRadius: boxW * 0.5,
+              borderBottomRightRadius: boxW * 0.3,
+            },
+          ]}
+        />
+        <View
+          style={[
+            styles.reverseArrowHeadRight,
+            {
+              borderTopWidth: arrowHead,
+              borderBottomWidth: arrowHead,
+              borderLeftWidth: arrowHead * 1.6,
+              borderLeftColor: color,
+              bottom: -arrowHead + stroke / 2,
+              right: -1,
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+};
 
 const styles = StyleSheet.create({
   cardBase: {
@@ -324,29 +406,90 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '180deg' }],
   },
   cornerText: {
-    fontWeight: '900',
+    ...FONT_CARTOON_HEAVY,
     color: '#FFFFFF',
-    textShadowColor: 'rgba(0, 0, 0, 0.5)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0.5, height: 1 },
+    textShadowRadius: 1.5,
+    letterSpacing: -0.3,
     opacity: 1.0,
   },
   centerOval: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFFDF5',
+    borderTopColor: 'rgba(255, 255, 255, 0.95)',
+    borderTopWidth: 1.5,
     justifyContent: 'center',
     alignItems: 'center',
     transform: [{ rotate: '-18deg' }],
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
+    shadowOpacity: 0.22,
+    shadowRadius: 3.5,
     elevation: 3,
     opacity: 1.0,
   },
+  actionIconContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    transform: [{ rotate: '18deg' }],
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1.5 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  reverseMotifBox: {
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  reverseArrowGroupTop: {
+    width: '100%',
+    position: 'relative',
+  },
+  reverseArcTop: {
+    width: '85%',
+    height: '100%',
+    alignSelf: 'flex-end',
+    borderLeftWidth: 0,
+    borderBottomWidth: 0,
+  },
+  reverseArrowHeadLeft: {
+    position: 'absolute',
+    width: 0,
+    height: 0,
+    borderStyle: 'solid',
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderLeftWidth: 0,
+  },
+  reverseArrowGroupBottom: {
+    width: '100%',
+    position: 'relative',
+  },
+  reverseArcBottom: {
+    width: '85%',
+    height: '100%',
+    alignSelf: 'flex-start',
+    borderRightWidth: 0,
+    borderTopWidth: 0,
+  },
+  reverseArrowHeadRight: {
+    position: 'absolute',
+    width: 0,
+    height: 0,
+    borderStyle: 'solid',
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderRightWidth: 0,
+  },
   centerValueText: {
-    fontWeight: '900',
+    ...FONT_CARTOON_HEAVY,
     transform: [{ rotate: '18deg' }],
     textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.18)',
+    textShadowOffset: { width: 0.5, height: 1 },
+    textShadowRadius: 1,
     opacity: 1.0,
   },
   wildCenterContainer: {

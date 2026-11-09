@@ -106,6 +106,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
     }
   };
 
+  const activePreset =
+    !settings.sfxEnabled && !settings.bgmEnabled
+      ? 'muted'
+      : settings.sfxEnabled && !settings.bgmEnabled
+      ? 'balanced'
+      : settings.sfxEnabled && settings.bgmEnabled
+      ? 'arcade'
+      : null;
+
+  const handleSelectPreset = async (preset: 'muted' | 'balanced' | 'arcade') => {
+    hapticsService.cardSelection();
+    if (preset === 'muted') {
+      soundService.setMuted(true);
+      await audioService.pauseBgm();
+      await settingsService.updateSetting('sfxEnabled', false);
+      await settingsService.updateSetting('bgmEnabled', false);
+      setSettings((prev) => ({ ...prev, sfxEnabled: false, bgmEnabled: false }));
+      showToast('Audio preset: All Muted');
+    } else if (preset === 'balanced') {
+      soundService.setMuted(false);
+      soundService.playCardSnap();
+      await audioService.pauseBgm();
+      await settingsService.updateSetting('sfxEnabled', true);
+      await settingsService.updateSetting('bgmEnabled', false);
+      setSettings((prev) => ({ ...prev, sfxEnabled: true, bgmEnabled: false }));
+      showToast('Audio preset: Balanced (SFX only)');
+    } else {
+      soundService.setMuted(false);
+      soundService.playCardSnap();
+      await audioService.resumeBgm();
+      await settingsService.updateSetting('sfxEnabled', true);
+      await settingsService.updateSetting('bgmEnabled', true);
+      setSettings((prev) => ({ ...prev, sfxEnabled: true, bgmEnabled: true }));
+      showToast('Audio preset: Full Arcade (SFX + BGM)');
+    }
+  };
+
   const handleCopyId = () => {
     if (!profile) return;
     hapticsService.cardSelection();
@@ -216,6 +253,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
             <View style={styles.sectionCard}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionBadge}>🔊 AUDIO & HAPTICS</Text>
+              </View>
+
+              {/* Audio Preset Segmented Control */}
+              <View style={styles.presetControlBox}>
+                <Text style={styles.presetControlLabel}>AUDIO PROFILE</Text>
+                <View style={styles.segmentedContainer}>
+                  {(
+                    [
+                      { key: 'muted', label: 'MUTED', icon: '🔇' },
+                      { key: 'balanced', label: 'BALANCED', icon: '🎧' },
+                      { key: 'arcade', label: 'ARCADE', icon: '⚡' },
+                    ] as const
+                  ).map((preset) => {
+                    const isActive = activePreset === preset.key;
+                    return (
+                      <TouchableOpacity
+                        key={preset.key}
+                        onPress={() => handleSelectPreset(preset.key)}
+                        style={[styles.segmentBtn, isActive && styles.segmentBtnActive]}
+                        activeOpacity={0.8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Audio preset ${preset.label}`}
+                      >
+                        <Text
+                          style={[
+                            styles.segmentBtnText,
+                            isActive && styles.segmentBtnTextActive,
+                          ]}
+                        >
+                          {preset.icon} {preset.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
 
               {/* Row 1: Sound Effects */}
@@ -422,9 +494,20 @@ const CartoonToggle: React.FC<CartoonToggleProps> = ({
   testID,
   accessibilityLabel,
 }) => {
+  const slideAnim = useRef(new Animated.Value(value ? 23 : 0)).current;
+
+  useEffect(() => {
+    Animated.spring(slideAnim, {
+      toValue: value ? 23 : 0,
+      speed: 30,
+      bounciness: 4,
+      useNativeDriver: true,
+    }).start();
+  }, [value]);
+
   return (
     <TouchableOpacity
-      activeOpacity={0.8}
+      activeOpacity={0.85}
       onPress={() => onValueChange(!value)}
       accessibilityRole="switch"
       accessibilityState={{ checked: value }}
@@ -435,12 +518,14 @@ const CartoonToggle: React.FC<CartoonToggleProps> = ({
         value ? styles.toggleTrackOn : styles.toggleTrackOff,
       ]}
     >
-      <View
+      <Animated.View
         style={[
           styles.toggleThumb,
-          value ? styles.toggleThumbOn : styles.toggleThumbOff,
+          { transform: [{ translateX: slideAnim }] },
         ]}
-      />
+      >
+        <View style={styles.toggleThumbGlint} />
+      </Animated.View>
     </TouchableOpacity>
   );
 };
@@ -570,38 +655,94 @@ const styles = StyleSheet.create({
     color: '#64748B',
     lineHeight: 15,
   },
+  presetControlBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#E2D9C8',
+    padding: 10,
+    marginBottom: 10,
+  },
+  presetControlLabel: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#64748B',
+    letterSpacing: 0.8,
+    marginBottom: 6,
+  },
+  segmentedContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 3,
+    gap: 4,
+  },
+  segmentBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentBtnActive: {
+    backgroundColor: '#10B981',
+    borderBottomWidth: 2.5,
+    borderBottomColor: '#059669',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  segmentBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10.5,
+    color: '#64748B',
+    letterSpacing: 0.3,
+  },
+  segmentBtnTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+  },
   toggleTrack: {
     width: 52,
     height: 30,
     borderRadius: 15,
     borderWidth: 2,
     justifyContent: 'center',
-    paddingHorizontal: 3,
+    paddingHorizontal: 2.5,
   },
   toggleTrackOn: {
     backgroundColor: '#10B981',
     borderColor: '#059669',
   },
   toggleTrackOff: {
-    backgroundColor: '#E2E8F0',
-    borderColor: '#CBD5E1',
+    backgroundColor: '#334155',
+    borderColor: '#1E293B',
   },
   toggleThumb: {
     width: 22,
     height: 22,
     borderRadius: 11,
     backgroundColor: '#FFFFFF',
+    borderTopWidth: 1.5,
+    borderTopColor: 'rgba(255, 255, 255, 0.95)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 2,
-    elevation: 3,
+    shadowOpacity: 0.3,
+    shadowRadius: 2.5,
+    elevation: 4,
+    position: 'relative',
+    overflow: 'hidden',
   },
-  toggleThumbOn: {
-    alignSelf: 'flex-end',
-  },
-  toggleThumbOff: {
-    alignSelf: 'flex-start',
+  toggleThumbGlint: {
+    position: 'absolute',
+    top: 2,
+    left: 3,
+    width: 6,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
   },
   accountCard: {
     flexDirection: 'row',

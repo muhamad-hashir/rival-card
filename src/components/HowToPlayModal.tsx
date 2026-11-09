@@ -364,8 +364,11 @@ const PageTwoActionCards: React.FC = () => {
             <Text style={styles.ruleBodySmall}>
               Forces next player to draw 2 cards and forfeit their turn.
             </Text>
-            <View style={styles.proTipBadge}>
-              <Text style={styles.proTipText}>⚡ 1v1 Rule: Opponent draws 2 and turn returns to you!</Text>
+            <View style={styles.stackingTipBadge}>
+              <Text style={styles.stackingTipTitle}>⚡ +2 STACKING RULE</Text>
+              <Text style={styles.stackingTipBody}>
+                Hold ANY Draw 2? Counter-stack it to pass the penalty: +2 → +4 → +6 → +8!
+              </Text>
             </View>
           </View>
         </View>
@@ -416,9 +419,14 @@ const PageThreeWildCards: React.FC = () => {
           <View style={styles.actionInfoCol}>
             <Text style={styles.actionTitle}>Wild Draw 4 (+4)</Text>
             <Text style={styles.ruleBodySmall}>
-              Ultimate strike! Changes the active color AND forces the next player to draw 4 cards
-              + skip their turn!
+              Ultimate strike! Changes the active color AND forces the next player to draw 4 cards!
             </Text>
+            <View style={[styles.stackingTipBadge, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+              <Text style={[styles.stackingTipTitle, { color: '#DC2626' }]}>💥 +4 STACKING RULE</Text>
+              <Text style={styles.stackingTipBody}>
+                Stack another +4 to pass the penalty (4 → 8)! Or tap 'TAKE CARDS' to defuse voluntarily.
+              </Text>
+            </View>
           </View>
         </View>
       </View>
@@ -480,6 +488,29 @@ const PageFourRivalShout: React.FC = () => {
         <Text style={styles.ruleBody}>
           Forgot to call Rival? Opponents have a <Text style={styles.textHighlightDark}>2.5-second</Text> high-stakes window to tap <Text style={styles.textHighlightRed}>'CATCH RIVAL!'</Text> and force you to draw <Text style={styles.textHighlightRed}>+2 penalty cards</Text>!
         </Text>
+      </View>
+
+      {/* Penalty Breakdown Visual Table */}
+      <View style={styles.penaltyTableCard}>
+        <Text style={styles.penaltyTableTitle}>⚡ PENALTY RULES CHEAT SHEET</Text>
+        <View style={styles.penaltyTableRow}>
+          <Text style={styles.penaltyTableEvent}>Missed RIVAL Shout</Text>
+          <View style={styles.penaltyPillRed}>
+            <Text style={styles.penaltyPillText}>+2 CARDS</Text>
+          </View>
+        </View>
+        <View style={styles.penaltyTableRow}>
+          <Text style={styles.penaltyTableEvent}>Uncountered +2 / +4 Stack</Text>
+          <View style={styles.penaltyPillOrange}>
+            <Text style={styles.penaltyPillText}>FULL STACK</Text>
+          </View>
+        </View>
+        <View style={styles.penaltyTableRow}>
+          <Text style={styles.penaltyTableEvent}>15s Turn Countdown Expired</Text>
+          <View style={styles.penaltyPillGray}>
+            <Text style={styles.penaltyPillText}>AUTO-PASS</Text>
+          </View>
+        </View>
       </View>
 
       {/* Shout 3: XP & Economy */}
@@ -619,16 +650,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   ruleCard: {
-    backgroundColor: '#FFFDF7',
-    borderRadius: 16,
+    backgroundColor: '#FFFDF9',
+    borderRadius: 18,
     borderWidth: 2,
     borderColor: '#E2D9C8',
-    padding: 11,
+    borderTopWidth: 2.5,
+    borderTopColor: '#FFFFFF',
+    padding: 12,
     shadowColor: '#1E293B',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+    elevation: 3,
   },
   ruleHeader: {
     flexDirection: 'row',
@@ -768,6 +801,92 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#475569',
     flex: 1,
+  },
+  stackingTipBadge: {
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1.5,
+    borderColor: '#A7F3D0',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginTop: 5,
+  },
+  stackingTipTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#047857',
+    letterSpacing: 0.3,
+    marginBottom: 1,
+  },
+  stackingTipBody: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 10,
+    color: '#065F46',
+    lineHeight: 14,
+  },
+  penaltyTableCard: {
+    backgroundColor: '#FFFDF9',
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: '#E2D9C8',
+    borderTopWidth: 2.5,
+    borderTopColor: '#FFFFFF',
+    padding: 12,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+    elevation: 3,
+    gap: 6,
+  },
+  penaltyTableTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#0F172A',
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  penaltyTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 3,
+  },
+  penaltyTableEvent: {
+    ...FONT_CARTOON_SEMIBOLD,
+    fontSize: 11,
+    color: '#334155',
+    flex: 1,
+  },
+  penaltyPillRed: {
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  penaltyPillOrange: {
+    backgroundColor: '#FFEDD5',
+    borderWidth: 1.5,
+    borderColor: '#FDBA74',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  penaltyPillGray: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  penaltyPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#0F172A',
+    letterSpacing: 0.3,
   },
   footerRow: {
     flexDirection: 'row',

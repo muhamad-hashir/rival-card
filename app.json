@@ -3,6 +3,7 @@
     "name": "Rival Card",
     "slug": "rival-card",
     "version": "1.0.0",
+    "scheme": "rivalcard",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -15,6 +16,9 @@
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#1E1B4B"
       }
+    },
+    "androidStatusBar": {
+      "hidden": true
     },
     "web": {
       "favicon": "./assets/icon.png"
@@ -36,7 +40,9 @@
     "extra": {
       "eas": {
         "projectId": "0e1cd1b0-4a09-41f5-8ead-93a31c74bd48"
-      }
+      },
+      "EXPO_PUBLIC_SUPABASE_URL": "https://diprmtxrlynniqacapmz.supabase.co",
+      "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ"
     },
     "owner": "muhammadhashir"
   }

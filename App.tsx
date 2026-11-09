@@ -1,8 +1,15 @@
 import 'react-native-gesture-handler';
 import React, { useState, useEffect, useCallback } from 'react';
-import { StyleSheet } from 'react-native';
+import {
+  AppState,
+  AppStateStatus,
+  Linking,
+  Platform,
+  StyleSheet,
+} from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
+import * as NavigationBar from 'expo-navigation-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Font from 'expo-font';
 import {
@@ -16,6 +23,7 @@ import { GameScreen } from './src/screens/GameScreen';
 import { LoadingScreen } from './src/screens/LoadingScreen';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { supabase } from './src/services/supabase';
+import { authService } from './src/services/authService';
 import { settingsService } from './src/services/settingsService';
 import { Asset } from 'expo-asset';
 import { audioService } from './src/services/audioService';
@@ -55,6 +63,98 @@ function MainAppContent() {
     roomCode: string;
     isQuickMatch?: boolean;
   } | null>(null);
+
+  // 1. Fullscreen Immersive Sticky Mode on Android
+  useEffect(() => {
+    const applyImmersiveMode = async () => {
+      if (Platform.OS === 'android') {
+        try {
+          if (typeof (NavigationBar as any).setHidden === 'function') {
+            (NavigationBar as any).setHidden(true);
+          }
+          if (typeof NavigationBar.setVisibilityAsync === 'function') {
+            await NavigationBar.setVisibilityAsync('hidden');
+          }
+          if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
+            await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
+          }
+        } catch (err) {
+          console.warn('[Immersive] NavigationBar configuration warning:', err);
+        }
+      }
+    };
+
+    applyImmersiveMode();
+
+    const appStateSub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        applyImmersiveMode();
+      }
+    });
+
+    return () => {
+      appStateSub.remove();
+    };
+  }, []);
+
+  // 2. Deep Linking listener for Supabase OAuth callbacks (rivalcard://auth/callback)
+  useEffect(() => {
+    const handleAuthUrl = async (event: { url: string }) => {
+      if (!event?.url) return;
+      try {
+        const res = await authService.handleAuthDeepLink(event.url);
+        if (res?.success) {
+          soundService.playWinChime();
+          await playerProfileService.getProfile(true);
+        }
+      } catch (err) {
+        console.warn('[RivalCard DeepLink] Error handling auth redirect url:', err);
+      }
+    };
+
+    // Cold start URL check
+    Linking.getInitialURL()
+      .then((url) => {
+        if (url) {
+          handleAuthUrl({ url });
+        }
+      })
+      .catch((err) => {
+        console.warn('[RivalCard DeepLink] getInitialURL warning:', err);
+      });
+
+    // Warm background resume listener
+    const linkSub = Linking.addEventListener('url', handleAuthUrl);
+
+    return () => {
+      linkSub.remove();
+    };
+  }, []);
+
+  // 3. Supabase Auth State Change listener to sync profile
+  useEffect(() => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && session?.user) {
+          try {
+            await playerProfileService.migrateAndLinkGuestAccount(session.user);
+          } catch (e) {
+            console.warn('[App] onAuthStateChange migrate error:', e);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          try {
+            await playerProfileService.getProfile(true);
+          } catch (e) {
+            console.warn('[App] onAuthStateChange sign out error:', e);
+          }
+        }
+      }
+    );
+
+    return () => {
+      authListener?.subscription?.unsubscribe?.();
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -120,13 +220,16 @@ function MainAppContent() {
           setStatusText('Shuffling deck...');
         }
         try {
-          await Promise.race([
+          const authRes = await Promise.race([
             supabase.auth.getSession().catch((authErr) => {
               console.warn('[RivalCard Boot] Supabase auth check warning:', authErr);
               return { data: { session: null }, error: null };
             }),
-            new Promise((res) => setTimeout(res, 1500)),
+            new Promise<any>((res) => setTimeout(() => res({ data: { session: null }, error: null }), 1500)),
           ]);
+          if (authRes?.data?.session?.user) {
+            await authService.syncAuthSessionToProfile();
+          }
         } catch (supabaseErr) {
           console.warn('[RivalCard Boot] Supabase client warning:', supabaseErr);
         }
@@ -203,7 +306,7 @@ function MainAppContent() {
   if (!isReady) {
     return (
       <GestureHandlerRootView style={styles.root}>
-        <StatusBar style="dark" />
+        <StatusBar hidden={true} />
         <LoadingScreen progress={loadProgress} status={statusText} />
       </GestureHandlerRootView>
     );
@@ -211,7 +314,7 @@ function MainAppContent() {
 
   return (
     <GestureHandlerRootView style={styles.root}>
-      <StatusBar style="light" />
+      <StatusBar hidden={true} />
       {currentScreen === 'home' ? (
         <HomeScreen
           onStartOfflineGame={handleStartOfflineGame}

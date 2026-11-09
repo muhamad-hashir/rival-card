@@ -1,10 +1,13 @@
 // src/components/OnboardingAuthModal.tsx - First-Launch Onboarding & Auth Flow Modal
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Modal,
+  Platform,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -12,6 +15,7 @@ import { authService } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import { networkService } from '../services/networkService';
 import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
@@ -28,6 +32,34 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
   onSuccess,
 }) => {
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const [authMode, setAuthMode] = useState<'welcome' | 'email_input' | 'otp_verify'>('welcome');
+  const [emailInput, setEmailInput] = useState('');
+  const [otpInput, setOtpInput] = useState('');
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState(0);
+
+  useEffect(() => {
+    if (visible) {
+      setAuthMode('welcome');
+      setEmailInput('');
+      setOtpInput('');
+      setAuthError(null);
+      setCountdown(0);
+      setIsSigningIn(false);
+      setIsSendingOtp(false);
+      setIsVerifyingOtp(false);
+    }
+  }, [visible]);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setInterval(() => {
+      setCountdown((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [countdown]);
 
   const handleContinueAsGuest = async () => {
     if (isSigningIn) return;
@@ -59,6 +91,13 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
         await authService.initGuestProfile();
         onSuccess();
       } else {
+        if (res.url && Platform.OS !== 'web') {
+          try {
+            await Linking.openURL(res.url);
+          } catch (e) {
+            console.warn('[OnboardingAuthModal] Could not open external OAuth URL:', e);
+          }
+        }
         soundService.playWinChime();
         onSuccess();
       }
@@ -71,6 +110,85 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
       onSuccess();
     } finally {
       setIsSigningIn(false);
+    }
+  };
+
+  const handleSendOtp = async () => {
+    if (isSendingOtp) return;
+    setAuthError(null);
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      setAuthError('Please enter a valid email address.');
+      return;
+    }
+
+    const isOnline = await networkService.isOnline();
+    if (!isOnline) {
+      setAuthError("You're offline! Please check your internet connection.");
+      return;
+    }
+
+    setIsSendingOtp(true);
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+
+    try {
+      const res = await authService.sendEmailOtp(cleanEmail);
+      if (!res.success) {
+        setAuthError(res.error || 'Failed to send verification code.');
+      } else {
+        setAuthMode('otp_verify');
+        setCountdown(60);
+        soundService.playCardSnap();
+        errorToastService.show({
+          message: 'Verification code sent to your email!',
+          type: 'info',
+          durationMs: 3000,
+        });
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to send verification code.');
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (isVerifyingOtp) return;
+    setAuthError(null);
+    const cleanToken = otpInput.trim();
+    if (!cleanToken || cleanToken.length < 6) {
+      setAuthError('Please enter the 6-digit verification code.');
+      return;
+    }
+
+    const isOnline = await networkService.isOnline();
+    if (!isOnline) {
+      setAuthError("You're offline! Please check your internet connection.");
+      return;
+    }
+
+    setIsVerifyingOtp(true);
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+
+    try {
+      const res = await authService.verifyEmailOtp(emailInput, cleanToken);
+      if (!res.success) {
+        setAuthError(res.error || 'Invalid or expired code. Please try again.');
+      } else {
+        soundService.playWinChime();
+        errorToastService.show({
+          message: 'Signed in successfully!',
+          type: 'info',
+          durationMs: 3000,
+        });
+        onSuccess();
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || 'Verification failed. Please check the code.');
+    } finally {
+      setIsVerifyingOtp(false);
     }
   };
 
@@ -96,60 +214,212 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
           {/* Title */}
           <Text style={styles.title}>RIVAL CARD!</Text>
 
-          {/* Subtext */}
-          <Text style={styles.subtext}>
-            Play as a guest or sign in to save your level, coins, and cosmetics across devices.
-          </Text>
+          {authMode === 'welcome' && (
+            <>
+              {/* Subtext */}
+              <Text style={styles.subtext}>
+                Play as a guest or sign in to save your level, coins, and cosmetics across devices.
+              </Text>
 
-          {/* Feature highlights pill row */}
-          <View style={styles.featureHighlights}>
-            <View style={styles.featurePill}>
-              <Text style={styles.featureIcon}>⚡</Text>
-              <Text style={styles.featureText}>Fast 1v1 & 4P</Text>
-            </View>
-            <View style={styles.featurePill}>
-              <Text style={styles.featureIcon}>🪙</Text>
-              <Text style={styles.featureText}>Earn Coins</Text>
-            </View>
-            <View style={styles.featurePill}>
-              <Text style={styles.featureIcon}>🎨</Text>
-              <Text style={styles.featureText}>Cosmetics</Text>
-            </View>
-          </View>
-
-          {/* Action 1: Continue as Guest (Primary Action) */}
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={handleContinueAsGuest}
-            disabled={isSigningIn}
-            style={styles.guestBtn}
-          >
-            <Text style={styles.guestBtnText}>Continue as Guest ➔</Text>
-          </TouchableOpacity>
-
-          {/* Action 2: Sign in with Google */}
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={handleGoogleSignIn}
-            disabled={isSigningIn}
-            style={styles.googleBtn}
-          >
-            {isSigningIn ? (
-              <ActivityIndicator color="#0F172A" size="small" />
-            ) : (
-              <View style={styles.googleBtnContent}>
-                <View style={styles.googleIconBadge}>
-                  <Text style={styles.googleIconText}>G</Text>
+              {/* Feature highlights pill row */}
+              <View style={styles.featureHighlights}>
+                <View style={styles.featurePill}>
+                  <Text style={styles.featureIcon}>⚡</Text>
+                  <Text style={styles.featureText}>Fast 1v1 & 4P</Text>
                 </View>
-                <Text style={styles.googleBtnText}>Sign in with Google</Text>
+                <View style={styles.featurePill}>
+                  <Text style={styles.featureIcon}>🪙</Text>
+                  <Text style={styles.featureText}>Earn Coins</Text>
+                </View>
+                <View style={styles.featurePill}>
+                  <Text style={styles.featureIcon}>🎨</Text>
+                  <Text style={styles.featureText}>Cosmetics</Text>
+                </View>
               </View>
-            )}
-          </TouchableOpacity>
 
-          {/* Privacy Note Footnote */}
-          <Text style={styles.footnoteText}>
-            You can always link your account later in Settings.
-          </Text>
+              {/* Action 1: Continue as Guest (Primary Action) */}
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={handleContinueAsGuest}
+                disabled={isSigningIn}
+                style={styles.guestBtn}
+              >
+                <Text style={styles.guestBtnText}>Continue as Guest ➔</Text>
+              </TouchableOpacity>
+
+              {/* Action 2: Sign in with Google */}
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={handleGoogleSignIn}
+                disabled={isSigningIn}
+                style={styles.googleBtn}
+              >
+                {isSigningIn ? (
+                  <ActivityIndicator color="#0F172A" size="small" />
+                ) : (
+                  <View style={styles.googleBtnContent}>
+                    <View style={styles.googleIconBadge}>
+                      <Text style={styles.googleIconText}>G</Text>
+                    </View>
+                    <Text style={styles.googleBtnText}>Sign in with Google</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              {/* Action 3: Sign in with Email */}
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  hapticsService.cardSnap();
+                  soundService.playCardSnap();
+                  setAuthError(null);
+                  setAuthMode('email_input');
+                }}
+                disabled={isSigningIn}
+                style={styles.emailBtn}
+              >
+                <View style={styles.emailBtnContent}>
+                  <Text style={styles.emailBtnIcon}>✉️</Text>
+                  <Text style={styles.emailBtnText}>Sign in with Email Code</Text>
+                </View>
+              </TouchableOpacity>
+
+              {/* Privacy Note Footnote */}
+              <Text style={styles.footnoteText}>
+                You can always link your account later in Settings.
+              </Text>
+            </>
+          )}
+
+          {authMode === 'email_input' && (
+            <View style={styles.emailFormContainer}>
+              <Text style={styles.emailFormSubtitle}>
+                Enter your email address to receive a 6-digit login code:
+              </Text>
+
+              <TextInput
+                style={styles.emailTextInput}
+                value={emailInput}
+                onChangeText={(txt) => {
+                  setEmailInput(txt);
+                  setAuthError(null);
+                }}
+                placeholder="player@example.com"
+                placeholderTextColor="#94A3B8"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
+              {authError && (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorText}>{authError}</Text>
+                </View>
+              )}
+
+              <View style={styles.actionButtonsRow}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setAuthError(null);
+                    setAuthMode('welcome');
+                  }}
+                  style={styles.backBtn}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={handleSendOtp}
+                  disabled={isSendingOtp || !emailInput.trim()}
+                  style={[
+                    styles.sendCodeBtn,
+                    !emailInput.trim() && styles.btnDisabled,
+                  ]}
+                >
+                  {isSendingOtp ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.sendCodeBtnText}>Send Code ➔</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {authMode === 'otp_verify' && (
+            <View style={styles.emailFormContainer}>
+              <Text style={styles.emailFormSubtitle}>
+                Enter the 6-digit verification code sent to:
+              </Text>
+
+              <View style={styles.emailBadgeRow}>
+                <Text style={styles.emailBadgeText} numberOfLines={1}>
+                  {emailInput}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setAuthError(null);
+                    setAuthMode('email_input');
+                  }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.emailEditLink}>Edit</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TextInput
+                style={styles.otpInput}
+                value={otpInput}
+                onChangeText={(txt) => {
+                  const digits = txt.replace(/[^0-9]/g, '').slice(0, 6);
+                  setOtpInput(digits);
+                  setAuthError(null);
+                }}
+                placeholder="000000"
+                placeholderTextColor="#CBD5E1"
+                keyboardType="number-pad"
+                maxLength={6}
+                autoFocus
+              />
+
+              {authError && (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorText}>{authError}</Text>
+                </View>
+              )}
+
+              <View style={styles.actionButtonsRow}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={countdown > 0 ? undefined : handleSendOtp}
+                  disabled={countdown > 0 || isSendingOtp}
+                  style={[styles.resendBtn, countdown > 0 && styles.resendBtnDisabled]}
+                >
+                  <Text style={[styles.resendBtnText, countdown > 0 && styles.resendBtnTextDisabled]}>
+                    {countdown > 0 ? `${countdown}s` : 'Resend'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={handleVerifyOtp}
+                  disabled={isVerifyingOtp || otpInput.trim().length < 6}
+                  style={[
+                    styles.verifyBtn,
+                    otpInput.trim().length < 6 && styles.btnDisabled,
+                  ]}
+                >
+                  {isVerifyingOtp ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.verifyBtnText}>Verify & Play ✓</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
       </View>
     </Modal>
@@ -167,7 +437,7 @@ const styles = StyleSheet.create({
   dialogCard: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: '#FFFDF7', // Warm cream container
+    backgroundColor: '#FFFDF7',
     borderRadius: 24,
     padding: 24,
     alignItems: 'center',
@@ -253,11 +523,11 @@ const styles = StyleSheet.create({
   },
   guestBtn: {
     width: '100%',
-    backgroundColor: '#10B981', // Modern vibrant emerald green
+    backgroundColor: '#10B981',
     borderBottomWidth: 4,
     borderColor: '#059669',
     borderRadius: 14,
-    paddingVertical: 14,
+    paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 10,
@@ -270,7 +540,7 @@ const styles = StyleSheet.create({
   guestBtnText: {
     ...FONT_CARTOON_HEAVY,
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15,
     letterSpacing: 0.5,
   },
   googleBtn: {
@@ -280,10 +550,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 3,
     borderColor: '#CBD5E1',
     borderRadius: 14,
-    paddingVertical: 12,
+    paddingVertical: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   googleBtnContent: {
     flexDirection: 'row',
@@ -307,7 +577,34 @@ const styles = StyleSheet.create({
   googleBtnText: {
     ...FONT_CARTOON_BOLD,
     color: '#0F172A',
-    fontSize: 14,
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
+  emailBtn: {
+    width: '100%',
+    backgroundColor: '#1E293B',
+    borderWidth: 2,
+    borderBottomWidth: 3,
+    borderColor: '#0F172A',
+    borderRadius: 14,
+    paddingVertical: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  emailBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  emailBtnIcon: {
+    fontSize: 13,
+  },
+  emailBtnText: {
+    ...FONT_CARTOON_BOLD,
+    color: '#FFFFFF',
+    fontSize: 13,
     letterSpacing: 0.3,
   },
   footnoteText: {
@@ -315,5 +612,166 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#94A3B8',
     textAlign: 'center',
+  },
+  emailFormContainer: {
+    width: '100%',
+    marginTop: 4,
+  },
+  emailFormSubtitle: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 12,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 12,
+    lineHeight: 16,
+  },
+  emailTextInput: {
+    ...FONT_CARTOON_BOLD,
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#0F172A',
+    marginBottom: 10,
+  },
+  emailBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 10,
+  },
+  emailBadgeText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#334155',
+    flex: 1,
+  },
+  emailEditLink: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#2563EB',
+    paddingHorizontal: 6,
+  },
+  otpInput: {
+    ...FONT_CARTOON_HEAVY,
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 2.5,
+    borderColor: '#F59E0B',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    fontSize: 22,
+    color: '#0F172A',
+    textAlign: 'center',
+    letterSpacing: 8,
+    marginBottom: 10,
+  },
+  errorBanner: {
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 10,
+  },
+  errorText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#B91C1C',
+    textAlign: 'center',
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  backBtn: {
+    height: 44,
+    paddingHorizontal: 16,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#475569',
+  },
+  resendBtn: {
+    height: 44,
+    paddingHorizontal: 14,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resendBtnDisabled: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    opacity: 0.6,
+  },
+  resendBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#92400E',
+  },
+  resendBtnTextDisabled: {
+    color: '#94A3B8',
+  },
+  sendCodeBtn: {
+    flex: 1,
+    height: 44,
+    backgroundColor: '#10B981',
+    borderBottomWidth: 3,
+    borderColor: '#059669',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendCodeBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
+  },
+  verifyBtn: {
+    flex: 1,
+    height: 44,
+    backgroundColor: '#10B981',
+    borderBottomWidth: 3,
+    borderColor: '#059669',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  verifyBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
+  },
+  btnDisabled: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+    opacity: 0.6,
   },
 });

@@ -2,7 +2,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -24,7 +26,6 @@ import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
   FONT_CARTOON_REGULAR,
-  FONT_CARTOON_SEMIBOLD,
 } from '../styles/typography';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
@@ -49,6 +50,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Email OTP Flow state
+  const [authMode, setAuthMode] = useState<'options' | 'email_input' | 'otp_verify'>('options');
+  const [emailInput, setEmailInput] = useState('');
+  const [otpInput, setOtpInput] = useState('');
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState(0);
+
   // Sync state whenever modal opens or profile changes
   useEffect(() => {
     if (visible) {
@@ -57,6 +67,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setIsSaving(false);
       setIsSigningIn(false);
       setSaveStatus('idle');
+      setAuthMode('options');
+      setEmailInput('');
+      setOtpInput('');
+      setAuthError(null);
+      setCountdown(0);
     }
     return () => {
       if (debounceTimerRef.current) {
@@ -64,6 +79,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       }
     };
   }, [visible, profile]);
+
+  // Countdown timer for OTP resend
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setInterval(() => {
+      setCountdown((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [countdown]);
 
   const activeAvatar = getAvatarConfig(selectedAvatarId);
   const winRate =
@@ -95,9 +119,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           4000
         );
       } else {
+        if (res.url && Platform.OS !== 'web') {
+          try {
+            await Linking.openURL(res.url);
+          } catch (e) {
+            console.warn('[ProfileModal] Could not open external OAuth URL:', e);
+          }
+        }
         soundService.playWinChime();
         errorToastService.show({
-          message: 'Signed in with Google successfully!',
+          message: 'Signing in with Google...',
           type: 'info',
           durationMs: 3000,
         });
@@ -110,6 +141,108 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       );
     } finally {
       setIsSigningIn(false);
+    }
+  };
+
+  const handleSendOtp = async () => {
+    if (isSendingOtp) return;
+    setAuthError(null);
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      setAuthError('Please enter a valid email address.');
+      return;
+    }
+
+    const isOnline = await networkService.isOnline();
+    if (!isOnline) {
+      setAuthError("You're offline! Please check your internet connection.");
+      return;
+    }
+
+    setIsSendingOtp(true);
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+
+    try {
+      const res = await authService.sendEmailOtp(cleanEmail);
+      if (!res.success) {
+        setAuthError(res.error || 'Failed to send verification code.');
+      } else {
+        setAuthMode('otp_verify');
+        setCountdown(60);
+        soundService.playCardSnap();
+        errorToastService.show({
+          message: 'Verification code sent to your email!',
+          type: 'info',
+          durationMs: 3000,
+        });
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to send verification code.');
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (isVerifyingOtp) return;
+    setAuthError(null);
+    const cleanToken = otpInput.trim();
+    if (!cleanToken || cleanToken.length < 6) {
+      setAuthError('Please enter the 6-digit verification code.');
+      return;
+    }
+
+    const isOnline = await networkService.isOnline();
+    if (!isOnline) {
+      setAuthError("You're offline! Please check your internet connection.");
+      return;
+    }
+
+    setIsVerifyingOtp(true);
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+
+    try {
+      const res = await authService.verifyEmailOtp(emailInput, cleanToken);
+      if (!res.success) {
+        setAuthError(res.error || 'Invalid or expired code. Please try again.');
+      } else {
+        soundService.playWinChime();
+        errorToastService.show({
+          message: 'Signed in successfully!',
+          type: 'info',
+          durationMs: 3000,
+        });
+        setAuthMode('options');
+        setEmailInput('');
+        setOtpInput('');
+        await playerProfileService.getProfile(true);
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || 'Verification failed. Please check the code.');
+    } finally {
+      setIsVerifyingOtp(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    hapticsService.cardSnap();
+    soundService.playCardDraw();
+    try {
+      await authService.signOut();
+      errorToastService.show({
+        message: 'Signed out. Playing as Guest.',
+        type: 'info',
+        durationMs: 2500,
+      });
+      setAuthMode('options');
+      setEmailInput('');
+      setOtpInput('');
+      setAuthError(null);
+      await playerProfileService.getProfile(true);
+    } catch (err) {
+      console.warn('Sign out warning:', err);
     }
   };
 
@@ -232,15 +365,25 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             showsVerticalScrollIndicator={false}
             bounces={false}
           >
-            {/* Selected Avatar Preview & Guest Badge */}
+            {/* Selected Avatar Preview & Guest/Verified Badge */}
             <View style={styles.previewSection}>
               <View style={[styles.largeAvatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
                 <Text style={styles.largeAvatarEmoji}>{activeAvatar.emoji}</Text>
               </View>
-              <View style={styles.guestBadge}>
-                <Text style={styles.guestBadgeDot}>●</Text>
-                <Text style={styles.guestBadgeText}>Guest Account</Text>
-              </View>
+
+              {profile.isGuest ? (
+                <View style={styles.guestBadge}>
+                  <Text style={styles.guestBadgeDot}>●</Text>
+                  <Text style={styles.guestBadgeText}>Guest Account</Text>
+                </View>
+              ) : (
+                <View style={styles.verifiedBadge}>
+                  <Text style={styles.verifiedBadgeDot}>✓</Text>
+                  <Text style={styles.verifiedBadgeText}>
+                    {profile.email || 'Cloud Account'}
+                  </Text>
+                </View>
+              )}
 
               {/* Economy Currency Balances (Coins & Gems) */}
               <View style={styles.economyRow}>
@@ -281,7 +424,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       )}%`,
                     },
                   ]}
-                />
+                >
+                  <View style={styles.xpGlintLine} />
+                </View>
               </View>
             </View>
 
@@ -330,6 +475,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         isSelected && styles.avatarOptionCardSelected,
                       ]}
                     >
+                      {isSelected && (
+                        <View style={styles.avatarSelectedBadge}>
+                          <Text style={styles.avatarSelectedBadgeText}>✓</Text>
+                        </View>
+                      )}
                       <View style={[styles.avatarOptionCircle, { backgroundColor: item.bgColor }]}>
                         <Text style={styles.avatarOptionEmoji}>{item.emoji}</Text>
                       </View>
@@ -351,12 +501,14 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <View style={styles.statsGrid}>
                 {/* 1. Matches */}
                 <View style={styles.statBox}>
+                  <View style={styles.statBoxGlint} />
                   <Text style={styles.statNumber}>{profile.stats.gamesPlayed}</Text>
                   <Text style={styles.statLabel}>MATCHES</Text>
                 </View>
 
                 {/* 2. Wins */}
                 <View style={styles.statBox}>
+                  <View style={styles.statBoxGlint} />
                   <Text style={[styles.statNumber, styles.statWinsNumber]}>
                     {profile.stats.wins}
                   </Text>
@@ -365,6 +517,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                 {/* 3. Win Rate */}
                 <View style={styles.statBox}>
+                  <View style={styles.statBoxGlint} />
                   <Text style={[styles.statNumber, styles.statRateNumber]}>
                     {winRate}%
                   </Text>
@@ -373,6 +526,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                 {/* 4. Streak */}
                 <View style={styles.statBox}>
+                  <View style={styles.statBoxGlint} />
                   <Text style={[styles.statNumber, styles.statStreakNumber]}>
                     {profile.stats.winStreak}
                   </Text>
@@ -381,24 +535,210 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </View>
             </View>
 
-            {/* Continue with Google Authentication */}
-            <TouchableOpacity
-              activeOpacity={0.8}
-              style={styles.googleAuthBtn}
-              onPress={handleGoogleSignIn}
-              disabled={isSigningIn}
-            >
-              {isSigningIn ? (
-                <ActivityIndicator color="#2D1F17" size="small" />
-              ) : (
-                <View style={styles.googleBtnContent}>
-                  <View style={styles.googleIconCircle}>
-                    <Text style={styles.googleIconText}>G</Text>
+            {/* Cloud Save & Account Management Card */}
+            {!profile.isGuest ? (
+              <View style={styles.authCard}>
+                <View style={styles.authHeaderRow}>
+                  <View style={styles.authHeaderTitleRow}>
+                    <Text style={styles.authHeaderIcon}>☁️</Text>
+                    <Text style={styles.authHeaderTitle}>LINKED CLOUD ACCOUNT</Text>
                   </View>
-                  <Text style={styles.googleAuthBtnText}>Continue with Google</Text>
+                  <View style={styles.cloudSyncPill}>
+                    <Text style={styles.cloudSyncDot}>●</Text>
+                    <Text style={styles.cloudSyncText}>Synced</Text>
+                  </View>
                 </View>
-              )}
-            </TouchableOpacity>
+                <Text style={styles.authEmailDisplay}>{profile.email || 'Cloud Account Linked'}</Text>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={handleSignOut}
+                  style={styles.signOutBtn}
+                >
+                  <Text style={styles.signOutBtnText}>Sign Out to Guest</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.authCard}>
+                <View style={styles.authHeaderRow}>
+                  <View style={styles.authHeaderTitleRow}>
+                    <Text style={styles.authHeaderIcon}>🛡️</Text>
+                    <Text style={styles.authHeaderTitle}>SAVE PROGRESS TO CLOUD</Text>
+                  </View>
+                </View>
+
+                {authMode === 'options' && (
+                  <>
+                    <Text style={styles.authSubtitle}>
+                      Sign in to sync your level, coins, and unlocks across devices.
+                    </Text>
+
+                    {/* Google OAuth Button */}
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      style={styles.googleAuthBtn}
+                      onPress={handleGoogleSignIn}
+                      disabled={isSigningIn}
+                    >
+                      {isSigningIn ? (
+                        <ActivityIndicator color="#2D1F17" size="small" />
+                      ) : (
+                        <View style={styles.googleBtnContent}>
+                          <View style={styles.googleIconCircle}>
+                            <Text style={styles.googleIconText}>G</Text>
+                          </View>
+                          <Text style={styles.googleAuthBtnText}>Continue with Google</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+
+                    {/* Email OTP Button */}
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      style={styles.emailAuthBtn}
+                      onPress={() => {
+                        hapticsService.cardSnap();
+                        soundService.playCardSnap();
+                        setAuthError(null);
+                        setAuthMode('email_input');
+                      }}
+                    >
+                      <View style={styles.emailAuthBtnContent}>
+                        <View style={styles.emailIconCircle}>
+                          <Text style={styles.emailIconEmoji}>✉️</Text>
+                        </View>
+                        <Text style={styles.emailAuthBtnText}>Sign in with Email Code</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {authMode === 'email_input' && (
+                  <>
+                    <Text style={styles.authSubtitle}>
+                      Enter your email to receive a 6-digit verification code:
+                    </Text>
+                    <TextInput
+                      style={styles.authTextInput}
+                      value={emailInput}
+                      onChangeText={(txt) => {
+                        setEmailInput(txt);
+                        setAuthError(null);
+                      }}
+                      placeholder="player@example.com"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    {authError && (
+                      <View style={styles.authErrorBanner}>
+                        <Text style={styles.authErrorText}>{authError}</Text>
+                      </View>
+                    )}
+
+                    <View style={styles.authActionsRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => {
+                          setAuthError(null);
+                          setAuthMode('options');
+                        }}
+                        style={styles.authCancelBtn}
+                      >
+                        <Text style={styles.authCancelBtnText}>Back</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={handleSendOtp}
+                        disabled={isSendingOtp || !emailInput.trim()}
+                        style={[
+                          styles.authConfirmBtn,
+                          !emailInput.trim() && styles.authConfirmBtnDisabled,
+                        ]}
+                      >
+                        {isSendingOtp ? (
+                          <ActivityIndicator color="#FFFFFF" size="small" />
+                        ) : (
+                          <Text style={styles.authConfirmBtnText}>Send Code ➔</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+
+                {authMode === 'otp_verify' && (
+                  <>
+                    <Text style={styles.authSubtitle}>
+                      Enter the 6-digit code sent to:
+                    </Text>
+                    <View style={styles.targetEmailRow}>
+                      <Text style={styles.targetEmailText} numberOfLines={1}>
+                        {emailInput}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setAuthError(null);
+                          setAuthMode('email_input');
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text style={styles.editEmailText}>Edit</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <TextInput
+                      style={styles.otpInput}
+                      value={otpInput}
+                      onChangeText={(txt) => {
+                        const digits = txt.replace(/[^0-9]/g, '').slice(0, 6);
+                        setOtpInput(digits);
+                        setAuthError(null);
+                      }}
+                      placeholder="000000"
+                      placeholderTextColor="#CBD5E1"
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      autoFocus
+                    />
+
+                    {authError && (
+                      <View style={styles.authErrorBanner}>
+                        <Text style={styles.authErrorText}>{authError}</Text>
+                      </View>
+                    )}
+
+                    <View style={styles.authActionsRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={countdown > 0 ? undefined : handleSendOtp}
+                        disabled={countdown > 0 || isSendingOtp}
+                        style={[styles.authResendBtn, countdown > 0 && styles.authResendBtnDisabled]}
+                      >
+                        <Text style={[styles.authResendBtnText, countdown > 0 && styles.authResendBtnTextDisabled]}>
+                          {countdown > 0 ? `Resend (${countdown}s)` : 'Resend'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={handleVerifyOtp}
+                        disabled={isVerifyingOtp || otpInput.trim().length < 6}
+                        style={[
+                          styles.authConfirmBtn,
+                          otpInput.trim().length < 6 && styles.authConfirmBtnDisabled,
+                        ]}
+                      >
+                        {isVerifyingOtp ? (
+                          <ActivityIndicator color="#FFFFFF" size="small" />
+                        ) : (
+                          <Text style={styles.authConfirmBtnText}>Verify & Sign In ✓</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </View>
+            )}
 
             {/* Save Profile Button */}
             <TouchableOpacity
@@ -429,7 +769,7 @@ const styles = StyleSheet.create({
     maxWidth: 480,
     maxHeight: '92%',
     alignSelf: 'center',
-    backgroundColor: '#FEF6E9', // Warm cream surface matching design system
+    backgroundColor: '#FEF6E9',
     borderRadius: 24,
     paddingTop: 16,
     paddingHorizontal: 16,
@@ -529,6 +869,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#475569',
   },
+  verifiedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    gap: 5,
+  },
+  verifiedBadgeDot: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#16A34A',
+  },
+  verifiedBadgeText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#15803D',
+  },
   economyRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -609,15 +970,29 @@ const styles = StyleSheet.create({
   },
   xpTrack: {
     width: '100%',
-    height: 12,
+    height: 14,
     backgroundColor: '#E2E8F0',
-    borderRadius: 6,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
     overflow: 'hidden',
   },
   xpFill: {
     height: '100%',
     backgroundColor: '#10B981',
     borderRadius: 6,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  xpGlintLine: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.55)',
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 6,
   },
   inputSection: {
     width: '100%',
@@ -706,9 +1081,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   avatarOptionCardSelected: {
-    borderColor: '#2563EB',
-    backgroundColor: '#EFF6FF',
-    transform: [{ scale: 1.03 }],
+    borderColor: '#FACC15',
+    backgroundColor: '#FEF9C3',
+    borderWidth: 2.5,
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.45,
+    shadowRadius: 5,
+    elevation: 5,
+    transform: [{ scale: 1.04 }],
+  },
+  avatarSelectedBadge: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#F59E0B',
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  avatarSelectedBadgeText: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: '#FFFFFF',
   },
   avatarOptionCircle: {
     width: 32,
@@ -768,48 +1168,149 @@ const styles = StyleSheet.create({
   },
   statBox: {
     width: '48%',
-    backgroundColor: '#1E293B', // Dedicated dark navy/slate card box
+    backgroundColor: '#1E293B',
     borderRadius: 14,
-    paddingVertical: 14,
+    paddingVertical: 13,
     paddingHorizontal: 12,
-    borderWidth: 1.5,
+    borderWidth: 2,
     borderColor: '#334155',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 3,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  statBoxGlint: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
   statNumber: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 24, // Big, bold metric values (22 to 26)
+    fontSize: 24,
     fontWeight: '900',
-    color: '#FFFFFF', // Bright white
-    marginBottom: 4,
+    color: '#FFFFFF',
+    marginBottom: 3,
+    letterSpacing: 0.5,
+    fontVariant: ['tabular-nums'],
   },
   statWinsNumber: {
-    color: '#10B981', // Vibrant emerald
+    color: '#10B981',
   },
   statRateNumber: {
-    color: '#38BDF8', // Vibrant cyan
+    color: '#38BDF8',
   },
   statStreakNumber: {
-    color: '#FACC15', // Gold
+    color: '#FACC15',
   },
   statLabel: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 12, // Clear label
+    fontSize: 11,
     fontWeight: '700',
-    color: '#94A3B8', // Muted slate
-    letterSpacing: 1, // Letter spacing 1
+    color: '#94A3B8',
+    letterSpacing: 0.8,
     textAlign: 'center',
     textTransform: 'uppercase',
   },
+  authCard: {
+    width: '100%',
+    backgroundColor: '#FFFDF7',
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: '#E2D9C8',
+    padding: 14,
+    marginVertical: 8,
+    shadowColor: '#1E293B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  authHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  authHeaderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  authHeaderIcon: {
+    fontSize: 14,
+  },
+  authHeaderTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#334155',
+    letterSpacing: 0.7,
+  },
+  cloudSyncPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#86EFAC',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    gap: 4,
+  },
+  cloudSyncDot: {
+    fontSize: 8,
+    color: '#16A34A',
+  },
+  cloudSyncText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#15803D',
+  },
+  authEmailDisplay: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#0F172A',
+    marginVertical: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  signOutBtn: {
+    height: 38,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  signOutBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#DC2626',
+    letterSpacing: 0.4,
+  },
+  authSubtitle: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 12,
+    color: '#64748B',
+    marginBottom: 10,
+    lineHeight: 16,
+  },
   googleAuthBtn: {
-    width: '90%',
-    height: 48,
+    width: '100%',
+    height: 46,
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
     borderBottomWidth: 4,
@@ -818,8 +1319,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    marginVertical: 6,
-    alignSelf: 'center',
+    marginBottom: 8,
     shadowColor: '#2D1F17',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
@@ -854,10 +1354,180 @@ const styles = StyleSheet.create({
     color: '#2D1F17',
     letterSpacing: 0.4,
   },
+  emailAuthBtn: {
+    width: '100%',
+    height: 46,
+    backgroundColor: '#1E293B',
+    borderWidth: 2,
+    borderBottomWidth: 4,
+    borderColor: '#0F172A',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  emailAuthBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  emailIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#334155',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emailIconEmoji: {
+    fontSize: 12,
+  },
+  emailAuthBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
+  },
+  authTextInput: {
+    ...FONT_CARTOON_BOLD,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
+    color: '#0F172A',
+    marginBottom: 8,
+  },
+  targetEmailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 10,
+  },
+  targetEmailText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#334155',
+    flex: 1,
+  },
+  editEmailText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#2563EB',
+    paddingHorizontal: 6,
+  },
+  otpInput: {
+    ...FONT_CARTOON_HEAVY,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 2.5,
+    borderColor: '#F59E0B',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    fontSize: 22,
+    color: '#0F172A',
+    textAlign: 'center',
+    letterSpacing: 8,
+    marginBottom: 8,
+  },
+  authActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  authCancelBtn: {
+    height: 42,
+    paddingHorizontal: 16,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authCancelBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#475569',
+  },
+  authResendBtn: {
+    height: 42,
+    paddingHorizontal: 12,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 2,
+    borderColor: '#FDE68A',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authResendBtnDisabled: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    opacity: 0.7,
+  },
+  authResendBtnText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#92400E',
+  },
+  authResendBtnTextDisabled: {
+    color: '#94A3B8',
+  },
+  authConfirmBtn: {
+    flex: 1,
+    height: 42,
+    backgroundColor: '#10B981',
+    borderBottomWidth: 3,
+    borderColor: '#059669',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authConfirmBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+    opacity: 0.6,
+  },
+  authConfirmBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
+  },
+  authErrorBanner: {
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
+  },
+  authErrorText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#B91C1C',
+    textAlign: 'center',
+  },
   saveBtn: {
     width: '90%',
     height: 48,
-    backgroundColor: '#10B981', // Vibrant emerald green matching primary actions
+    backgroundColor: '#10B981',
     borderBottomWidth: 4,
     borderColor: '#059669',
     borderRadius: 14,

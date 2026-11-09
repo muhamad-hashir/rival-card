@@ -6,8 +6,26 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 const FALLBACK_SUPABASE_URL = 'https://diprmtxrlynniqacapmz.supabase.co';
 const FALLBACK_SUPABASE_ANON_KEY = 'sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ';
 
-const rawUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || '').trim();
-const rawKey = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '').trim();
+let expoExtra: Record<string, any> = {};
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Constants = require('expo-constants')?.default ?? require('expo-constants');
+  expoExtra = Constants?.expoConfig?.extra || {};
+} catch {
+  // fallback if expo-constants is not loaded in test runner
+}
+
+const envUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || expoExtra.EXPO_PUBLIC_SUPABASE_URL;
+const envKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || expoExtra.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!envUrl || !envKey) {
+  console.warn(
+    '[Config] Warning: Supabase environment variables are missing or undefined. Using fallback credentials.'
+  );
+}
+
+const rawUrl = (envUrl || '').trim();
+const rawKey = (envKey || '').trim();
 
 const SUPABASE_URL = rawUrl && rawUrl.startsWith('http') ? rawUrl : FALLBACK_SUPABASE_URL;
 const SUPABASE_ANON_KEY = rawKey && rawKey.length > 0 ? rawKey : FALLBACK_SUPABASE_ANON_KEY;

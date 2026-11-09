@@ -19,6 +19,7 @@ export interface PlayerProfile {
   gems: number; // starts at 10 for new guests
   stats: PlayerStats;
   isGuest: boolean; // set to true
+  email?: string; // optional linked email for authenticated accounts
 }
 
 export interface AwardRewardsResult {
@@ -31,6 +32,12 @@ export interface AwardRewardsResult {
   currentXp: number;
   xpToNextLevel: number;
 }
+
+export type AuthUserLike = {
+  id: string;
+  email?: string;
+  user_metadata?: Record<string, any>;
+};
 
 export interface AvatarOption {
   id: string;
@@ -133,6 +140,19 @@ function generateUUID(): string {
   return 'guest_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
 }
 
+let shopServiceRef: any = null;
+function getShopService(): any {
+  if (!shopServiceRef) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      shopServiceRef = require('./shopService').shopService;
+    } catch {
+      // ignore
+    }
+  }
+  return shopServiceRef;
+}
+
 class PlayerProfileService {
   private cachedProfile: PlayerProfile | null = null;
   private listeners: Set<(profile: PlayerProfile) => void> = new Set();
@@ -187,6 +207,8 @@ class PlayerProfileService {
               : level * 100;
           const coins = typeof parsed.coins === 'number' && parsed.coins >= 0 ? parsed.coins : 250;
           const gems = typeof parsed.gems === 'number' && parsed.gems >= 0 ? parsed.gems : 10;
+          const isGuest = typeof parsed.isGuest === 'boolean' ? parsed.isGuest : true;
+          const email = typeof parsed.email === 'string' && parsed.email ? parsed.email : undefined;
 
           this.cachedProfile = {
             id: typeof parsed.id === 'string' && parsed.id ? parsed.id : generateUUID(),
@@ -205,7 +227,8 @@ class PlayerProfileService {
               wins: typeof parsed.stats?.wins === 'number' ? parsed.stats.wins : 0,
               winStreak: typeof parsed.stats?.winStreak === 'number' ? parsed.stats.winStreak : 0,
             },
-            isGuest: true,
+            isGuest,
+            email,
           };
           this.notify();
           return this.cachedProfile;
@@ -428,6 +451,270 @@ class PlayerProfileService {
     await storageRemove(LEGACY_STORAGE_KEY);
     this.cachedProfile = null;
     return this.getProfile(true);
+  }
+
+  /**
+   * Preserves guest player progression and intelligently merges with Supabase cloud account.
+   * - Case A (First-time sign-up): Upserts existing guest stats, coins, and progress so nothing resets to 0.
+   * - Case B (Returning account): Compares local guest stats with remote cloud stats, taking higher/delta values.
+   * Writes merged profile back to local AsyncStorage and notifies all subscribers/stores.
+   */
+  public async migrateAndLinkGuestAccount(
+    authUser: AuthUserLike,
+    remoteProfileOverride?: any
+  ): Promise<PlayerProfile> {
+    if (!authUser || !authUser.id) {
+      return this.getProfile();
+    }
+
+    // 1. Read the current local guest data from AsyncStorage
+    const currentGuest = await this.getProfile();
+
+    const authEmail = authUser.email?.trim().toLowerCase() || currentGuest.email;
+    const authDisplayName =
+      authUser.user_metadata?.full_name ||
+      authUser.user_metadata?.name ||
+      authUser.user_metadata?.user_name ||
+      (authEmail ? authEmail.split('@')[0] : undefined);
+
+    // 2. Check Supabase `profiles` table for authUser.id with safety timeout
+    let remoteProfile: any = null;
+    if (remoteProfileOverride !== undefined) {
+      remoteProfile = remoteProfileOverride;
+    } else {
+      try {
+        const { data, error } = await Promise.race([
+          supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', authUser.id)
+            .maybeSingle(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+        ]);
+        if (!error && data) {
+          remoteProfile = data;
+        }
+      } catch (fetchErr) {
+        // In offline mode or when profiles table does not exist, proceed cleanly with local guest preservation
+        console.warn('[PlayerProfileService] Could not fetch remote cloud profile (offline/timeout):', fetchErr);
+      }
+    }
+
+    let merged: PlayerProfile;
+
+    if (!remoteProfile) {
+      // Case A: First-time Google Sign-Up / no remote profile yet
+      // Preserve all guest stats, level, coins, xp, and items so nothing resets to 0!
+      const nickname =
+        currentGuest.nickname && currentGuest.nickname !== 'Player'
+          ? currentGuest.nickname
+          : (authDisplayName ? authDisplayName.slice(0, 15) : (currentGuest.nickname || 'Player'));
+
+      merged = {
+        ...currentGuest,
+        id: authUser.id,
+        email: authEmail,
+        nickname,
+        avatarId: currentGuest.avatarId || 'avatar_1',
+        level: currentGuest.level || 1,
+        currentXp: currentGuest.currentXp || 0,
+        xpToNextLevel: currentGuest.xpToNextLevel || 100,
+        coins: currentGuest.coins ?? 250,
+        gems: currentGuest.gems ?? 10,
+        stats: {
+          gamesPlayed: currentGuest.stats?.gamesPlayed || 0,
+          wins: currentGuest.stats?.wins || 0,
+          winStreak: currentGuest.stats?.winStreak || 0,
+        },
+        isGuest: false,
+      };
+
+      // Upsert into Supabase profiles table
+      try {
+        await Promise.race([
+          supabase.from('profiles').upsert({
+            id: authUser.id,
+            email: authEmail || '',
+            nickname: merged.nickname,
+            avatar_id: merged.avatarId,
+            level: merged.level,
+            current_xp: merged.currentXp,
+            xp_to_next_level: merged.xpToNextLevel,
+            coins: merged.coins,
+            gems: merged.gems,
+            games_played: merged.stats.gamesPlayed,
+            wins: merged.stats.wins,
+            win_streak: merged.stats.winStreak,
+            is_guest: false,
+            updated_at: new Date().toISOString(),
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
+        ]);
+      } catch (upsertErr) {
+        console.warn('[PlayerProfileService] Cloud upsert warning (Case A):', upsertErr);
+      }
+    } else {
+      // Case B: Existing Google Account returning
+      // Compare local guest stats with remote cloud stats and intelligently merge
+      const remoteCoins = typeof remoteProfile.coins === 'number' ? remoteProfile.coins : 250;
+      const remoteGems = typeof remoteProfile.gems === 'number' ? remoteProfile.gems : 10;
+      const remoteLevel = typeof remoteProfile.level === 'number' ? remoteProfile.level : 1;
+      const remoteCurrentXp =
+        typeof (remoteProfile.current_xp ?? remoteProfile.currentXp) === 'number'
+          ? (remoteProfile.current_xp ?? remoteProfile.currentXp)
+          : 0;
+      const remoteXpToNextLevel =
+        typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
+          ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
+          : remoteLevel * 100;
+      const remoteGamesPlayed =
+        typeof (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed) === 'number'
+          ? (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed)
+          : 0;
+      const remoteWins =
+        typeof (remoteProfile.wins ?? remoteProfile.stats?.wins) === 'number'
+          ? (remoteProfile.wins ?? remoteProfile.stats?.wins)
+          : 0;
+      const remoteWinStreak =
+        typeof (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak) === 'number'
+          ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
+          : 0;
+      const remoteNickname = remoteProfile.nickname?.trim();
+      const remoteAvatarId = remoteProfile.avatar_id || remoteProfile.avatarId;
+
+      // Coins merge: guest baseline is 250. Delta earned while offline: Math.max(0, currentGuest.coins - 250).
+      const guestDeltaCoins = Math.max(0, (currentGuest.coins ?? 250) - 250);
+      const mergedCoins = Math.max(remoteCoins + guestDeltaCoins, currentGuest.coins ?? 250, remoteCoins);
+
+      // Gems merge: guest baseline is 10. Delta: Math.max(0, currentGuest.gems - 10).
+      const guestDeltaGems = Math.max(0, (currentGuest.gems ?? 10) - 10);
+      const mergedGems = Math.max(remoteGems + guestDeltaGems, currentGuest.gems ?? 10, remoteGems);
+
+      // Level and XP merge: take higher level and progress
+      let mergedLevel = remoteLevel;
+      let mergedCurrentXp = remoteCurrentXp;
+      let mergedXpToNextLevel = remoteXpToNextLevel;
+
+      if ((currentGuest.level || 1) > remoteLevel) {
+        mergedLevel = currentGuest.level;
+        mergedCurrentXp = currentGuest.currentXp || 0;
+        mergedXpToNextLevel = currentGuest.xpToNextLevel || mergedLevel * 100;
+      } else if (remoteLevel === (currentGuest.level || 1)) {
+        mergedLevel = remoteLevel;
+        mergedCurrentXp = Math.max(remoteCurrentXp, currentGuest.currentXp || 0);
+        mergedXpToNextLevel = remoteXpToNextLevel;
+      }
+
+      // Stats merge: take highest wins/streak and sum games played
+      const mergedGamesPlayed = Math.max(
+        remoteGamesPlayed + (currentGuest.stats?.gamesPlayed || 0),
+        remoteGamesPlayed,
+        currentGuest.stats?.gamesPlayed || 0
+      );
+      const mergedWins = Math.max(
+        remoteWins + (currentGuest.stats?.wins || 0),
+        remoteWins,
+        currentGuest.stats?.wins || 0
+      );
+      const mergedWinStreak = Math.max(remoteWinStreak, currentGuest.stats?.winStreak || 0);
+
+      // Nickname merge
+      let mergedNickname = remoteNickname || authDisplayName;
+      if (!mergedNickname || mergedNickname === 'Player') {
+        if (currentGuest.nickname && currentGuest.nickname !== 'Player') {
+          mergedNickname = currentGuest.nickname;
+        } else {
+          mergedNickname = authDisplayName || 'Player';
+        }
+      }
+
+      // Avatar merge
+      const mergedAvatarId = remoteAvatarId || currentGuest.avatarId || 'avatar_1';
+
+      merged = {
+        id: authUser.id,
+        email: authEmail || remoteProfile.email,
+        nickname: mergedNickname.slice(0, 15),
+        avatarId: mergedAvatarId,
+        level: mergedLevel,
+        currentXp: mergedCurrentXp,
+        xpToNextLevel: mergedXpToNextLevel,
+        coins: mergedCoins,
+        gems: mergedGems,
+        stats: {
+          gamesPlayed: mergedGamesPlayed,
+          wins: mergedWins,
+          winStreak: mergedWinStreak,
+        },
+        isGuest: false,
+      };
+
+      // Sync merged result back to Supabase profiles
+      try {
+        await Promise.race([
+          supabase.from('profiles').upsert({
+            id: authUser.id,
+            email: merged.email || '',
+            nickname: merged.nickname,
+            avatar_id: merged.avatarId,
+            level: merged.level,
+            current_xp: merged.currentXp,
+            xp_to_next_level: merged.xpToNextLevel,
+            coins: merged.coins,
+            gems: merged.gems,
+            games_played: merged.stats.gamesPlayed,
+            wins: merged.stats.wins,
+            win_streak: merged.stats.winStreak,
+            is_guest: false,
+            updated_at: new Date().toISOString(),
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
+        ]);
+      } catch (upsertErr) {
+        console.warn('[PlayerProfileService] Cloud upsert warning (Case B):', upsertErr);
+      }
+    }
+
+    // Merge unlocked items/cosmetics if available from remote
+    if (remoteProfile && (remoteProfile.unlocked_items || remoteProfile.owned_item_ids)) {
+      const remoteItems = remoteProfile.unlocked_items || remoteProfile.owned_item_ids;
+      if (Array.isArray(remoteItems) && remoteItems.length > 0) {
+        try {
+          const shop = getShopService();
+          if (shop && typeof shop.mergeInventory === 'function') {
+            await shop.mergeInventory(remoteItems);
+          }
+        } catch (itemErr) {
+          console.warn('[PlayerProfileService] Inventory merge warning:', itemErr);
+        }
+      }
+    }
+
+    // 3. Write merged profile back to local AsyncStorage and notify all active player state stores / contexts
+    this.cachedProfile = merged;
+    await storageSet(STORAGE_KEY, JSON.stringify(merged));
+    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(merged));
+    this.notify();
+
+    return merged;
+  }
+
+  /**
+   * Links an authenticated Supabase user to the player profile (delegates to migrateAndLinkGuestAccount).
+   */
+  public async linkAuthAccount(details: {
+    email?: string;
+    userId?: string;
+    displayName?: string;
+  }): Promise<PlayerProfile> {
+    return this.migrateAndLinkGuestAccount(
+      {
+        id: details.userId || this.cachedProfile?.id || generateUUID(),
+        email: details.email,
+        user_metadata: details.displayName ? { full_name: details.displayName } : undefined,
+      },
+      details.userId ? undefined : null
+    );
   }
 
   /**

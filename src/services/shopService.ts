@@ -511,6 +511,25 @@ class ShopService {
   }
 
   /**
+   * Merges remote item IDs into local inventory, preserving all existing items.
+   */
+  public async mergeInventory(remoteItemIds: string[]): Promise<PlayerInventory> {
+    if (!remoteItemIds || !Array.isArray(remoteItemIds) || remoteItemIds.length === 0) {
+      return this.getInventory();
+    }
+    const current = await this.getInventory();
+    const mergedOwned = Array.from(new Set([...current.ownedItemIds, ...remoteItemIds]));
+    const updated: PlayerInventory = {
+      ...current,
+      ownedItemIds: mergedOwned,
+    };
+    this.cachedInventory = updated;
+    await storageSet(INVENTORY_STORAGE_KEY, JSON.stringify(updated));
+    this.notify();
+    return updated;
+  }
+
+  /**
    * Subscribes to inventory mutations.
    */
   public subscribe(listener: InventorySubscriber): () => void {

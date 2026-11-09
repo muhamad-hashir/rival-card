@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  TouchableOpacityProps,
   View,
 } from 'react-native';
 import {
@@ -29,6 +30,53 @@ import {
 } from '../styles/typography';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+
+interface TactileButtonProps extends TouchableOpacityProps {
+  scaleTo?: number;
+}
+
+const TactileButton: React.FC<TactileButtonProps> = ({
+  children,
+  style,
+  scaleTo = 0.95,
+  onPress,
+  ...props
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: scaleTo,
+      speed: 50,
+      bounciness: 4,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      speed: 40,
+      bounciness: 8,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  return (
+    <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={onPress}
+        style={style}
+        {...props}
+      >
+        {children}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
 
 export interface ShopModalProps {
   visible: boolean;
@@ -248,6 +296,9 @@ export const ShopModal: React.FC<ShopModalProps> = ({
 
               return (
                 <View key={item.id} style={styles.itemCard} testID={`shop-item-${item.id}`}>
+                  {/* Glossy top shine highlight */}
+                  <View style={styles.itemCardShine} pointerEvents="none" />
+
                   {/* Item Preview Box */}
                   <ItemPreviewBox item={item} />
 
@@ -268,41 +319,38 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                         <Text style={styles.equippedBadgeText}>✓ EQUIPPED</Text>
                       </View>
                     ) : isOwned ? (
-                      <TouchableOpacity
+                      <TactileButton
                         onPress={() => handleEquipItem(item)}
                         style={styles.equipBtn}
-                        activeOpacity={0.8}
                         accessibilityRole="button"
                         accessibilityLabel={`Equip ${item.name}`}
                         testID={`item-equip-btn-${item.id}`}
                       >
                         <Text style={styles.equipBtnText}>EQUIP</Text>
-                      </TouchableOpacity>
+                      </TactileButton>
                     ) : item.purchasesUnavailable || item.isLocked ? (
                       <View style={styles.lockedItemCol}>
                         <Text style={styles.pricePlaceholderText}>
                           {item.price.currency === 'gems' ? '💎' : '🟡'} {item.price.amount.toLocaleString()}
                         </Text>
-                        <TouchableOpacity
+                        <TactileButton
                           onPress={() => handleBuyItem(item)}
                           style={styles.unavailableBadge}
-                          activeOpacity={0.7}
                           accessibilityRole="button"
                           accessibilityLabel="Purchases Unavailable"
                           testID={`item-unavailable-${item.id}`}
                         >
                           <Text style={styles.unavailableBadgeText}>UNAVAILABLE</Text>
-                        </TouchableOpacity>
+                        </TactileButton>
                       </View>
                     ) : (
-                      <TouchableOpacity
+                      <TactileButton
                         onPress={() => handleBuyItem(item)}
                         disabled={isProcessing}
                         style={[
                           styles.buyBtn,
                           item.price.currency === 'gems' ? styles.buyBtnGem : styles.buyBtnCoin,
                         ]}
-                        activeOpacity={0.8}
                         accessibilityRole="button"
                         accessibilityLabel={`Buy ${item.name} for ${item.price.amount} ${item.price.currency}`}
                         testID={`item-buy-btn-${item.id}`}
@@ -311,7 +359,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                           {item.price.currency === 'gems' ? '💎' : '🟡'}{' '}
                           {item.price.amount.toLocaleString()}
                         </Text>
-                      </TouchableOpacity>
+                      </TactileButton>
                     )}
                   </View>
                 </View>
@@ -580,17 +628,29 @@ const styles = StyleSheet.create({
   },
   itemCard: {
     width: '48%',
-    backgroundColor: '#FFFDF7',
-    borderRadius: 18,
+    backgroundColor: '#FFFDF9',
+    borderRadius: 20,
     borderWidth: 2,
     borderColor: '#E2D9C8',
+    borderTopWidth: 2.5,
+    borderTopColor: '#FFFFFF',
     padding: 10,
     alignItems: 'center',
     shadowColor: '#1E293B',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  itemCardShine: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
   },
   previewCardBack: {
     width: 60,
@@ -727,12 +787,17 @@ const styles = StyleSheet.create({
   },
   equipBtn: {
     backgroundColor: '#2563EB',
-    borderBottomWidth: 3,
+    borderBottomWidth: 3.5,
     borderColor: '#1D4ED8',
     borderRadius: 14,
-    paddingVertical: 5,
+    paddingVertical: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#1D4ED8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 3,
   },
   equipBtnText: {
     ...FONT_CARTOON_HEAVY,
@@ -742,18 +807,28 @@ const styles = StyleSheet.create({
   },
   buyBtn: {
     borderRadius: 14,
-    borderBottomWidth: 3,
-    paddingVertical: 5,
+    borderBottomWidth: 3.5,
+    paddingVertical: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
   buyBtnCoin: {
     backgroundColor: '#F59E0B',
-    borderColor: '#D97706',
+    borderColor: '#B45309',
+    shadowColor: '#D97706',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 3,
   },
   buyBtnGem: {
     backgroundColor: '#0284C7',
     borderColor: '#0369A1',
+    shadowColor: '#0284C7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 3,
   },
   buyBtnPrice: {
     ...FONT_CARTOON_HEAVY,
