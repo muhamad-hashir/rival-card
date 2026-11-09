@@ -40,3 +40,8 @@ yarn-error.*
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+# IDE agent and AI workspace configs
+.agent/
+.gemini/
+.impeccable/
