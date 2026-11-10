@@ -62,6 +62,14 @@ export function getAvatarConfig(avatarId?: string): AvatarOption {
 
 export const STORAGE_KEY = '@rivalcard:player_profile';
 export const LEGACY_STORAGE_KEY = '@rival_card_guest_player_profile_v1';
+export const ALT_STORAGE_KEY = '@rival_card_profile';
+export const DAILY_BOT_STORAGE_KEY = '@rivalcard:daily_bot_earnings';
+export const DAILY_BOT_COIN_CAP = 100;
+
+export interface DailyBotEarnings {
+  date: string; // YYYY-MM-DD
+  coinsEarned: number;
+}
 
 // In-memory fallback for test environments or SSR where window/native storage is inaccessible
 const memoryStorage: Record<string, string> = {};
@@ -129,6 +137,13 @@ async function storageRemove(key: string): Promise<void> {
   }
 }
 
+async function persistProfile(profile: PlayerProfile): Promise<void> {
+  const json = JSON.stringify(profile);
+  await storageSet(STORAGE_KEY, json);
+  await storageSet(LEGACY_STORAGE_KEY, json);
+  await storageSet(ALT_STORAGE_KEY, json);
+}
+
 function generateUUID(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     try {
@@ -192,6 +207,9 @@ class PlayerProfileService {
 
     let raw = await storageGet(STORAGE_KEY);
     if (!raw) {
+      raw = await storageGet(ALT_STORAGE_KEY);
+    }
+    if (!raw) {
       raw = await storageGet(LEGACY_STORAGE_KEY);
     }
 
@@ -214,7 +232,7 @@ class PlayerProfileService {
             id: typeof parsed.id === 'string' && parsed.id ? parsed.id : generateUUID(),
             nickname:
               typeof parsed.nickname === 'string' && parsed.nickname.trim()
-                ? parsed.nickname.trim().slice(0, 15)
+                ? parsed.nickname.trim().slice(0, 16)
                 : 'Player',
             avatarId: typeof parsed.avatarId === 'string' ? parsed.avatarId : 'avatar_1',
             level,
@@ -257,25 +275,23 @@ class PlayerProfileService {
     };
 
     this.cachedProfile = defaultProfile;
-    await storageSet(STORAGE_KEY, JSON.stringify(defaultProfile));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(defaultProfile));
+    await persistProfile(defaultProfile);
     this.notify();
     return defaultProfile;
   }
 
   /**
-   * Updates and persists the player nickname (max 15 characters).
+   * Updates and persists the player nickname (max 16 characters).
    */
   public async updateNickname(name: string): Promise<PlayerProfile> {
     const current = await this.getProfile();
-    const cleanName = name.trim().slice(0, 15) || 'Player';
+    const cleanName = name.trim().slice(0, 16) || 'Player';
     const updated: PlayerProfile = {
       ...current,
       nickname: cleanName,
     };
     this.cachedProfile = updated;
-    await storageSet(STORAGE_KEY, JSON.stringify(updated));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    await persistProfile(updated);
     this.notify();
     return updated;
   }
@@ -291,8 +307,7 @@ class PlayerProfileService {
       avatarId: isValid ? avatarId : 'avatar_1',
     };
     this.cachedProfile = updated;
-    await storageSet(STORAGE_KEY, JSON.stringify(updated));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    await persistProfile(updated);
     this.notify();
     return updated;
   }
@@ -311,16 +326,20 @@ class PlayerProfileService {
       },
     };
     this.cachedProfile = updated;
-    await storageSet(STORAGE_KEY, JSON.stringify(updated));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    await persistProfile(updated);
     this.notify();
     return updated;
   }
 
   /**
    * Awards match rewards (XP and Coins) with Level-Up threshold detection.
-   * - Online Ranked / Standard: 100% rewards (+120 XP / +60 coins on win, +50 XP / +20 coins on loss).
-   * - Bot Match (CPU): strictly 10% rewards (Math.floor(reward * 0.10)).
+   * - Online Ranked / Standard:
+   *   * Win: 100 XP + 50 Coins
+   *   * Loss: 25 XP + 10 Coins
+   * - Bot Match (CPU):
+   *   * Win: 20 XP + 10 Coins
+   *   * Loss: 5 XP + 2 Coins
+   *   * Daily bot earnings soft cap: max 100 coins/day against bots via storage (@rivalcard:daily_bot_earnings)
    * - Pass & Play & Custom Private Rooms: 0 XP and 0 Coins (disabled).
    * When currentXp >= xpToNextLevel: level increments, carry over remainder,
    * next threshold becomes level * 100, bonus +100 Coins & +5 Gems awarded.
@@ -332,18 +351,32 @@ class PlayerProfileService {
   ): Promise<AwardRewardsResult> {
     const current = await this.getProfile();
 
-    const baseXp = isWinner ? 120 : 50;
-    const baseCoins = isWinner ? 60 : 20;
-
     let earnedXp = 0;
     let earnedCoins = 0;
 
     if (matchType === 'online_ranked') {
-      earnedXp = baseXp;
-      earnedCoins = baseCoins;
+      earnedXp = isWinner ? 100 : 25;
+      earnedCoins = isWinner ? 50 : 10;
     } else if (matchType === 'bot') {
-      earnedXp = Math.floor(baseXp * 0.10);
-      earnedCoins = Math.floor(baseCoins * 0.10);
+      earnedXp = isWinner ? 20 : 5;
+      const rawCoins = isWinner ? 10 : 2;
+
+      // Soft cap: max 100 coins/day from bot matches
+      const today = new Date().toISOString().slice(0, 10);
+      const dailyRecord = await this.getDailyBotEarnings();
+      const currentDayCoins = (dailyRecord.date === today) ? (dailyRecord.coinsEarned || 0) : 0;
+
+      const remainingAllowance = Math.max(0, DAILY_BOT_COIN_CAP - currentDayCoins);
+      earnedCoins = Math.min(rawCoins, remainingAllowance);
+
+      // Persist updated daily bot coin earnings
+      await storageSet(
+        DAILY_BOT_STORAGE_KEY,
+        JSON.stringify({
+          date: today,
+          coinsEarned: currentDayCoins + earnedCoins,
+        })
+      );
     } else {
       // 'pass_and_play' or 'custom_private': completely disabled
       earnedXp = 0;
@@ -380,8 +413,7 @@ class PlayerProfileService {
     };
 
     this.cachedProfile = updated;
-    await storageSet(STORAGE_KEY, JSON.stringify(updated));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    await persistProfile(updated);
     this.notify();
 
     return {
@@ -397,6 +429,32 @@ class PlayerProfileService {
   }
 
   /**
+   * Retrieves the current daily bot earnings record.
+   */
+  public async getDailyBotEarnings(): Promise<DailyBotEarnings> {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const raw = await storageGet(DAILY_BOT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.coinsEarned === 'number' && parsed.date === today) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return { date: today, coinsEarned: 0 };
+  }
+
+  /**
+   * Resets the daily bot earnings record (useful for testing or day rollover).
+   */
+  public async resetDailyBotEarnings(): Promise<void> {
+    await storageRemove(DAILY_BOT_STORAGE_KEY);
+  }
+
+  /**
    * Adds coins and/or gems to the player profile.
    */
   public async addCurrency(coins: number, gems: number): Promise<PlayerProfile> {
@@ -407,8 +465,7 @@ class PlayerProfileService {
       gems: current.gems + Math.max(0, gems),
     };
     this.cachedProfile = updated;
-    await storageSet(STORAGE_KEY, JSON.stringify(updated));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    await persistProfile(updated);
     this.notify();
     return updated;
   }
@@ -430,8 +487,7 @@ class PlayerProfileService {
       gems: current.gems - cleanGems,
     };
     this.cachedProfile = updated;
-    await storageSet(STORAGE_KEY, JSON.stringify(updated));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(updated));
+    await persistProfile(updated);
     this.notify();
     return true;
   }
@@ -449,6 +505,8 @@ class PlayerProfileService {
   public async resetProfile(): Promise<PlayerProfile> {
     await storageRemove(STORAGE_KEY);
     await storageRemove(LEGACY_STORAGE_KEY);
+    await storageRemove(ALT_STORAGE_KEY);
+    await storageRemove(DAILY_BOT_STORAGE_KEY);
     this.cachedProfile = null;
     return this.getProfile(true);
   }
@@ -467,8 +525,32 @@ class PlayerProfileService {
       return this.getProfile();
     }
 
-    // 1. Read the current local guest data from AsyncStorage
-    const currentGuest = await this.getProfile();
+    // 1. Grab existing local guest stats FIRST before doing any database write
+    const localGuestData =
+      (await storageGet(ALT_STORAGE_KEY)) ||
+      (await storageGet(STORAGE_KEY)) ||
+      (await storageGet(LEGACY_STORAGE_KEY));
+
+    let guestStats: PlayerProfile | null = null;
+    if (localGuestData) {
+      try {
+        guestStats = JSON.parse(localGuestData);
+      } catch {
+        guestStats = null;
+      }
+    }
+    const currentGuest: PlayerProfile = guestStats || (await this.getProfile());
+
+    const guestCoins = currentGuest.coins ?? 250;
+    const guestGems = currentGuest.gems ?? 10;
+    const guestLevel = currentGuest.level ?? 1;
+    const guestXP = currentGuest.currentXp ?? 0;
+    const guestXpToNextLevel = currentGuest.xpToNextLevel || (guestLevel * 100);
+    const guestGamesPlayed = currentGuest.stats?.gamesPlayed || 0;
+    const guestWins = currentGuest.stats?.wins || 0;
+    const guestWinStreak = currentGuest.stats?.winStreak || 0;
+    const guestNickname = currentGuest.nickname;
+    const guestAvatarId = currentGuest.avatarId;
 
     const authEmail = authUser.email?.trim().toLowerCase() || currentGuest.email;
     const authDisplayName =
@@ -495,41 +577,68 @@ class PlayerProfileService {
           remoteProfile = data;
         }
       } catch (fetchErr) {
-        // In offline mode or when profiles table does not exist, proceed cleanly with local guest preservation
         console.warn('[PlayerProfileService] Could not fetch remote cloud profile (offline/timeout):', fetchErr);
       }
     }
 
+    const remoteCoins = typeof remoteProfile?.coins === 'number' ? remoteProfile.coins : null;
+    const remoteGems = typeof remoteProfile?.gems === 'number' ? remoteProfile.gems : null;
+    const remoteLevel = typeof remoteProfile?.level === 'number' ? remoteProfile.level : null;
+    const remoteCurrentXp =
+      typeof (remoteProfile?.current_xp ?? remoteProfile?.currentXp ?? remoteProfile?.xp) === 'number'
+        ? (remoteProfile.current_xp ?? remoteProfile.currentXp ?? remoteProfile.xp)
+        : null;
+    const remoteGamesPlayed =
+      typeof (remoteProfile?.games_played ?? remoteProfile?.stats?.gamesPlayed) === 'number'
+        ? (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed)
+        : 0;
+    const remoteWins =
+      typeof (remoteProfile?.wins ?? remoteProfile?.stats?.wins) === 'number'
+        ? (remoteProfile.wins ?? remoteProfile.stats?.wins)
+        : 0;
+    const remoteWinStreak =
+      typeof (remoteProfile?.win_streak ?? remoteProfile?.stats?.winStreak) === 'number'
+        ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
+        : 0;
+    const remoteNickname = remoteProfile?.nickname?.trim();
+    const remoteAvatarId = remoteProfile?.avatar_id || remoteProfile?.avatarId;
+
+    const hasRemoteProgress =
+      Boolean(remoteProfile) &&
+      (remoteGamesPlayed > 0 ||
+        (remoteLevel !== null && remoteLevel > 1) ||
+        (remoteCurrentXp !== null && remoteCurrentXp > 0) ||
+        (remoteCoins !== null && remoteCoins > 250));
+
     let merged: PlayerProfile;
 
-    if (!remoteProfile) {
-      // Case A: First-time Google Sign-Up / no remote profile yet
-      // Preserve all guest stats, level, coins, xp, and items so nothing resets to 0!
+    if (!hasRemoteProgress) {
+      // Case A: First-time Google Sign-Up / no existing remote progress yet
+      // Migrate ALL guestStats (XP, coins, inventory, stats) directly to cloud record. Never reset to 0 / Level 1!
       const nickname =
-        currentGuest.nickname && currentGuest.nickname !== 'Player'
-          ? currentGuest.nickname
-          : (authDisplayName ? authDisplayName.slice(0, 15) : (currentGuest.nickname || 'Player'));
+        guestNickname && guestNickname !== 'Player'
+          ? guestNickname
+          : (authDisplayName ? authDisplayName.slice(0, 16) : (guestNickname || 'Player'));
 
       merged = {
         ...currentGuest,
         id: authUser.id,
         email: authEmail,
         nickname,
-        avatarId: currentGuest.avatarId || 'avatar_1',
-        level: currentGuest.level || 1,
-        currentXp: currentGuest.currentXp || 0,
-        xpToNextLevel: currentGuest.xpToNextLevel || 100,
-        coins: currentGuest.coins ?? 250,
-        gems: currentGuest.gems ?? 10,
+        avatarId: guestAvatarId || 'avatar_1',
+        level: guestLevel,
+        currentXp: guestXP,
+        xpToNextLevel: guestXpToNextLevel,
+        coins: guestCoins,
+        gems: guestGems,
         stats: {
-          gamesPlayed: currentGuest.stats?.gamesPlayed || 0,
-          wins: currentGuest.stats?.wins || 0,
-          winStreak: currentGuest.stats?.winStreak || 0,
+          gamesPlayed: guestGamesPlayed,
+          wins: guestWins,
+          winStreak: guestWinStreak,
         },
         isGuest: false,
       };
 
-      // Upsert into Supabase profiles table
       try {
         await Promise.race([
           supabase.from('profiles').upsert({
@@ -555,86 +664,65 @@ class PlayerProfileService {
       }
     } else {
       // Case B: Existing Google Account returning
-      // Compare local guest stats with remote cloud stats and intelligently merge
-      const remoteCoins = typeof remoteProfile.coins === 'number' ? remoteProfile.coins : 250;
-      const remoteGems = typeof remoteProfile.gems === 'number' ? remoteProfile.gems : 10;
-      const remoteLevel = typeof remoteProfile.level === 'number' ? remoteProfile.level : 1;
-      const remoteCurrentXp =
-        typeof (remoteProfile.current_xp ?? remoteProfile.currentXp) === 'number'
-          ? (remoteProfile.current_xp ?? remoteProfile.currentXp)
-          : 0;
-      const remoteXpToNextLevel =
-        typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
-          ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
-          : remoteLevel * 100;
-      const remoteGamesPlayed =
-        typeof (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed) === 'number'
-          ? (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed)
-          : 0;
-      const remoteWins =
-        typeof (remoteProfile.wins ?? remoteProfile.stats?.wins) === 'number'
-          ? (remoteProfile.wins ?? remoteProfile.stats?.wins)
-          : 0;
-      const remoteWinStreak =
-        typeof (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak) === 'number'
-          ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
-          : 0;
-      const remoteNickname = remoteProfile.nickname?.trim();
-      const remoteAvatarId = remoteProfile.avatar_id || remoteProfile.avatarId;
+      // Take the maximum (Math.max(remoteXP, guestXP), Math.max(remoteCoins, guestCoins)) so player never loses earned progress
+      const safeRemoteLevel = remoteLevel ?? 1;
+      const safeRemoteXp = remoteCurrentXp ?? 0;
+      const safeRemoteCoins = remoteCoins ?? 250;
+      const safeRemoteGems = remoteGems ?? 10;
 
-      // Coins merge: guest baseline is 250. Delta earned while offline: Math.max(0, currentGuest.coins - 250).
-      const guestDeltaCoins = Math.max(0, (currentGuest.coins ?? 250) - 250);
-      const mergedCoins = Math.max(remoteCoins + guestDeltaCoins, currentGuest.coins ?? 250, remoteCoins);
+      const guestDeltaCoins = Math.max(0, guestCoins - 250);
+      const mergedCoins = Math.max(safeRemoteCoins, guestCoins, safeRemoteCoins + guestDeltaCoins);
 
-      // Gems merge: guest baseline is 10. Delta: Math.max(0, currentGuest.gems - 10).
-      const guestDeltaGems = Math.max(0, (currentGuest.gems ?? 10) - 10);
-      const mergedGems = Math.max(remoteGems + guestDeltaGems, currentGuest.gems ?? 10, remoteGems);
+      const guestDeltaGems = Math.max(0, guestGems - 10);
+      const mergedGems = Math.max(safeRemoteGems, guestGems, safeRemoteGems + guestDeltaGems);
 
-      // Level and XP merge: take higher level and progress
-      let mergedLevel = remoteLevel;
-      let mergedCurrentXp = remoteCurrentXp;
-      let mergedXpToNextLevel = remoteXpToNextLevel;
+      let mergedLevel = Math.max(safeRemoteLevel, guestLevel);
+      let mergedCurrentXp: number;
+      let mergedXpToNextLevel: number;
 
-      if ((currentGuest.level || 1) > remoteLevel) {
-        mergedLevel = currentGuest.level;
-        mergedCurrentXp = currentGuest.currentXp || 0;
-        mergedXpToNextLevel = currentGuest.xpToNextLevel || mergedLevel * 100;
-      } else if (remoteLevel === (currentGuest.level || 1)) {
-        mergedLevel = remoteLevel;
-        mergedCurrentXp = Math.max(remoteCurrentXp, currentGuest.currentXp || 0);
-        mergedXpToNextLevel = remoteXpToNextLevel;
+      if (guestLevel > safeRemoteLevel) {
+        mergedLevel = guestLevel;
+        mergedCurrentXp = guestXP;
+        mergedXpToNextLevel = guestXpToNextLevel;
+      } else if (safeRemoteLevel > guestLevel) {
+        mergedLevel = safeRemoteLevel;
+        mergedCurrentXp = Math.max(safeRemoteXp, guestXP);
+        mergedXpToNextLevel =
+          typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
+            ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
+            : mergedLevel * 100;
+      } else {
+        mergedLevel = safeRemoteLevel;
+        mergedCurrentXp = Math.max(safeRemoteXp, guestXP);
+        mergedXpToNextLevel =
+          typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
+            ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
+            : mergedLevel * 100;
       }
 
-      // Stats merge: take highest wins/streak and sum games played
       const mergedGamesPlayed = Math.max(
-        remoteGamesPlayed + (currentGuest.stats?.gamesPlayed || 0),
+        remoteGamesPlayed + guestGamesPlayed,
         remoteGamesPlayed,
-        currentGuest.stats?.gamesPlayed || 0
+        guestGamesPlayed
       );
       const mergedWins = Math.max(
-        remoteWins + (currentGuest.stats?.wins || 0),
+        remoteWins + guestWins,
         remoteWins,
-        currentGuest.stats?.wins || 0
+        guestWins
       );
-      const mergedWinStreak = Math.max(remoteWinStreak, currentGuest.stats?.winStreak || 0);
+      const mergedWinStreak = Math.max(remoteWinStreak, guestWinStreak);
 
-      // Nickname merge
       let mergedNickname = remoteNickname || authDisplayName;
       if (!mergedNickname || mergedNickname === 'Player') {
-        if (currentGuest.nickname && currentGuest.nickname !== 'Player') {
-          mergedNickname = currentGuest.nickname;
-        } else {
-          mergedNickname = authDisplayName || 'Player';
-        }
+        mergedNickname = (guestNickname && guestNickname !== 'Player') ? guestNickname : (authDisplayName || 'Player');
       }
 
-      // Avatar merge
-      const mergedAvatarId = remoteAvatarId || currentGuest.avatarId || 'avatar_1';
+      const mergedAvatarId = remoteAvatarId || guestAvatarId || 'avatar_1';
 
       merged = {
         id: authUser.id,
         email: authEmail || remoteProfile.email,
-        nickname: mergedNickname.slice(0, 15),
+        nickname: mergedNickname.slice(0, 16),
         avatarId: mergedAvatarId,
         level: mergedLevel,
         currentXp: mergedCurrentXp,
@@ -649,7 +737,6 @@ class PlayerProfileService {
         isGuest: false,
       };
 
-      // Sync merged result back to Supabase profiles
       try {
         await Promise.race([
           supabase.from('profiles').upsert({
@@ -692,8 +779,7 @@ class PlayerProfileService {
 
     // 3. Write merged profile back to local AsyncStorage and notify all active player state stores / contexts
     this.cachedProfile = merged;
-    await storageSet(STORAGE_KEY, JSON.stringify(merged));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(merged));
+    await persistProfile(merged);
     this.notify();
 
     return merged;
@@ -747,8 +833,7 @@ class PlayerProfileService {
       isGuest: true,
     };
     this.cachedProfile = cleanGuest;
-    await storageSet(STORAGE_KEY, JSON.stringify(cleanGuest));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(cleanGuest));
+    await persistProfile(cleanGuest);
     await storageRemove('@rivalcard:active_online_match');
     this.notify();
     return cleanGuest;
@@ -769,6 +854,7 @@ class PlayerProfileService {
     // Wipe all player keys
     await storageRemove(STORAGE_KEY);
     await storageRemove(LEGACY_STORAGE_KEY);
+    await storageRemove(ALT_STORAGE_KEY);
     await storageRemove('@rivalcard:inventory');
     await storageRemove('@rivalcard:settings');
     await storageRemove('@rivalcard:active_online_match');
@@ -787,8 +873,7 @@ class PlayerProfileService {
       isGuest: true,
     };
     this.cachedProfile = freshGuest;
-    await storageSet(STORAGE_KEY, JSON.stringify(freshGuest));
-    await storageSet(LEGACY_STORAGE_KEY, JSON.stringify(freshGuest));
+    await persistProfile(freshGuest);
     this.notify();
     return freshGuest;
   }

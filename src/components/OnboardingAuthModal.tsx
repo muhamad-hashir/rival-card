@@ -2,7 +2,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   ActivityIndicator,
-  Linking,
   Modal,
   Platform,
   StyleSheet,
@@ -11,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { authService } from '../services/authService';
+import { authService, sendEmailOtp, verifyEmailOtp } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
@@ -31,7 +30,6 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
   visible,
   onSuccess,
 }) => {
-  const [isSigningIn, setIsSigningIn] = useState(false);
   const [authMode, setAuthMode] = useState<'welcome' | 'email_input' | 'otp_verify'>('welcome');
   const [emailInput, setEmailInput] = useState('');
   const [otpInput, setOtpInput] = useState('');
@@ -47,7 +45,6 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
       setOtpInput('');
       setAuthError(null);
       setCountdown(0);
-      setIsSigningIn(false);
       setIsSendingOtp(false);
       setIsVerifyingOtp(false);
     }
@@ -62,7 +59,6 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
   }, [countdown]);
 
   const handleContinueAsGuest = async () => {
-    if (isSigningIn) return;
     hapticsService.cardSnap();
     soundService.playCardSnap();
 
@@ -72,44 +68,6 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
     } catch (err) {
       console.warn('Guest onboarding init error:', err);
       onSuccess();
-    }
-  };
-
-  const handleGoogleSignIn = async () => {
-    if (isSigningIn) return;
-    setIsSigningIn(true);
-    hapticsService.cardSnap();
-    soundService.playCardSnap();
-
-    try {
-      const res = await authService.signInWithGoogle();
-      if (!res.success) {
-        errorToastService.showWarning(
-          'Sign-in was canceled or timed out. Continuing in Guest mode.',
-          4000
-        );
-        await authService.initGuestProfile();
-        onSuccess();
-      } else {
-        if (res.url && Platform.OS !== 'web') {
-          try {
-            await Linking.openURL(res.url);
-          } catch (e) {
-            console.warn('[OnboardingAuthModal] Could not open external OAuth URL:', e);
-          }
-        }
-        soundService.playWinChime();
-        onSuccess();
-      }
-    } catch {
-      errorToastService.showWarning(
-        'Sign-in was canceled or timed out. Continuing in Guest mode.',
-        4000
-      );
-      await authService.initGuestProfile();
-      onSuccess();
-    } finally {
-      setIsSigningIn(false);
     }
   };
 
@@ -133,19 +91,15 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
     soundService.playCardSnap();
 
     try {
-      const res = await authService.sendEmailOtp(cleanEmail);
-      if (!res.success) {
-        setAuthError(res.error || 'Failed to send verification code.');
-      } else {
-        setAuthMode('otp_verify');
-        setCountdown(60);
-        soundService.playCardSnap();
-        errorToastService.show({
-          message: 'Verification code sent to your email!',
-          type: 'info',
-          durationMs: 3000,
-        });
-      }
+      await sendEmailOtp(cleanEmail);
+      setAuthMode('otp_verify');
+      setCountdown(60);
+      soundService.playCardSnap();
+      errorToastService.show({
+        message: 'Verification code sent to your email!',
+        type: 'info',
+        durationMs: 3000,
+      });
     } catch (err: any) {
       setAuthError(err?.message || 'Failed to send verification code.');
     } finally {
@@ -173,20 +127,16 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
     soundService.playCardSnap();
 
     try {
-      const res = await authService.verifyEmailOtp(emailInput, cleanToken);
-      if (!res.success) {
-        setAuthError(res.error || 'Invalid or expired code. Please try again.');
-      } else {
-        soundService.playWinChime();
-        errorToastService.show({
-          message: 'Signed in successfully!',
-          type: 'info',
-          durationMs: 3000,
-        });
-        onSuccess();
-      }
+      await verifyEmailOtp(emailInput, cleanToken);
+      soundService.playWinChime();
+      errorToastService.show({
+        message: 'Signed in successfully!',
+        type: 'info',
+        durationMs: 3000,
+      });
+      onSuccess();
     } catch (err: any) {
-      setAuthError(err?.message || 'Verification failed. Please check the code.');
+      setAuthError(err?.message || 'Invalid or expired code. Please try again.');
     } finally {
       setIsVerifyingOtp(false);
     }
@@ -241,32 +191,12 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={handleContinueAsGuest}
-                disabled={isSigningIn}
                 style={styles.guestBtn}
               >
                 <Text style={styles.guestBtnText}>Continue as Guest ➔</Text>
               </TouchableOpacity>
 
-              {/* Action 2: Sign in with Google */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={handleGoogleSignIn}
-                disabled={isSigningIn}
-                style={styles.googleBtn}
-              >
-                {isSigningIn ? (
-                  <ActivityIndicator color="#0F172A" size="small" />
-                ) : (
-                  <View style={styles.googleBtnContent}>
-                    <View style={styles.googleIconBadge}>
-                      <Text style={styles.googleIconText}>G</Text>
-                    </View>
-                    <Text style={styles.googleBtnText}>Sign in with Google</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-
-              {/* Action 3: Sign in with Email */}
+              {/* Action 2: Connect via Gmail / Email */}
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={() => {
@@ -275,18 +205,17 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
                   setAuthError(null);
                   setAuthMode('email_input');
                 }}
-                disabled={isSigningIn}
                 style={styles.emailBtn}
               >
                 <View style={styles.emailBtnContent}>
                   <Text style={styles.emailBtnIcon}>✉️</Text>
-                  <Text style={styles.emailBtnText}>Sign in with Email Code</Text>
+                  <Text style={styles.emailBtnText}>Connect via Gmail / Email</Text>
                 </View>
               </TouchableOpacity>
 
               {/* Privacy Note Footnote */}
               <Text style={styles.footnoteText}>
-                You can always link your account later in Settings.
+                You can always link your account later in your Profile settings.
               </Text>
             </>
           )}

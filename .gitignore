@@ -41,7 +41,9 @@ yarn-error.*
 Thumbs.db
 ehthumbs.db
 
-# IDE agent and AI workspace configs
+# Agent context and workspace files
+AGENT.md
+AGENTS.md
 .agent/
 .gemini/
 .impeccable/

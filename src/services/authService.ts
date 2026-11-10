@@ -70,6 +70,39 @@ export function parseAuthParams(queryString: string): Record<string, string> {
   return result;
 }
 
+/**
+ * Sends a 6-digit OTP verification code to the specified email address.
+ */
+export const sendEmailOtp = async (email: string) => {
+  const cleanEmail = email.trim().toLowerCase();
+  const { data, error } = await supabase.auth.signInWithOtp({
+    email: cleanEmail,
+    options: {
+      shouldCreateUser: true,
+    },
+  });
+  if (error) throw error;
+  return data;
+};
+
+/**
+ * Verifies the 6-digit OTP code sent to user email and establishes an authenticated session,
+ * seamlessly migrating and linking guest progression to cloud account.
+ */
+export const verifyEmailOtp = async (email: string, token: string) => {
+  const cleanEmail = email.trim().toLowerCase();
+  const { data, error } = await supabase.auth.verifyOtp({
+    email: cleanEmail,
+    token: token.trim(),
+    type: 'email',
+  });
+  if (error) throw error;
+  if (data?.session?.user) {
+    await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
+  }
+  return data;
+};
+
 class AuthService {
   /**
    * Checks whether the user has completed the first-launch onboarding flow.
@@ -119,102 +152,21 @@ class AuthService {
   }
 
   /**
-   * Triggers Supabase OAuth with Google.
-   */
-  public async signInWithGoogle(): Promise<{ success: boolean; url?: string; error?: string }> {
-    try {
-      const isWeb =
-        typeof window !== 'undefined' &&
-        typeof window.location !== 'undefined' &&
-        typeof window.document !== 'undefined';
-      const redirectUrl = isWeb
-        ? window.location.origin
-        : 'rivalcard://auth/callback';
-
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: redirectUrl,
-          skipBrowserRedirect: false,
-        },
-      });
-
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      await this.completeOnboarding();
-      return { success: true, url: data?.url };
-    } catch (err: any) {
-      return { success: false, error: err?.message || 'Google Sign-in failed' };
-    }
-  }
-
-  /**
    * Sends a 6-digit OTP verification code to the specified email address.
    */
-  public async sendEmailOtp(email: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      const cleanEmail = email.trim().toLowerCase();
-      if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-        return { success: false, error: 'Please enter a valid email address.' };
-      }
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email: cleanEmail,
-        options: {
-          shouldCreateUser: true,
-        },
-      });
-
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err?.message || 'Failed to send verification code.' };
-    }
+  public async sendEmailOtp(email: string) {
+    return sendEmailOtp(email);
   }
 
   /**
    * Verifies the 6-digit OTP code sent to user email and establishes an authenticated session.
    */
-  public async verifyEmailOtp(
-    email: string,
-    token: string
-  ): Promise<{ success: boolean; profile?: PlayerProfile; error?: string }> {
-    try {
-      const cleanEmail = email.trim().toLowerCase();
-      const cleanToken = token.trim();
-
-      if (!cleanEmail) {
-        return { success: false, error: 'Email address is required.' };
-      }
-      if (!cleanToken || cleanToken.length < 6) {
-        return { success: false, error: 'Please enter a valid 6-digit verification code.' };
-      }
-
-      const { data, error } = await supabase.auth.verifyOtp({
-        email: cleanEmail,
-        token: cleanToken,
-        type: 'email',
-      });
-
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      await this.completeOnboarding();
-      const profile = await this.syncAuthSessionToProfile();
-      return { success: true, profile };
-    } catch (err: any) {
-      return { success: false, error: err?.message || 'Verification failed. Please check the code.' };
-    }
+  public async verifyEmailOtp(email: string, token: string) {
+    return verifyEmailOtp(email, token);
   }
 
   /**
-   * Handles incoming deep links (e.g. rivalcard://auth/callback?code=... or #access_token=...)
+   * Handles incoming session deep links (e.g. #access_token=...&refresh_token=...)
    */
   public async handleAuthDeepLink(url: string): Promise<{ success: boolean; session?: any; error?: string }> {
     try {
@@ -240,31 +192,7 @@ class AuthService {
         return { success: false, error: errorDesc.replace(/\+/g, ' ') };
       }
 
-      // 2. PKCE Authorization Code Exchange (?code=...)
-      if (url.includes('code=')) {
-        let code: string | null = null;
-        try {
-          const urlObj = new URL(url);
-          code = urlObj.searchParams.get('code');
-        } catch {
-          const query = url.split('?')[1]?.split('#')[0] || '';
-          code = parseAuthParams(query).code || null;
-        }
-
-        if (code) {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) {
-            return { success: false, error: error.message };
-          }
-          if (data?.session?.user) {
-            await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
-          }
-          await this.completeOnboarding();
-          return { success: true, session: data?.session };
-        }
-      }
-
-      // 3. Hash Fragment Access Token (#access_token=...&refresh_token=...)
+      // 2. Hash Fragment Access Token (#access_token=...&refresh_token=...)
       if (url.includes('#access_token=') || (url.includes('#') && url.includes('access_token='))) {
         const hashPart = url.split('#')[1] || '';
         const params = new URLSearchParams(hashPart);
@@ -284,7 +212,7 @@ class AuthService {
         }
       }
 
-      // 4. Query Parameter Fallback (?access_token=...&refresh_token=...)
+      // 3. Query Parameter Fallback (?access_token=...&refresh_token=...)
       if (url.includes('access_token=') && url.includes('refresh_token=')) {
         let access_token: string | null = null;
         let refresh_token: string | null = null;

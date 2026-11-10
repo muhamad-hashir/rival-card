@@ -3,7 +3,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   AppState,
   AppStateStatus,
-  Linking,
   Platform,
   StyleSheet,
 } from 'react-native';
@@ -97,47 +96,14 @@ function MainAppContent() {
     };
   }, []);
 
-  // 2. Deep Linking listener for Supabase OAuth callbacks (rivalcard://auth/callback)
-  useEffect(() => {
-    const handleAuthUrl = async (event: { url: string }) => {
-      if (!event?.url) return;
-      try {
-        const res = await authService.handleAuthDeepLink(event.url);
-        if (res?.success) {
-          soundService.playWinChime();
-          await playerProfileService.getProfile(true);
-        }
-      } catch (err) {
-        console.warn('[RivalCard DeepLink] Error handling auth redirect url:', err);
-      }
-    };
-
-    // Cold start URL check
-    Linking.getInitialURL()
-      .then((url) => {
-        if (url) {
-          handleAuthUrl({ url });
-        }
-      })
-      .catch((err) => {
-        console.warn('[RivalCard DeepLink] getInitialURL warning:', err);
-      });
-
-    // Warm background resume listener
-    const linkSub = Linking.addEventListener('url', handleAuthUrl);
-
-    return () => {
-      linkSub.remove();
-    };
-  }, []);
-
-  // 3. Supabase Auth State Change listener to sync profile
+  // 2. Supabase Auth State Change listener to sync profile and set isGuest: false
   useEffect(() => {
     const { data: authListener } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && session?.user) {
           try {
             await playerProfileService.migrateAndLinkGuestAccount(session.user);
+            await playerProfileService.getProfile(true);
           } catch (e) {
             console.warn('[App] onAuthStateChange migrate error:', e);
           }

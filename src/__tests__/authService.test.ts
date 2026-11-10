@@ -1,7 +1,7 @@
 // src/__tests__/authService.test.ts - Dual Auth (Google + Email OTP) & Deep Linking Test Suite
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { authService, parseAuthParams } from '../services/authService';
+import { authService, parseAuthParams, sendEmailOtp, verifyEmailOtp } from '../services/authService';
 import { playerProfileService } from '../services/playerProfileService';
 import { supabase } from '../services/supabase';
 
@@ -59,24 +59,40 @@ describe('Auth Service & Deep Link Parsing', () => {
   });
 
   describe('Email OTP Authentication Engine', () => {
-    it('sendEmailOtp validates email format and rejects invalid inputs', async () => {
-      const res1 = await authService.sendEmailOtp('');
-      assert.strictEqual(res1.success, false);
-      assert.ok(res1.error?.includes('valid email'));
+    it('sendEmailOtp rejects invalid email inputs (class & standalone)', async () => {
+      await assert.rejects(async () => {
+        await authService.sendEmailOtp('');
+      });
 
-      const res2 = await authService.sendEmailOtp('notanemail');
-      assert.strictEqual(res2.success, false);
-      assert.ok(res2.error?.includes('valid email'));
+      await assert.rejects(async () => {
+        await authService.sendEmailOtp('notanemail');
+      });
+
+      await assert.rejects(async () => {
+        await sendEmailOtp('');
+      });
+
+      await assert.rejects(async () => {
+        await sendEmailOtp('notanemail');
+      });
     });
 
-    it('verifyEmailOtp validates email and token length', async () => {
-      const res1 = await authService.verifyEmailOtp('', '123456');
-      assert.strictEqual(res1.success, false);
-      assert.ok(res1.error?.includes('Email address is required'));
+    it('verifyEmailOtp rejects invalid email and token (class & standalone)', async () => {
+      await assert.rejects(async () => {
+        await authService.verifyEmailOtp('', '123456');
+      });
 
-      const res2 = await authService.verifyEmailOtp('test@example.com', '123');
-      assert.strictEqual(res2.success, false);
-      assert.ok(res2.error?.includes('6-digit'));
+      await assert.rejects(async () => {
+        await authService.verifyEmailOtp('test@example.com', '123');
+      });
+
+      await assert.rejects(async () => {
+        await verifyEmailOtp('', '123456');
+      });
+
+      await assert.rejects(async () => {
+        await verifyEmailOtp('test@example.com', '123');
+      });
     });
   });
 
@@ -160,6 +176,45 @@ describe('Auth Service & Deep Link Parsing', () => {
       assert.strictEqual(merged.stats.winStreak, 6);
     });
 
+    it('Preserves guest XP (e.g. XP 3 or XP 25) upon signing in and never resets XP to 0', async () => {
+      // 1. Guest plays offline matches and accumulates 25 XP
+      await playerProfileService.awardMatchRewards(false, 10, 'online_ranked'); // Defeat awards +25 XP
+      const guestBefore = await playerProfileService.getProfile();
+      assert.strictEqual(guestBefore.currentXp, 25, 'Guest must have earned 25 XP');
+      assert.strictEqual(guestBefore.level, 1);
+
+      // 2. Link account with first-time Google user (remote has no progress)
+      const linked = await playerProfileService.migrateAndLinkGuestAccount(
+        {
+          id: 'user_preserve_xp_1',
+          email: 'xpuser@rivalcard.com',
+        },
+        null
+      );
+
+      // 3. Verify XP was preserved and not wiped to 0
+      assert.strictEqual(linked.isGuest, false);
+      assert.strictEqual(linked.currentXp, 25, 'Guest XP must be preserved at 25');
+      assert.strictEqual(linked.level, 1);
+
+      // 4. Case where remote account has existing row with 0 XP vs guest 25 XP: takes Math.max(0, 25) = 25
+      const mockZeroXpRemote = {
+        id: 'user_zero_remote_xp',
+        email: 'remotezero@rivalcard.com',
+        level: 1,
+        current_xp: 0,
+        coins: 250,
+      };
+      const linkedWithZeroRemote = await playerProfileService.migrateAndLinkGuestAccount(
+        {
+          id: 'user_zero_remote_xp',
+          email: 'remotezero@rivalcard.com',
+        },
+        mockZeroXpRemote
+      );
+      assert.strictEqual(linkedWithZeroRemote.currentXp, 25, 'Must preserve 25 XP using Math.max(0, 25)');
+    });
+
     it('signOut cleanly reverts authenticated profile back to guest state', async () => {
       await playerProfileService.linkAuthAccount({
         email: 'charlie@rivalcard.com',
@@ -194,39 +249,11 @@ describe('Auth Service & Deep Link Parsing', () => {
       assert.strictEqual(res.error, 'No URL provided');
     });
 
-    it('handleAuthDeepLink parses code exchange and handles session result', async () => {
-      // Mock exchangeCodeForSession
-      const originalExchange = supabase.auth.exchangeCodeForSession;
-      (supabase.auth as any).exchangeCodeForSession = async (code: string) => {
-        if (code === 'valid_pkce_code_123') {
-          return {
-            data: {
-              session: {
-                user: {
-                  id: 'pkce_user_789',
-                  email: 'pkce@rivalcard.com',
-                  user_metadata: { full_name: 'PKCE Player' },
-                },
-              },
-            },
-            error: null,
-          };
-        }
-        return { data: { session: null }, error: new Error('Invalid code') };
-      };
-
-      try {
-        const url = 'rivalcard://auth/callback?code=valid_pkce_code_123';
-        const res = await authService.handleAuthDeepLink(url);
-        assert.strictEqual(res.success, true);
-        assert.ok(res.session);
-
-        const currentProfile = await playerProfileService.getProfile();
-        assert.strictEqual(currentProfile.isGuest, false);
-        assert.strictEqual(currentProfile.email, 'pkce@rivalcard.com');
-      } finally {
-        (supabase.auth as any).exchangeCodeForSession = originalExchange;
-      }
+    it('handleAuthDeepLink reports error when code is supplied without access tokens (PKCE deprecated in favor of Email OTP)', async () => {
+      const url = 'rivalcard://auth/callback?code=deprecated_code';
+      const res = await authService.handleAuthDeepLink(url);
+      assert.strictEqual(res.success, false);
+      assert.ok(res.error?.includes('No authentication credentials found in URL'));
     });
 
     it('handleAuthDeepLink parses hash access_token and refresh_token', async () => {

@@ -23,7 +23,7 @@ describe('Player Profile Service (Guest Profile System)', () => {
     assert.strictEqual(profile.stats.winStreak, 0);
   });
 
-  it('updates and persists nickname with trimming and 15-char limit', async () => {
+  it('updates and persists nickname with trimming and 16-char limit', async () => {
     const updated = await playerProfileService.updateNickname('  AcePlayer  ');
     assert.strictEqual(updated.nickname, 'AcePlayer');
 
@@ -31,10 +31,10 @@ describe('Player Profile Service (Guest Profile System)', () => {
     const fetched = await playerProfileService.getProfile();
     assert.strictEqual(fetched.nickname, 'AcePlayer');
 
-    // Test max length trimming
+    // Test max length trimming (16 chars)
     const longName = await playerProfileService.updateNickname('SuperUltraChampionPlayer');
-    assert.strictEqual(longName.nickname.length, 15);
-    assert.strictEqual(longName.nickname, 'SuperUltraChamp');
+    assert.strictEqual(longName.nickname.length, 16);
+    assert.strictEqual(longName.nickname, 'SuperUltraChampi');
 
     // Fallback to 'Player' on empty string
     const empty = await playerProfileService.updateNickname('   ');

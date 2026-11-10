@@ -68,6 +68,44 @@ The game features an arcade sound system managed by `audioService`:
 
 ---
 
+## 🔐 Authentication & Cloud Data Migration Architecture
+
+### 1. In-App Passwordless Email OTP
+- **In-App Verification**: Completely replaces external browser redirects with a native **Supabase Email OTP (One-Time Password)** flow. Users enter their Gmail or email address and verify with a 6-digit security code directly inside the game modal.
+- **Zero Redirect Dependencies**: Eliminates OAuth callback URI schemes, external browser tabs, and PKCE redirect failures on Android and iOS.
+
+### 2. Guaranteed Guest Progress Preservation
+- **Local-First Gameplay**: First-launch and offline players jump straight into the action in Guest mode with immediate access to matches and progression.
+- **Seamless Cloud Account Linking**:
+  - When connecting an email account, local stats (XP, level, coins, gems, win streaks, and unlocked cosmetics) are read from persistent storage **before** network writes.
+  - **New Cloud Account**: Local guest progression is upserted directly into Supabase `profiles` with `is_guest: false`. XP, coins, and levels are **never** wiped to 0.
+  - **Returning Cloud Account**: Merges using `Math.max(remoteVal, guestVal)` plus earned session delta coins, ensuring player achievements on either device are strictly preserved.
+
+---
+
+## 🪙 Game Economy & Reward Balancing
+
+To prevent automated grinding while rewarding competitive multiplayer skill, Rival Card balances economy rewards across match types:
+
+| Match Type | Victory Reward | Defeat Reward | Economy Balancing Rules |
+| :--- | :--- | :--- | :--- |
+| ⚡ **Online Quick Match** | **+100 XP** / **+50 Coins** | **+25 XP** / **+10 Coins** | Full base payouts; levels up player profile and unlocks cosmetics. |
+| 🤖 **Offline VS Bot** | **+20 XP** / **+10 Coins** | **+5 XP** / **+2 Coins** | Scaled-down rewards with an enforced **100-coin daily soft cap** (`@rivalcard:daily_bot_earnings`) to prevent infinite offline farming. |
+| 👥 **Pass & Play** | **0 XP** / **0 Coins** | **0 XP** / **0 Coins** | Casual local multiplayer; excluded from currency farming. |
+
+---
+
+## 📱 Immersive Mobile Experience & UX Polish
+
+- **Sticky-Immersive Fullscreen Mode**: Android system bars and 3-button navigation bars are hidden on boot (`overlay-swipe` behavior) so the landscape playfield remains completely uninterrupted.
+- **Profanity-Filtered Username Editor**:
+  - Independent typing buffer allows clearing and editing names freely.
+  - Enforces minimum 3 characters and maximum 16 characters.
+  - Normalizes leetspeak and filters inappropriate names with visual feedback before persisting.
+- **Comic Arcade Aesthetic**: Dynamic Fredoka typography, tactile haptic bumps on card snaps, 3D glint cards, and celebration confetti.
+
+---
+
 ## 📁 Repository Structure
 
 ```text

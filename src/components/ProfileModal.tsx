@@ -1,8 +1,7 @@
 // src/components/ProfileModal.tsx - Lightweight profile editor and stats modal
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ActivityIndicator,
-  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -19,7 +18,7 @@ import {
   getAvatarConfig,
   playerProfileService,
 } from '../services/playerProfileService';
-import { authService } from '../services/authService';
+import { authService, sendEmailOtp, verifyEmailOtp } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
 import { networkService } from '../services/networkService';
 import {
@@ -29,6 +28,8 @@ import {
 } from '../styles/typography';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import { validateUsername } from '../utils/contentFilter';
+import { supabase } from '../services/supabase';
 
 export interface ProfileModalProps {
   visible: boolean;
@@ -43,15 +44,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onClose,
   onSave,
 }) => {
-  const [nickname, setNickname] = useState<string>(profile.nickname);
+  // Isolated local input buffer (allows clearing freely without forcing 'Player' while typing)
+  const [inputValue, setInputValue] = useState<string>(profile.nickname || 'Player');
+  const [nameError, setNameError] = useState<string | null>(null);
   const [selectedAvatarId, setSelectedAvatarId] = useState<string>(profile.avatarId);
   const [isSaving, setIsSaving] = useState(false);
-  const [isSigningIn, setIsSigningIn] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [session, setSession] = useState<any>(null);
 
-  // Email OTP Flow state
-  const [authMode, setAuthMode] = useState<'options' | 'email_input' | 'otp_verify'>('options');
+  // Email OTP Flow state ("enter_email" -> "enter_code")
+  const [authStep, setAuthStep] = useState<'enter_email' | 'enter_code'>('enter_email');
   const [emailInput, setEmailInput] = useState('');
   const [otpInput, setOtpInput] = useState('');
   const [isSendingOtp, setIsSendingOtp] = useState(false);
@@ -59,26 +61,43 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [authError, setAuthError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
 
+  // Listen to Supabase auth session changes for real-time connected state
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data?.session) {
+        setSession(data.session);
+      }
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
   // Sync state whenever modal opens or profile changes
   useEffect(() => {
     if (visible) {
-      setNickname(profile.nickname);
+      setInputValue(profile.nickname || 'Player');
+      setNameError(null);
       setSelectedAvatarId(profile.avatarId);
       setIsSaving(false);
-      setIsSigningIn(false);
       setSaveStatus('idle');
-      setAuthMode('options');
+      setAuthStep('enter_email');
       setEmailInput('');
       setOtpInput('');
       setAuthError(null);
       setCountdown(0);
+      setIsSendingOtp(false);
+      setIsVerifyingOtp(false);
     }
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
   }, [visible, profile]);
+
+  const isConnected = !profile.isGuest || Boolean(session?.user);
+  const connectedEmail = session?.user?.email || profile.email;
 
   // Countdown timer for OTP resend
   useEffect(() => {
@@ -95,61 +114,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       ? Math.round((profile.stats.wins / profile.stats.gamesPlayed) * 100)
       : 0;
 
-  const handleGoogleSignIn = async () => {
-    if (isSigningIn) return;
-    hapticsService.cardSnap();
-    soundService.playCardSnap();
-
-    // Fast offline check
-    const isOnline = await networkService.isOnline();
-    if (!isOnline) {
-      errorToastService.showWarning(
-        "You're disconnected! Please check your connection and try again.",
-        4000
-      );
-      return;
-    }
-
-    setIsSigningIn(true);
-    try {
-      const res = await authService.signInWithGoogle();
-      if (!res.success) {
-        errorToastService.showWarning(
-          res.error || 'Google sign-in was cancelled or timed out.',
-          4000
-        );
-      } else {
-        if (res.url && Platform.OS !== 'web') {
-          try {
-            await Linking.openURL(res.url);
-          } catch (e) {
-            console.warn('[ProfileModal] Could not open external OAuth URL:', e);
-          }
-        }
-        soundService.playWinChime();
-        errorToastService.show({
-          message: 'Signing in with Google...',
-          type: 'info',
-          durationMs: 3000,
-        });
-        await playerProfileService.getProfile(true);
-      }
-    } catch (err: any) {
-      errorToastService.showWarning(
-        err?.message || 'Google sign-in was cancelled or timed out.',
-        4000
-      );
-    } finally {
-      setIsSigningIn(false);
-    }
-  };
-
   const handleSendOtp = async () => {
     if (isSendingOtp) return;
     setAuthError(null);
     const cleanEmail = emailInput.trim();
     if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setAuthError('Please enter a valid email address.');
+      setAuthError('Please enter a valid Gmail or email address.');
       return;
     }
 
@@ -164,19 +134,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     soundService.playCardSnap();
 
     try {
-      const res = await authService.sendEmailOtp(cleanEmail);
-      if (!res.success) {
-        setAuthError(res.error || 'Failed to send verification code.');
-      } else {
-        setAuthMode('otp_verify');
-        setCountdown(60);
-        soundService.playCardSnap();
-        errorToastService.show({
-          message: 'Verification code sent to your email!',
-          type: 'info',
-          durationMs: 3000,
-        });
-      }
+      await sendEmailOtp(cleanEmail);
+      setAuthStep('enter_code');
+      setCountdown(60);
+      soundService.playCardSnap();
+      errorToastService.show({
+        message: 'Verification code sent to your email!',
+        type: 'info',
+        durationMs: 3000,
+      });
     } catch (err: any) {
       setAuthError(err?.message || 'Failed to send verification code.');
     } finally {
@@ -204,21 +170,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     soundService.playCardSnap();
 
     try {
-      const res = await authService.verifyEmailOtp(emailInput, cleanToken);
-      if (!res.success) {
-        setAuthError(res.error || 'Invalid or expired code. Please try again.');
-      } else {
-        soundService.playWinChime();
-        errorToastService.show({
-          message: 'Signed in successfully!',
-          type: 'info',
-          durationMs: 3000,
-        });
-        setAuthMode('options');
-        setEmailInput('');
-        setOtpInput('');
-        await playerProfileService.getProfile(true);
-      }
+      await verifyEmailOtp(emailInput, cleanToken);
+      soundService.playWinChime();
+      errorToastService.show({
+        message: 'Connected successfully! Progress saved to cloud.',
+        type: 'info',
+        durationMs: 3000,
+      });
+      setAuthStep('enter_email');
+      setEmailInput('');
+      setOtpInput('');
+      await playerProfileService.getProfile(true);
     } catch (err: any) {
       setAuthError(err?.message || 'Verification failed. Please check the code.');
     } finally {
@@ -231,12 +193,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     soundService.playCardDraw();
     try {
       await authService.signOut();
+      setSession(null);
       errorToastService.show({
         message: 'Signed out. Playing as Guest.',
         type: 'info',
         durationMs: 2500,
       });
-      setAuthMode('options');
+      setAuthStep('enter_email');
       setEmailInput('');
       setOtpInput('');
       setAuthError(null);
@@ -260,70 +223,68 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  // Debounced auto-save on nickname keystrokes
-  const handleNicknameChange = (text: string) => {
-    setNickname(text);
-    setSaveStatus('saving');
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-    debounceTimerRef.current = setTimeout(async () => {
-      const clean = text.trim() || 'Player';
-      try {
-        await playerProfileService.updateNickname(clean);
-        setSaveStatus('saved');
-      } catch (err) {
-        console.warn('Failed to auto-save nickname:', err);
-      }
-    }, 350);
+  // Keystroke handler: updates local buffer freely without debounced overwriting to 'Player'
+  const handleNameChange = (text: string) => {
+    setInputValue(text);
+    if (nameError) setNameError(null);
+    if (saveStatus !== 'idle') setSaveStatus('idle');
   };
 
-  // Immediate save on blur or submit
-  const handleNicknameCommit = async () => {
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
+  // On blur handler: reverts empty input to previous name, or validates if typed
+  const handleNameBlur = () => {
+    const trimmed = inputValue.trim();
+    if (trimmed.length === 0) {
+      // If abandoned completely empty on blur, revert to previous name
+      setInputValue(profile.nickname || 'Player');
+      setNameError(null);
+      return;
     }
-    const clean = nickname.trim() || 'Player';
-    setSaveStatus('saving');
-    try {
-      await playerProfileService.updateNickname(clean);
-      setSaveStatus('saved');
-    } catch (err) {
-      console.warn('Failed to commit nickname:', err);
+    if (trimmed.length < 3) {
+      setNameError('Name must be at least 3 characters');
+      return;
+    }
+    const valResult = validateUsername(trimmed);
+    if (!valResult.isValid) {
+      setNameError(valResult.error || 'Invalid username');
+    } else {
+      setNameError(null);
     }
   };
 
-  // Safe close that flushes any pending nickname updates
-  const handleClose = async () => {
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
-    }
-    const clean = nickname.trim() || 'Player';
-    try {
-      await playerProfileService.updateNickname(clean);
-      await playerProfileService.updateAvatar(selectedAvatarId);
-    } catch {
-      // ignore
-    }
+  // Safe close: discards uncommitted nickname changes without forcing 'Player'
+  const handleClose = () => {
+    setNameError(null);
     onClose();
   };
 
   const handleSave = async () => {
+    const trimmed = inputValue.trim();
+    if (trimmed.length < 3) {
+      setNameError('Name must be at least 3 characters');
+      hapticsService.cardSelection();
+      soundService.playCardSnap();
+      return;
+    }
+
+    // 1. Validate username criteria (3-16 chars, profanity filter, leetspeak)
+    const validation = validateUsername(trimmed);
+    if (!validation.isValid) {
+      setNameError(validation.error || 'Invalid username');
+      hapticsService.cardSelection();
+      soundService.playCardSnap();
+      return;
+    }
+
+    setNameError(null);
+    setIsSaving(true);
     hapticsService.cardSnap();
     soundService.playCardDraw();
-    setIsSaving(true);
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
-    }
+
     try {
-      const clean = nickname.trim() || 'Player';
-      await playerProfileService.updateNickname(clean);
+      await playerProfileService.updateNickname(trimmed);
       await playerProfileService.updateAvatar(selectedAvatarId);
       setSaveStatus('saved');
-      await onSave(clean, selectedAvatarId);
+      await onSave(trimmed, selectedAvatarId);
       onClose();
     } catch (err) {
       console.warn('Failed to save profile:', err);
@@ -371,7 +332,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 <Text style={styles.largeAvatarEmoji}>{activeAvatar.emoji}</Text>
               </View>
 
-              {profile.isGuest ? (
+              {!isConnected ? (
                 <View style={styles.guestBadge}>
                   <Text style={styles.guestBadgeDot}>●</Text>
                   <Text style={styles.guestBadgeText}>Guest Account</Text>
@@ -380,7 +341,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 <View style={styles.verifiedBadge}>
                   <Text style={styles.verifiedBadgeDot}>✓</Text>
                   <Text style={styles.verifiedBadgeText}>
-                    {profile.email || 'Cloud Account'}
+                    {connectedEmail || 'Cloud Account'}
                   </Text>
                 </View>
               )}
@@ -434,29 +395,35 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             <View style={styles.inputSection}>
               <View style={styles.inputHeaderRow}>
                 <Text style={styles.inputLabel}>YOUR NICKNAME</Text>
-                {saveStatus === 'saved' && (
-                  <View style={styles.savedBadge}>
-                    <Text style={styles.savedCheckmark}>✓</Text>
-                    <Text style={styles.savedText}>Saved</Text>
-                  </View>
-                )}
-                {saveStatus === 'saving' && (
-                  <View style={styles.savingBadge}>
-                    <Text style={styles.savingText}>Saving...</Text>
-                  </View>
-                )}
+                <View style={styles.inputStatusRow}>
+                  {saveStatus === 'saved' && (
+                    <View style={styles.savedBadge}>
+                      <Text style={styles.savedCheckmark}>✓</Text>
+                      <Text style={styles.savedText}>Saved</Text>
+                    </View>
+                  )}
+                  <Text style={styles.charCountBadge}>{inputValue.length}/16</Text>
+                </View>
               </View>
               <TextInput
-                style={styles.nicknameInput}
-                value={nickname}
-                onChangeText={handleNicknameChange}
-                onEndEditing={handleNicknameCommit}
-                onBlur={handleNicknameCommit}
-                placeholder="Enter your name"
+                style={[styles.nicknameInput, !!nameError && styles.nicknameInputError]}
+                value={inputValue}
+                onChangeText={handleNameChange}
+                onBlur={handleNameBlur}
+                onSubmitEditing={handleSave}
+                placeholder="Enter name (min 3 chars)"
                 placeholderTextColor="#94A3B8"
-                maxLength={15}
+                maxLength={16}
                 autoCorrect={false}
+                autoCapitalize="words"
+                returnKeyType="done"
               />
+              {nameError && (
+                <View style={styles.nameErrorBanner}>
+                  <Text style={styles.nameErrorIcon}>⚠️</Text>
+                  <Text style={styles.nameErrorText}>{nameError}</Text>
+                </View>
+              )}
             </View>
 
             {/* Choose Avatar Grid */}
@@ -536,99 +503,46 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </View>
 
             {/* Cloud Save & Account Management Card */}
-            {!profile.isGuest ? (
-              <View style={styles.authCard}>
-                <View style={styles.authHeaderRow}>
-                  <View style={styles.authHeaderTitleRow}>
-                    <Text style={styles.authHeaderIcon}>☁️</Text>
-                    <Text style={styles.authHeaderTitle}>LINKED CLOUD ACCOUNT</Text>
-                  </View>
-                  <View style={styles.cloudSyncPill}>
-                    <Text style={styles.cloudSyncDot}>●</Text>
-                    <Text style={styles.cloudSyncText}>Synced</Text>
-                  </View>
-                </View>
-                <Text style={styles.authEmailDisplay}>{profile.email || 'Cloud Account Linked'}</Text>
+            {isConnected ? (
+              <View style={styles.connectedCard}>
+                <Text style={styles.connectedBadge}>✓ CONNECTED</Text>
+                <Text style={styles.userEmail}>{connectedEmail}</Text>
                 <TouchableOpacity
                   activeOpacity={0.8}
                   onPress={handleSignOut}
                   style={styles.signOutBtn}
                 >
-                  <Text style={styles.signOutBtnText}>Sign Out to Guest</Text>
+                  <Text style={styles.signOutText}>Sign Out</Text>
                 </TouchableOpacity>
               </View>
             ) : (
               <View style={styles.authCard}>
                 <View style={styles.authHeaderRow}>
                   <View style={styles.authHeaderTitleRow}>
-                    <Text style={styles.authHeaderIcon}>🛡️</Text>
-                    <Text style={styles.authHeaderTitle}>SAVE PROGRESS TO CLOUD</Text>
+                    <Text style={styles.authHeaderIcon}>📧</Text>
+                    <Text style={styles.authHeaderTitle}>CONNECT VIA GMAIL / EMAIL</Text>
                   </View>
                 </View>
 
-                {authMode === 'options' && (
+                {authStep === 'enter_email' ? (
                   <>
                     <Text style={styles.authSubtitle}>
-                      Sign in to sync your level, coins, and unlocks across devices.
-                    </Text>
-
-                    {/* Google OAuth Button */}
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      style={styles.googleAuthBtn}
-                      onPress={handleGoogleSignIn}
-                      disabled={isSigningIn}
-                    >
-                      {isSigningIn ? (
-                        <ActivityIndicator color="#2D1F17" size="small" />
-                      ) : (
-                        <View style={styles.googleBtnContent}>
-                          <View style={styles.googleIconCircle}>
-                            <Text style={styles.googleIconText}>G</Text>
-                          </View>
-                          <Text style={styles.googleAuthBtnText}>Continue with Google</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-
-                    {/* Email OTP Button */}
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      style={styles.emailAuthBtn}
-                      onPress={() => {
-                        hapticsService.cardSnap();
-                        soundService.playCardSnap();
-                        setAuthError(null);
-                        setAuthMode('email_input');
-                      }}
-                    >
-                      <View style={styles.emailAuthBtnContent}>
-                        <View style={styles.emailIconCircle}>
-                          <Text style={styles.emailIconEmoji}>✉️</Text>
-                        </View>
-                        <Text style={styles.emailAuthBtnText}>Sign in with Email Code</Text>
-                      </View>
-                    </TouchableOpacity>
-                  </>
-                )}
-
-                {authMode === 'email_input' && (
-                  <>
-                    <Text style={styles.authSubtitle}>
-                      Enter your email to receive a 6-digit verification code:
+                      Enter your Gmail address to sync your progress, level, and coins across devices.
                     </Text>
                     <TextInput
                       style={styles.authTextInput}
                       value={emailInput}
                       onChangeText={(txt) => {
                         setEmailInput(txt);
-                        setAuthError(null);
+                        if (authError) setAuthError(null);
                       }}
-                      placeholder="player@example.com"
+                      placeholder="Enter your Gmail address"
                       placeholderTextColor="#94A3B8"
                       keyboardType="email-address"
                       autoCapitalize="none"
                       autoCorrect={false}
+                      returnKeyType="send"
+                      onSubmitEditing={handleSendOtp}
                     />
 
                     {authError && (
@@ -637,40 +551,26 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       </View>
                     )}
 
-                    <View style={styles.authActionsRow}>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={() => {
-                          setAuthError(null);
-                          setAuthMode('options');
-                        }}
-                        style={styles.authCancelBtn}
-                      >
-                        <Text style={styles.authCancelBtnText}>Back</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={handleSendOtp}
-                        disabled={isSendingOtp || !emailInput.trim()}
-                        style={[
-                          styles.authConfirmBtn,
-                          !emailInput.trim() && styles.authConfirmBtnDisabled,
-                        ]}
-                      >
-                        {isSendingOtp ? (
-                          <ActivityIndicator color="#FFFFFF" size="small" />
-                        ) : (
-                          <Text style={styles.authConfirmBtnText}>Send Code ➔</Text>
-                        )}
-                      </TouchableOpacity>
-                    </View>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={handleSendOtp}
+                      disabled={isSendingOtp || !emailInput.trim()}
+                      style={[
+                        styles.primaryAuthBtn,
+                        (!emailInput.trim() || isSendingOtp) && styles.primaryAuthBtnDisabled,
+                      ]}
+                    >
+                      {isSendingOtp ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.primaryAuthBtnText}>Send Code</Text>
+                      )}
+                    </TouchableOpacity>
                   </>
-                )}
-
-                {authMode === 'otp_verify' && (
+                ) : (
                   <>
                     <Text style={styles.authSubtitle}>
-                      Enter the 6-digit code sent to:
+                      Enter the 6-digit verification code sent to:
                     </Text>
                     <View style={styles.targetEmailRow}>
                       <Text style={styles.targetEmailText} numberOfLines={1}>
@@ -679,11 +579,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       <TouchableOpacity
                         onPress={() => {
                           setAuthError(null);
-                          setAuthMode('email_input');
+                          setAuthStep('enter_email');
                         }}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        <Text style={styles.editEmailText}>Edit</Text>
+                        <Text style={styles.editEmailText}>Change Email</Text>
                       </TouchableOpacity>
                     </View>
 
@@ -693,13 +593,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       onChangeText={(txt) => {
                         const digits = txt.replace(/[^0-9]/g, '').slice(0, 6);
                         setOtpInput(digits);
-                        setAuthError(null);
+                        if (authError) setAuthError(null);
                       }}
-                      placeholder="000000"
+                      placeholder="Enter 6-digit code"
                       placeholderTextColor="#CBD5E1"
                       keyboardType="number-pad"
                       maxLength={6}
                       autoFocus
+                      returnKeyType="done"
+                      onSubmitEditing={handleVerifyOtp}
                     />
 
                     {authError && (
@@ -708,31 +610,43 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       </View>
                     )}
 
-                    <View style={styles.authActionsRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={handleVerifyOtp}
+                      disabled={isVerifyingOtp || otpInput.trim().length < 6}
+                      style={[
+                        styles.primaryAuthBtn,
+                        (otpInput.trim().length < 6 || isVerifyingOtp) && styles.primaryAuthBtnDisabled,
+                      ]}
+                    >
+                      {isVerifyingOtp ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.primaryAuthBtnText}>Verify & Connect</Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <View style={styles.subAuthActionsRow}>
                       <TouchableOpacity
                         activeOpacity={0.8}
                         onPress={countdown > 0 ? undefined : handleSendOtp}
                         disabled={countdown > 0 || isSendingOtp}
-                        style={[styles.authResendBtn, countdown > 0 && styles.authResendBtnDisabled]}
+                        style={[styles.smallSubBtn, countdown > 0 && styles.smallSubBtnDisabled]}
                       >
-                        <Text style={[styles.authResendBtnText, countdown > 0 && styles.authResendBtnTextDisabled]}>
-                          {countdown > 0 ? `Resend (${countdown}s)` : 'Resend'}
+                        <Text style={[styles.smallSubBtnText, countdown > 0 && styles.smallSubBtnTextDisabled]}>
+                          {countdown > 0 ? `Resend Code (${countdown}s)` : 'Resend Code'}
                         </Text>
                       </TouchableOpacity>
+
                       <TouchableOpacity
                         activeOpacity={0.8}
-                        onPress={handleVerifyOtp}
-                        disabled={isVerifyingOtp || otpInput.trim().length < 6}
-                        style={[
-                          styles.authConfirmBtn,
-                          otpInput.trim().length < 6 && styles.authConfirmBtnDisabled,
-                        ]}
+                        onPress={() => {
+                          setAuthError(null);
+                          setAuthStep('enter_email');
+                        }}
+                        style={styles.smallSubBtn}
                       >
-                        {isVerifyingOtp ? (
-                          <ActivityIndicator color="#FFFFFF" size="small" />
-                        ) : (
-                          <Text style={styles.authConfirmBtnText}>Verify & Sign In ✓</Text>
-                        )}
+                        <Text style={styles.smallSubBtnText}>Change Email</Text>
                       </TouchableOpacity>
                     </View>
                   </>
@@ -1010,6 +924,17 @@ const styles = StyleSheet.create({
     color: '#64748B',
     letterSpacing: 0.6,
   },
+  inputStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  charCountBadge: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#94A3B8',
+    letterSpacing: 0.5,
+  },
   savedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1052,6 +977,37 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     fontSize: 15,
     color: '#0F172A',
+    textAlign: 'center',
+  },
+  nicknameInputError: {
+    borderColor: '#EF4444',
+    backgroundColor: '#FEF2F2',
+  },
+  nameErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 2,
+    borderColor: '#F87171',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginTop: 6,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  nameErrorIcon: {
+    fontSize: 12,
+  },
+  nameErrorText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#B91C1C',
     textAlign: 'center',
   },
   avatarSection: {
@@ -1253,47 +1209,59 @@ const styles = StyleSheet.create({
     color: '#334155',
     letterSpacing: 0.7,
   },
-  cloudSyncPill: {
-    flexDirection: 'row',
+  connectedCard: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    borderRadius: 16,
+    borderWidth: 2.5,
+    borderBottomWidth: 4,
+    borderColor: '#86EFAC',
+    padding: 14,
     alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 8,
+    shadowColor: '#16A34A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  connectedBadge: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#15803D',
     backgroundColor: '#DCFCE7',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#86EFAC',
     borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    gap: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    letterSpacing: 0.8,
   },
-  cloudSyncDot: {
-    fontSize: 8,
-    color: '#16A34A',
-  },
-  cloudSyncText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 10,
-    color: '#15803D',
-  },
-  authEmailDisplay: {
+  userEmail: {
     ...FONT_CARTOON_BOLD,
     fontSize: 13,
-    color: '#0F172A',
-    marginVertical: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    color: '#1E293B',
+    marginVertical: 8,
+    textAlign: 'center',
   },
   signOutBtn: {
     height: 38,
+    paddingHorizontal: 20,
     backgroundColor: '#FEE2E2',
     borderWidth: 1.5,
+    borderBottomWidth: 3,
     borderColor: '#FCA5A5',
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
+    marginTop: 6,
+  },
+  signOutText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12,
+    color: '#DC2626',
+    letterSpacing: 0.5,
   },
   signOutBtnText: {
     ...FONT_CARTOON_HEAVY,
@@ -1308,91 +1276,68 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     lineHeight: 16,
   },
-  googleAuthBtn: {
+  primaryAuthBtn: {
     width: '100%',
     height: 46,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#10B981',
     borderWidth: 2,
     borderBottomWidth: 4,
-    borderColor: '#2D1F17',
+    borderColor: '#059669',
     borderRadius: 14,
     paddingHorizontal: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 2,
     marginBottom: 8,
-    shadowColor: '#2D1F17',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  googleBtnContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  googleIconCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#2D1F17',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  googleIconText: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 13,
-    color: '#4285F4',
-    lineHeight: 15,
-  },
-  googleAuthBtnText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 13,
-    color: '#2D1F17',
-    letterSpacing: 0.4,
-  },
-  emailAuthBtn: {
-    width: '100%',
-    height: 46,
-    backgroundColor: '#1E293B',
-    borderWidth: 2,
-    borderBottomWidth: 4,
-    borderColor: '#0F172A',
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#0F172A',
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 3,
     elevation: 3,
   },
-  emailAuthBtnContent: {
+  primaryAuthBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+    opacity: 0.65,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  primaryAuthBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 14,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  subAuthActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 4,
   },
-  emailIconCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#334155',
+  smallSubBtn: {
+    flex: 1,
+    height: 38,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emailIconEmoji: {
-    fontSize: 12,
+  smallSubBtnDisabled: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    opacity: 0.7,
   },
-  emailAuthBtnText: {
+  smallSubBtnText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 13,
-    color: '#FFFFFF',
-    letterSpacing: 0.4,
+    fontSize: 12,
+    color: '#475569',
+  },
+  smallSubBtnTextDisabled: {
+    color: '#94A3B8',
   },
   authTextInput: {
     ...FONT_CARTOON_BOLD,
@@ -1443,71 +1388,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: 8,
     marginBottom: 8,
-  },
-  authActionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 4,
-  },
-  authCancelBtn: {
-    height: 42,
-    paddingHorizontal: 16,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 2,
-    borderColor: '#CBD5E1',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  authCancelBtnText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 13,
-    color: '#475569',
-  },
-  authResendBtn: {
-    height: 42,
-    paddingHorizontal: 12,
-    backgroundColor: '#FEF3C7',
-    borderWidth: 2,
-    borderColor: '#FDE68A',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  authResendBtnDisabled: {
-    backgroundColor: '#F8FAFC',
-    borderColor: '#E2E8F0',
-    opacity: 0.7,
-  },
-  authResendBtnText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 12,
-    color: '#92400E',
-  },
-  authResendBtnTextDisabled: {
-    color: '#94A3B8',
-  },
-  authConfirmBtn: {
-    flex: 1,
-    height: 42,
-    backgroundColor: '#10B981',
-    borderBottomWidth: 3,
-    borderColor: '#059669',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  authConfirmBtnDisabled: {
-    backgroundColor: '#94A3B8',
-    borderColor: '#64748B',
-    opacity: 0.6,
-  },
-  authConfirmBtnText: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 13,
-    color: '#FFFFFF',
-    letterSpacing: 0.4,
   },
   authErrorBanner: {
     backgroundColor: '#FEE2E2',
