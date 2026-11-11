@@ -1,27 +1,18 @@
 {
   "cli": {
-    "version": ">= 14.0.0"
+    "version": ">= 10.0.0",
+    "appVersionSource": "local"
   },
   "build": {
     "preview": {
       "distribution": "internal",
       "android": {
-        "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease -Dandroid.enableR8.fullMode=false"
-      },
-      "env": {
-        "EXPO_NO_MINIFY": "1",
-        "EXPO_PUBLIC_SUPABASE_URL": "https://diprmtxrlynniqacapmz.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ"
+        "buildType": "apk"
       }
     },
     "production": {
       "android": {
         "buildType": "app-bundle"
-      },
-      "env": {
-        "EXPO_PUBLIC_SUPABASE_URL": "https://diprmtxrlynniqacapmz.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ"
       }
     }
   }

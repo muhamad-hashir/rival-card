@@ -11,7 +11,8 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.rivalcard.game",
+      "package": "com.hashir.rivalcard",
+      "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#1E1B4B"
@@ -35,14 +36,18 @@
         }
       ],
       "expo-asset",
-      "expo-audio"
+      "expo-audio",
+      "@react-native-google-signin/google-signin",
+      "expo-splash-screen",
+      "expo-status-bar"
     ],
     "extra": {
       "eas": {
         "projectId": "0e1cd1b0-4a09-41f5-8ead-93a31c74bd48"
       },
       "EXPO_PUBLIC_SUPABASE_URL": "https://diprmtxrlynniqacapmz.supabase.co",
-      "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ"
+      "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_aejGXlQ3gcemdzCdVBt99Q_WBtxUoYQ",
+      "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "533714585618-inbuf0dbn3ijr0gshb11bob1bkhsv2hf.apps.googleusercontent.com"
     },
     "owner": "muhammadhashir"
   }

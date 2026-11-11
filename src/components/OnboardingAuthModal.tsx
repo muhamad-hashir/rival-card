@@ -10,6 +10,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as NavigationBar from 'expo-navigation-bar';
+import { StatusBar } from 'expo-status-bar';
 import { authService, sendEmailOtp, verifyEmailOtp } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
 import { hapticsService } from '../services/hapticsService';
@@ -35,8 +37,27 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
   const [otpInput, setOtpInput] = useState('');
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
+
+  const reassertImmersive = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        if (typeof (NavigationBar as any).setHidden === 'function') {
+          (NavigationBar as any).setHidden(true);
+        }
+        if (typeof NavigationBar.setVisibilityAsync === 'function') {
+          await NavigationBar.setVisibilityAsync('hidden');
+        }
+        if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
+          await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
+        }
+      } catch {
+        // ignore
+      }
+    }
+  };
 
   useEffect(() => {
     if (visible) {
@@ -47,6 +68,8 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
       setCountdown(0);
       setIsSendingOtp(false);
       setIsVerifyingOtp(false);
+      setIsSigningIn(false);
+      reassertImmersive();
     }
   }, [visible]);
 
@@ -64,10 +87,47 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
 
     try {
       await authService.initGuestProfile();
+      await reassertImmersive();
       onSuccess();
     } catch (err) {
       console.warn('Guest onboarding init error:', err);
+      await reassertImmersive();
       onSuccess();
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (isSigningIn) return;
+    setAuthError(null);
+    setIsSigningIn(true);
+    hapticsService.cardSnap();
+    soundService.playCardSnap();
+
+    try {
+      const isOnline = await networkService.isOnline();
+      if (!isOnline) {
+        setAuthError("You're offline! Please check your internet connection.");
+        return;
+      }
+
+      const res = await authService.signInWithGoogleNative();
+      if (res && !(res as any).cancelled) {
+        soundService.playWinChime();
+        errorToastService.show({
+          message: 'Signed in with Google!',
+          type: 'info',
+          durationMs: 3000,
+        });
+        await reassertImmersive();
+        onSuccess();
+      }
+    } catch (err: any) {
+      if (err?.code !== 'SIGN_IN_CANCELLED' && err?.message !== 'SIGN_IN_CANCELLED') {
+        setAuthError(err?.message || 'Google sign-in failed. Please try again.');
+      }
+    } finally {
+      setIsSigningIn(false);
+      await reassertImmersive();
     }
   };
 
@@ -149,6 +209,7 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
       visible={visible}
       statusBarTranslucent
     >
+      <StatusBar hidden={true} />
       <View style={styles.backdrop}>
         <View style={styles.dialogCard}>
           {/* Top Mascot Emblem */}
@@ -187,30 +248,37 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
                 </View>
               </View>
 
-              {/* Action 1: Continue as Guest (Primary Action) */}
+              {authError && (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorText}>{authError}</Text>
+                </View>
+              )}
+
+              {/* Action 1: Sign in with Google */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={handleGoogleSignIn}
+                disabled={isSigningIn}
+                style={[styles.googleBtn, isSigningIn && styles.btnDisabled]}
+              >
+                {isSigningIn ? (
+                  <ActivityIndicator color="#0F172A" size="small" />
+                ) : (
+                  <View style={styles.googleBtnContent}>
+                    <Text style={styles.googleGLogo}>G</Text>
+                    <Text style={styles.googleBtnText}>Sign in with Google</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              {/* Action 2: Continue as Guest */}
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={handleContinueAsGuest}
+                disabled={isSigningIn}
                 style={styles.guestBtn}
               >
                 <Text style={styles.guestBtnText}>Continue as Guest ➔</Text>
-              </TouchableOpacity>
-
-              {/* Action 2: Connect via Gmail / Email */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => {
-                  hapticsService.cardSnap();
-                  soundService.playCardSnap();
-                  setAuthError(null);
-                  setAuthMode('email_input');
-                }}
-                style={styles.emailBtn}
-              >
-                <View style={styles.emailBtnContent}>
-                  <Text style={styles.emailBtnIcon}>✉️</Text>
-                  <Text style={styles.emailBtnText}>Connect via Gmail / Email</Text>
-                </View>
               </TouchableOpacity>
 
               {/* Privacy Note Footnote */}
@@ -312,6 +380,13 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
                 maxLength={6}
                 autoFocus
               />
+
+              <View style={styles.otpTipContainer}>
+                <Text style={styles.otpTipIcon}>💡</Text>
+                <Text style={styles.otpTipText}>
+                  Check your Gmail for the 6-digit code! You don't need to tap the email link—just type the code here.
+                </Text>
+              </View>
 
               {authError && (
                 <View style={styles.errorBanner}>
@@ -475,20 +550,25 @@ const styles = StyleSheet.create({
   googleBtn: {
     width: '100%',
     backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderBottomWidth: 3,
-    borderColor: '#CBD5E1',
+    borderWidth: 2.5,
+    borderBottomWidth: 4,
+    borderColor: '#0F172A',
     borderRadius: 14,
-    paddingVertical: 11,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   googleBtnContent: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 10,
+  },
+  googleGLogo: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 18,
+    color: '#4285F4',
   },
   googleIconBadge: {
     width: 20,
@@ -506,7 +586,7 @@ const styles = StyleSheet.create({
   googleBtnText: {
     ...FONT_CARTOON_BOLD,
     color: '#0F172A',
-    fontSize: 13,
+    fontSize: 14,
     letterSpacing: 0.3,
   },
   emailBtn: {
@@ -604,7 +684,29 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     textAlign: 'center',
     letterSpacing: 8,
+    marginBottom: 8,
+  },
+  otpTipContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.5,
+    borderColor: '#FDE68A',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     marginBottom: 10,
+    gap: 6,
+  },
+  otpTipIcon: {
+    fontSize: 14,
+  },
+  otpTipText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#92400E',
+    flex: 1,
+    lineHeight: 15,
   },
   errorBanner: {
     backgroundColor: '#FEE2E2',

@@ -70,16 +70,19 @@ The game features an arcade sound system managed by `audioService`:
 
 ## 🔐 Authentication & Cloud Data Migration Architecture
 
-### 1. In-App Passwordless Email OTP
-- **In-App Verification**: Completely replaces external browser redirects with a native **Supabase Email OTP (One-Time Password)** flow. Users enter their Gmail or email address and verify with a 6-digit security code directly inside the game modal.
-- **Zero Redirect Dependencies**: Eliminates OAuth callback URI schemes, external browser tabs, and PKCE redirect failures on Android and iOS.
+### 1. Native Google Sign-In & Supabase Token Exchange
+- **Native Google Sign-In Sheet**: Uses `@react-native-google-signin/google-signin` configured with `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`. Triggers Google Play Services bottom sheet directly on Android/iOS without external browser popups or redirects.
+- **Supabase ID Token Exchange**: Extracts the Google ID token (supporting both modern v13+ `response.data.idToken` and legacy `response.idToken`) and exchanges it with Supabase via `supabase.auth.signInWithIdToken({ provider: 'google', token: idToken })`.
+- **Cancellation Gracefulness**: Intercepts `statusCodes.SIGN_IN_CANCELLED` and Android error code `12501` to return cleanly without throwing alerts or freezing the UI when a user dismisses the sheet.
+- **Automatic Immersive Mode Reassertion**: Automatically restores Android sticky-immersive fullscreen mode (`NavigationBar.setVisibilityAsync("hidden")`, `overlay-swipe`) whenever the native Google sheet or modal is closed.
 
 ### 2. Guaranteed Guest Progress Preservation
 - **Local-First Gameplay**: First-launch and offline players jump straight into the action in Guest mode with immediate access to matches and progression.
+- **Zero Progress Overwrite**: `@rival_card_profile` is never wiped by default guest stats during cold-starts or account linking.
 - **Seamless Cloud Account Linking**:
-  - When connecting an email account, local stats (XP, level, coins, gems, win streaks, and unlocked cosmetics) are read from persistent storage **before** network writes.
+  - When connecting an account via Google Sign-In, local stats (XP, level, coins, gems, win streaks, and unlocked cosmetics) are read from persistent storage **before** network writes.
   - **New Cloud Account**: Local guest progression is upserted directly into Supabase `profiles` with `is_guest: false`. XP, coins, and levels are **never** wiped to 0.
-  - **Returning Cloud Account**: Merges using `Math.max(remoteVal, guestVal)` plus earned session delta coins, ensuring player achievements on either device are strictly preserved.
+  - **Returning Cloud Account**: Remote cloud profile is loaded into local state and `@rival_card_profile`, retaining existing cloud stats without being overwritten by fresh guest data.
 
 ---
 
@@ -97,7 +100,7 @@ To prevent automated grinding while rewarding competitive multiplayer skill, Riv
 
 ## 📱 Immersive Mobile Experience & UX Polish
 
-- **Sticky-Immersive Fullscreen Mode**: Android system bars and 3-button navigation bars are hidden on boot (`overlay-swipe` behavior) so the landscape playfield remains completely uninterrupted.
+- **Sticky-Immersive Fullscreen Mode**: Android system bars and navigation bars are hidden on boot (`overlay-swipe` behavior) with settle-delay retries (300ms, 1000ms) on AppState transitions, ensuring system bars stay hidden even when returning from external intents or email links.
 - **Profanity-Filtered Username Editor**:
   - Independent typing buffer allows clearing and editing names freely.
   - Enforces minimum 3 characters and maximum 16 characters.

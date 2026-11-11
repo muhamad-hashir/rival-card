@@ -1,7 +1,69 @@
 // src/services/authService.ts - Authentication & Account Management Service
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { GoogleSignin as GoogleSigninType } from '@react-native-google-signin/google-signin';
 import { supabase } from './supabase';
 import { playerProfileService, PlayerProfile } from './playerProfileService';
+
+export const statusCodes = {
+  SIGN_IN_CANCELLED: 'SIGN_IN_CANCELLED',
+  IN_PROGRESS: 'IN_PROGRESS',
+  PLAY_SERVICES_NOT_AVAILABLE: 'PLAY_SERVICES_NOT_AVAILABLE',
+  SIGN_IN_REQUIRED: 'SIGN_IN_REQUIRED',
+};
+
+let GoogleSigninModule: typeof GoogleSigninType | null = null;
+let nativeStatusCodes: any = statusCodes;
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const googleModule = require('@react-native-google-signin/google-signin');
+  if (googleModule?.GoogleSignin) {
+    GoogleSigninModule = googleModule.GoogleSignin;
+  }
+  if (googleModule?.statusCodes) {
+    nativeStatusCodes = googleModule.statusCodes;
+  }
+} catch {
+  // Headless test runner or web fallback
+  GoogleSigninModule = null;
+}
+
+export const GoogleSignin: typeof GoogleSigninType = GoogleSigninModule || ({
+  configure: (_config: any) => {},
+  hasPlayServices: async (_options?: any) => true,
+  signIn: async () => ({ data: { idToken: 'mock_google_id_token' } } as any),
+  signOut: async () => {},
+  addScopes: async () => true,
+  getTokens: async () => ({ idToken: 'mock_google_id_token', accessToken: 'mock_google_access_token' }),
+  getCurrentUser: async () => null,
+  clearCachedAccessToken: async () => {},
+  revokeAccess: async () => {},
+} as any);
+
+let expoExtra: Record<string, any> = {};
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Constants = require('expo-constants')?.default ?? require('expo-constants');
+  expoExtra = Constants?.expoConfig?.extra || {};
+} catch {
+  // fallback if expo-constants is not loaded in test runner
+}
+
+const GOOGLE_WEB_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ||
+  expoExtra.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ||
+  '533714585618-inbuf0dbn3ijr0gshb11bob1bkhsv2hf.apps.googleusercontent.com';
+
+if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
+  try {
+    GoogleSignin.configure({
+      webClientId: GOOGLE_WEB_CLIENT_ID,
+      scopes: ['profile', 'email'],
+    });
+  } catch (err) {
+    console.warn('[GoogleSignin] configure warning:', err);
+  }
+}
 
 export const ONBOARDING_COMPLETED_KEY = '@rivalcard:onboarding_completed';
 
@@ -79,6 +141,7 @@ export const sendEmailOtp = async (email: string) => {
     email: cleanEmail,
     options: {
       shouldCreateUser: true,
+      // Explicitly NO emailRedirectTo
     },
   });
   if (error) throw error;
@@ -101,6 +164,82 @@ export const verifyEmailOtp = async (email: string, token: string) => {
     await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
   }
   return data;
+};
+
+/**
+ * Initiates native Google Sign-In with Play Services sheet, extracts ID token,
+ * exchanges with Supabase signInWithIdToken, and links guest progression to cloud account.
+ */
+export const signInWithGoogleNative = async (): Promise<{
+  data?: any;
+  error?: any;
+  cancelled?: boolean;
+}> => {
+  try {
+    if (GoogleSignin && typeof GoogleSignin.hasPlayServices === 'function') {
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+    }
+
+    const response: any = await GoogleSignin.signIn();
+
+    // Extract ID token: handle both response.data?.idToken (v13+) and response.idToken (legacy)
+    const idToken = response?.data?.idToken || response?.idToken;
+
+    if (!idToken) {
+      throw new Error('No Google ID token received from authentication sheet.');
+    }
+
+    const { data, error } = await supabase.auth.signInWithIdToken({
+      provider: 'google',
+      token: idToken,
+    });
+
+    if (error) throw error;
+
+    if (data?.session?.user) {
+      await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
+    }
+
+    await authService.completeOnboarding();
+    return { data, cancelled: false };
+  } catch (err: any) {
+    // Gracefully catch user cancellation without throwing alert errors
+    const isCancelled =
+      err?.code === nativeStatusCodes.SIGN_IN_CANCELLED ||
+      err?.code === statusCodes.SIGN_IN_CANCELLED ||
+      err?.code === 'SIGN_IN_CANCELLED' ||
+      err?.code === 12501 || // Android Google Play Services user cancel error code
+      err?.message?.includes?.('SIGN_IN_CANCELLED') ||
+      err?.message?.includes?.('canceled') ||
+      err?.message?.includes?.('cancelled');
+
+    if (isCancelled) {
+      return { cancelled: true };
+    }
+
+    throw err;
+  }
+};
+
+/**
+ * Signs out from both native Google Sign-In and Supabase Auth, returning to clean guest state.
+ */
+export const signOutNativeGoogle = async (): Promise<PlayerProfile> => {
+  try {
+    if (GoogleSignin && typeof GoogleSignin.signOut === 'function') {
+      await GoogleSignin.signOut().catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    await supabase.auth.signOut().catch(() => {});
+  } catch {
+    // ignore
+  }
+
+  return playerProfileService.signOut();
 };
 
 class AuthService {
@@ -163,6 +302,20 @@ class AuthService {
    */
   public async verifyEmailOtp(email: string, token: string) {
     return verifyEmailOtp(email, token);
+  }
+
+  /**
+   * Initiates native Google Sign-In with Play Services sheet and Supabase signInWithIdToken.
+   */
+  public async signInWithGoogleNative() {
+    return signInWithGoogleNative();
+  }
+
+  /**
+   * Signs out from both native Google Sign-In and Supabase Auth.
+   */
+  public async signOutNativeGoogle(): Promise<PlayerProfile> {
+    return signOutNativeGoogle();
   }
 
   /**
@@ -236,6 +389,85 @@ class AuthService {
           }
           await this.completeOnboarding();
           return { success: true, session: data?.session };
+        }
+      }
+
+      // 4. PKCE / OAuth Code Exchange (?code=... or #code=...)
+      if (url.includes('code=')) {
+        let code: string | null = null;
+        try {
+          const urlObj = new URL(url);
+          code = urlObj.searchParams.get('code');
+        } catch {
+          const query = url.split('?')[1]?.split('#')[0] || '';
+          code = parseAuthParams(query).code || null;
+        }
+
+        if (!code && url.includes('#')) {
+          const hashPart = url.split('#')[1] || '';
+          const params = new URLSearchParams(hashPart);
+          code = params.get('code') || parseAuthParams(hashPart).code || null;
+        }
+
+        if (code) {
+          try {
+            if (typeof supabase.auth.exchangeCodeForSession === 'function') {
+              const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+              if (error) {
+                return { success: false, error: error.message };
+              }
+              if (data?.session?.user) {
+                await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
+              }
+              await this.completeOnboarding();
+              return { success: true, session: data?.session };
+            }
+          } catch (codeErr: any) {
+            return { success: false, error: codeErr?.message || 'Code exchange failed' };
+          }
+        }
+      }
+
+      // 5. Token Hash Verification (?token_hash=... or #token_hash=...)
+      if (url.includes('token_hash=')) {
+        let token_hash: string | null = null;
+        let otpType: string | null = null;
+        try {
+          const urlObj = new URL(url);
+          token_hash = urlObj.searchParams.get('token_hash');
+          otpType = urlObj.searchParams.get('type');
+        } catch {
+          const query = url.split('?')[1]?.split('#')[0] || '';
+          token_hash = parseAuthParams(query).token_hash || null;
+          otpType = parseAuthParams(query).type || null;
+        }
+
+        if (!token_hash && url.includes('#')) {
+          const hashPart = url.split('#')[1] || '';
+          const params = new URLSearchParams(hashPart);
+          token_hash = params.get('token_hash') || parseAuthParams(hashPart).token_hash || null;
+          otpType = otpType || params.get('type') || parseAuthParams(hashPart).type || null;
+        }
+
+        if (token_hash) {
+          try {
+            if (typeof supabase.auth.verifyOtp === 'function') {
+              const { data, error } = await supabase.auth.verifyOtp({
+                token_hash,
+                type: (otpType as any) || 'email',
+              });
+              if (error) {
+                return { success: false, error: error.message };
+              }
+              if (data?.session?.user) {
+                await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
+              }
+              await this.completeOnboarding();
+              return { success: true, session: data?.session };
+            }
+          } catch (tokenErr: any) {
+            return { success: false, error: tokenErr?.message || 'Token verification failed' };
+          }
         }
       }
 

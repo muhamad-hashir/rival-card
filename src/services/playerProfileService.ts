@@ -205,52 +205,78 @@ class PlayerProfileService {
       return this.cachedProfile;
     }
 
-    let raw = await storageGet(STORAGE_KEY);
-    if (!raw) {
-      raw = await storageGet(ALT_STORAGE_KEY);
-    }
-    if (!raw) {
-      raw = await storageGet(LEGACY_STORAGE_KEY);
-    }
+    // 1. Check all storage keys, prioritizing ALT_STORAGE_KEY (@rival_card_profile)
+    const [rawAlt, rawMain, rawLegacy] = await Promise.all([
+      storageGet(ALT_STORAGE_KEY),
+      storageGet(STORAGE_KEY),
+      storageGet(LEGACY_STORAGE_KEY),
+    ]);
 
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          const level = typeof parsed.level === 'number' && parsed.level >= 1 ? parsed.level : 1;
-          const currentXp = typeof parsed.currentXp === 'number' && parsed.currentXp >= 0 ? parsed.currentXp : 0;
-          const xpToNextLevel =
-            typeof parsed.xpToNextLevel === 'number' && parsed.xpToNextLevel > 0
-              ? parsed.xpToNextLevel
-              : level * 100;
-          const coins = typeof parsed.coins === 'number' && parsed.coins >= 0 ? parsed.coins : 250;
-          const gems = typeof parsed.gems === 'number' && parsed.gems >= 0 ? parsed.gems : 10;
-          const isGuest = typeof parsed.isGuest === 'boolean' ? parsed.isGuest : true;
-          const email = typeof parsed.email === 'string' && parsed.email ? parsed.email : undefined;
-
-          this.cachedProfile = {
-            id: typeof parsed.id === 'string' && parsed.id ? parsed.id : generateUUID(),
-            nickname:
-              typeof parsed.nickname === 'string' && parsed.nickname.trim()
-                ? parsed.nickname.trim().slice(0, 16)
-                : 'Player',
-            avatarId: typeof parsed.avatarId === 'string' ? parsed.avatarId : 'avatar_1',
-            level,
-            currentXp,
-            xpToNextLevel,
-            coins,
-            gems,
-            stats: {
-              gamesPlayed: typeof parsed.stats?.gamesPlayed === 'number' ? parsed.stats.gamesPlayed : 0,
-              wins: typeof parsed.stats?.wins === 'number' ? parsed.stats.wins : 0,
-              winStreak: typeof parsed.stats?.winStreak === 'number' ? parsed.stats.winStreak : 0,
-            },
-            isGuest,
-            email,
-          };
-          this.notify();
-          return this.cachedProfile;
+    const candidates: any[] = [];
+    for (const item of [rawAlt, rawMain, rawLegacy]) {
+      if (item) {
+        try {
+          const parsed = JSON.parse(item);
+          if (parsed && typeof parsed === 'object') {
+            candidates.push(parsed);
+          }
+        } catch {
+          // ignore
         }
+      }
+    }
+
+    if (candidates.length > 0) {
+      // Pick the candidate with the highest progression score
+      // Score = (level * 10000) + currentXp + coins + (wins * 100)
+      const best = candidates.reduce((prev, curr) => {
+        const prevScore =
+          ((prev.level || 1) * 10000) +
+          (prev.currentXp || 0) +
+          (prev.coins || 0) +
+          ((prev.stats?.wins || 0) * 100);
+        const currScore =
+          ((curr.level || 1) * 10000) +
+          (curr.currentXp || 0) +
+          (curr.coins || 0) +
+          ((curr.stats?.wins || 0) * 100);
+        return currScore > prevScore ? curr : prev;
+      }, candidates[0]);
+
+      try {
+        const level = typeof best.level === 'number' && best.level >= 1 ? best.level : 1;
+        const currentXp = typeof best.currentXp === 'number' && best.currentXp >= 0 ? best.currentXp : 0;
+        const xpToNextLevel =
+          typeof best.xpToNextLevel === 'number' && best.xpToNextLevel > 0
+            ? best.xpToNextLevel
+            : level * 100;
+        const coins = typeof best.coins === 'number' && best.coins >= 0 ? best.coins : 250;
+        const gems = typeof best.gems === 'number' && best.gems >= 0 ? best.gems : 10;
+        const isGuest = typeof best.isGuest === 'boolean' ? best.isGuest : true;
+        const email = typeof best.email === 'string' && best.email ? best.email : undefined;
+
+        this.cachedProfile = {
+          id: typeof best.id === 'string' && best.id ? best.id : generateUUID(),
+          nickname:
+            typeof best.nickname === 'string' && best.nickname.trim()
+              ? best.nickname.trim().slice(0, 16)
+              : 'Player',
+          avatarId: typeof best.avatarId === 'string' ? best.avatarId : 'avatar_1',
+          level,
+          currentXp,
+          xpToNextLevel,
+          coins,
+          gems,
+          stats: {
+            gamesPlayed: typeof best.stats?.gamesPlayed === 'number' ? best.stats.gamesPlayed : 0,
+            wins: typeof best.stats?.wins === 'number' ? best.stats.wins : 0,
+            winStreak: typeof best.stats?.winStreak === 'number' ? best.stats.winStreak : 0,
+          },
+          isGuest,
+          email,
+        };
+        this.notify();
+        return this.cachedProfile;
       } catch (err) {
         console.warn('Failed to parse stored player profile:', err);
       }
@@ -526,20 +552,45 @@ class PlayerProfileService {
     }
 
     // 1. Grab existing local guest stats FIRST before doing any database write
-    const localGuestData =
-      (await storageGet(ALT_STORAGE_KEY)) ||
-      (await storageGet(STORAGE_KEY)) ||
-      (await storageGet(LEGACY_STORAGE_KEY));
+    const [rawAlt, rawMain, rawLegacy] = await Promise.all([
+      storageGet(ALT_STORAGE_KEY),
+      storageGet(STORAGE_KEY),
+      storageGet(LEGACY_STORAGE_KEY),
+    ]);
 
-    let guestStats: PlayerProfile | null = null;
-    if (localGuestData) {
-      try {
-        guestStats = JSON.parse(localGuestData);
-      } catch {
-        guestStats = null;
+    const candidates: any[] = [];
+    if (this.cachedProfile) candidates.push(this.cachedProfile);
+    for (const item of [rawAlt, rawMain, rawLegacy]) {
+      if (item) {
+        try {
+          const parsed = JSON.parse(item);
+          if (parsed && typeof parsed === 'object') {
+            candidates.push(parsed);
+          }
+        } catch {
+          // ignore
+        }
       }
     }
-    const currentGuest: PlayerProfile = guestStats || (await this.getProfile());
+
+    let currentGuest: PlayerProfile;
+    if (candidates.length > 0) {
+      currentGuest = candidates.reduce((prev, curr) => {
+        const prevScore =
+          ((prev.level || 1) * 10000) +
+          (prev.currentXp || 0) +
+          (prev.coins || 0) +
+          ((prev.stats?.wins || 0) * 100);
+        const currScore =
+          ((curr.level || 1) * 10000) +
+          (curr.currentXp || 0) +
+          (curr.coins || 0) +
+          ((curr.stats?.wins || 0) * 100);
+        return currScore > prevScore ? curr : prev;
+      }, candidates[0]);
+    } else {
+      currentGuest = await this.getProfile();
+    }
 
     const guestCoins = currentGuest.coins ?? 250;
     const guestGems = currentGuest.gems ?? 10;
@@ -610,11 +661,17 @@ class PlayerProfileService {
         (remoteCurrentXp !== null && remoteCurrentXp > 0) ||
         (remoteCoins !== null && remoteCoins > 250));
 
+    const guestDeltaCoins = Math.max(0, guestCoins - 250);
+    const guestDeltaGems = Math.max(0, guestGems - 10);
+    const hasLocalGuestProgress =
+      guestLevel > 1 || guestXP > 0 || guestDeltaCoins > 0 || guestDeltaGems > 0 || guestGamesPlayed > 0;
+
     let merged: PlayerProfile;
 
     if (!hasRemoteProgress) {
-      // Case A: First-time Google Sign-Up / no existing remote progress yet
-      // Migrate ALL guestStats (XP, coins, inventory, stats) directly to cloud record. Never reset to 0 / Level 1!
+      // CASE 2: BRAND NEW USER (First-time email link from local guest)
+      // Read local guest stats from AsyncStorage (@rival_card_profile) and upsert to cloud record.
+      // Progress, level, XP, and coins are NEVER reset to 0 / Level 1.
       const nickname =
         guestNickname && guestNickname !== 'Player'
           ? guestNickname
@@ -660,105 +717,130 @@ class PlayerProfileService {
           new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
         ]);
       } catch (upsertErr) {
-        console.warn('[PlayerProfileService] Cloud upsert warning (Case A):', upsertErr);
+        console.warn('[PlayerProfileService] Cloud upsert warning (Case 2 - New User):', upsertErr);
       }
     } else {
-      // Case B: Existing Google Account returning
-      // Take the maximum (Math.max(remoteXP, guestXP), Math.max(remoteCoins, guestCoins)) so player never loses earned progress
+      // CASE 1: EXISTING USER (Returning player on new device or re-login)
       const safeRemoteLevel = remoteLevel ?? 1;
       const safeRemoteXp = remoteCurrentXp ?? 0;
       const safeRemoteCoins = remoteCoins ?? 250;
       const safeRemoteGems = remoteGems ?? 10;
+      const safeRemoteXpToNextLevel =
+        typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
+          ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
+          : safeRemoteLevel * 100;
 
-      const guestDeltaCoins = Math.max(0, guestCoins - 250);
-      const mergedCoins = Math.max(safeRemoteCoins, guestCoins, safeRemoteCoins + guestDeltaCoins);
+      if (!hasLocalGuestProgress) {
+        // Returning player on new device / fresh guest on device:
+        // Do NOT overwrite the cloud record with the fresh local guest data!
+        // Authoritatively restore the remote cloud profile to local storage & in-memory state.
+        let mergedNickname = remoteNickname || authDisplayName;
+        if (!mergedNickname || mergedNickname === 'Player') {
+          mergedNickname = (guestNickname && guestNickname !== 'Player') ? guestNickname : (authDisplayName || 'Player');
+        }
 
-      const guestDeltaGems = Math.max(0, guestGems - 10);
-      const mergedGems = Math.max(safeRemoteGems, guestGems, safeRemoteGems + guestDeltaGems);
-
-      let mergedLevel = Math.max(safeRemoteLevel, guestLevel);
-      let mergedCurrentXp: number;
-      let mergedXpToNextLevel: number;
-
-      if (guestLevel > safeRemoteLevel) {
-        mergedLevel = guestLevel;
-        mergedCurrentXp = guestXP;
-        mergedXpToNextLevel = guestXpToNextLevel;
-      } else if (safeRemoteLevel > guestLevel) {
-        mergedLevel = safeRemoteLevel;
-        mergedCurrentXp = Math.max(safeRemoteXp, guestXP);
-        mergedXpToNextLevel =
-          typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
-            ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
-            : mergedLevel * 100;
+        merged = {
+          id: authUser.id,
+          email: remoteProfile.email || authEmail,
+          nickname: mergedNickname.slice(0, 16),
+          avatarId: remoteAvatarId || guestAvatarId || 'avatar_1',
+          level: safeRemoteLevel,
+          currentXp: safeRemoteXp,
+          xpToNextLevel: safeRemoteXpToNextLevel,
+          coins: safeRemoteCoins,
+          gems: safeRemoteGems,
+          stats: {
+            gamesPlayed: remoteGamesPlayed,
+            wins: remoteWins,
+            winStreak: remoteWinStreak,
+          },
+          isGuest: false,
+        };
       } else {
-        mergedLevel = safeRemoteLevel;
-        mergedCurrentXp = Math.max(safeRemoteXp, guestXP);
-        mergedXpToNextLevel =
-          typeof (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel) === 'number'
-            ? (remoteProfile.xp_to_next_level ?? remoteProfile.xpToNextLevel)
-            : mergedLevel * 100;
-      }
+        // Returning player who accumulated guest progression on this device:
+        // Merge taking higher values and delta coins so no progress on either side is lost.
+        const mergedCoins = Math.max(safeRemoteCoins, guestCoins, safeRemoteCoins + guestDeltaCoins);
+        const mergedGems = Math.max(safeRemoteGems, guestGems, safeRemoteGems + guestDeltaGems);
 
-      const mergedGamesPlayed = Math.max(
-        remoteGamesPlayed + guestGamesPlayed,
-        remoteGamesPlayed,
-        guestGamesPlayed
-      );
-      const mergedWins = Math.max(
-        remoteWins + guestWins,
-        remoteWins,
-        guestWins
-      );
-      const mergedWinStreak = Math.max(remoteWinStreak, guestWinStreak);
+        let mergedLevel = Math.max(safeRemoteLevel, guestLevel);
+        let mergedCurrentXp: number;
+        let mergedXpToNextLevel: number;
 
-      let mergedNickname = remoteNickname || authDisplayName;
-      if (!mergedNickname || mergedNickname === 'Player') {
-        mergedNickname = (guestNickname && guestNickname !== 'Player') ? guestNickname : (authDisplayName || 'Player');
-      }
+        if (guestLevel > safeRemoteLevel) {
+          mergedLevel = guestLevel;
+          mergedCurrentXp = guestXP;
+          mergedXpToNextLevel = guestXpToNextLevel;
+        } else if (safeRemoteLevel > guestLevel) {
+          mergedLevel = safeRemoteLevel;
+          mergedCurrentXp = Math.max(safeRemoteXp, guestXP);
+          mergedXpToNextLevel = safeRemoteXpToNextLevel;
+        } else {
+          mergedLevel = safeRemoteLevel;
+          mergedCurrentXp = Math.max(safeRemoteXp, guestXP);
+          mergedXpToNextLevel = safeRemoteXpToNextLevel;
+        }
 
-      const mergedAvatarId = remoteAvatarId || guestAvatarId || 'avatar_1';
+        const mergedGamesPlayed = Math.max(
+          remoteGamesPlayed + guestGamesPlayed,
+          remoteGamesPlayed,
+          guestGamesPlayed
+        );
+        const mergedWins = Math.max(
+          remoteWins + guestWins,
+          remoteWins,
+          guestWins
+        );
+        const mergedWinStreak = Math.max(remoteWinStreak, guestWinStreak);
 
-      merged = {
-        id: authUser.id,
-        email: authEmail || remoteProfile.email,
-        nickname: mergedNickname.slice(0, 16),
-        avatarId: mergedAvatarId,
-        level: mergedLevel,
-        currentXp: mergedCurrentXp,
-        xpToNextLevel: mergedXpToNextLevel,
-        coins: mergedCoins,
-        gems: mergedGems,
-        stats: {
-          gamesPlayed: mergedGamesPlayed,
-          wins: mergedWins,
-          winStreak: mergedWinStreak,
-        },
-        isGuest: false,
-      };
+        let mergedNickname = remoteNickname || authDisplayName;
+        if (!mergedNickname || mergedNickname === 'Player') {
+          mergedNickname = (guestNickname && guestNickname !== 'Player') ? guestNickname : (authDisplayName || 'Player');
+        }
 
-      try {
-        await Promise.race([
-          supabase.from('profiles').upsert({
-            id: authUser.id,
-            email: merged.email || '',
-            nickname: merged.nickname,
-            avatar_id: merged.avatarId,
-            level: merged.level,
-            current_xp: merged.currentXp,
-            xp_to_next_level: merged.xpToNextLevel,
-            coins: merged.coins,
-            gems: merged.gems,
-            games_played: merged.stats.gamesPlayed,
-            wins: merged.stats.wins,
-            win_streak: merged.stats.winStreak,
-            is_guest: false,
-            updated_at: new Date().toISOString(),
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
-        ]);
-      } catch (upsertErr) {
-        console.warn('[PlayerProfileService] Cloud upsert warning (Case B):', upsertErr);
+        const mergedAvatarId = remoteAvatarId || guestAvatarId || 'avatar_1';
+
+        merged = {
+          id: authUser.id,
+          email: authEmail || remoteProfile.email,
+          nickname: mergedNickname.slice(0, 16),
+          avatarId: mergedAvatarId,
+          level: mergedLevel,
+          currentXp: mergedCurrentXp,
+          xpToNextLevel: mergedXpToNextLevel,
+          coins: mergedCoins,
+          gems: mergedGems,
+          stats: {
+            gamesPlayed: mergedGamesPlayed,
+            wins: mergedWins,
+            winStreak: mergedWinStreak,
+          },
+          isGuest: false,
+        };
+
+        // Persist positive delta merges back to cloud record
+        try {
+          await Promise.race([
+            supabase.from('profiles').upsert({
+              id: authUser.id,
+              email: merged.email || '',
+              nickname: merged.nickname,
+              avatar_id: merged.avatarId,
+              level: merged.level,
+              current_xp: merged.currentXp,
+              xp_to_next_level: merged.xpToNextLevel,
+              coins: merged.coins,
+              gems: merged.gems,
+              games_played: merged.stats.gamesPlayed,
+              wins: merged.stats.wins,
+              win_streak: merged.stats.winStreak,
+              is_guest: false,
+              updated_at: new Date().toISOString(),
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
+          ]);
+        } catch (upsertErr) {
+          console.warn('[PlayerProfileService] Cloud upsert warning (Case 1 Delta):', upsertErr);
+        }
       }
     }
 

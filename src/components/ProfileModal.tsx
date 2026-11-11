@@ -11,6 +11,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as NavigationBar from 'expo-navigation-bar';
+import { StatusBar } from 'expo-status-bar';
 import {
   AVATAR_OPTIONS,
   AvatarOption,
@@ -18,7 +20,7 @@ import {
   getAvatarConfig,
   playerProfileService,
 } from '../services/playerProfileService';
-import { authService, sendEmailOtp, verifyEmailOtp } from '../services/authService';
+import { authService } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
 import { networkService } from '../services/networkService';
 import {
@@ -52,14 +54,28 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [session, setSession] = useState<any>(null);
 
-  // Email OTP Flow state ("enter_email" -> "enter_code")
-  const [authStep, setAuthStep] = useState<'enter_email' | 'enter_code'>('enter_email');
-  const [emailInput, setEmailInput] = useState('');
-  const [otpInput, setOtpInput] = useState('');
-  const [isSendingOtp, setIsSendingOtp] = useState(false);
-  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  // Native Google Sign-In state
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(0);
+
+  // Re-assert sticky-immersive mode helper
+  const reassertImmersiveMode = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        if (typeof (NavigationBar as any).setHidden === 'function') {
+          (NavigationBar as any).setHidden(true);
+        }
+        if (typeof NavigationBar.setVisibilityAsync === 'function') {
+          await NavigationBar.setVisibilityAsync('hidden');
+        }
+        if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
+          await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
+        }
+      } catch {
+        // ignore
+      }
+    }
+  };
 
   // Listen to Supabase auth session changes for real-time connected state
   useEffect(() => {
@@ -86,27 +102,14 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setSelectedAvatarId(profile.avatarId);
       setIsSaving(false);
       setSaveStatus('idle');
-      setAuthStep('enter_email');
-      setEmailInput('');
-      setOtpInput('');
+      setIsSigningIn(false);
       setAuthError(null);
-      setCountdown(0);
-      setIsSendingOtp(false);
-      setIsVerifyingOtp(false);
+      reassertImmersiveMode();
     }
   }, [visible, profile]);
 
   const isConnected = !profile.isGuest || Boolean(session?.user);
   const connectedEmail = session?.user?.email || profile.email;
-
-  // Countdown timer for OTP resend
-  useEffect(() => {
-    if (countdown <= 0) return;
-    const timer = setInterval(() => {
-      setCountdown((prev) => Math.max(0, prev - 1));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [countdown]);
 
   const activeAvatar = getAvatarConfig(selectedAvatarId);
   const winRate =
@@ -114,77 +117,37 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       ? Math.round((profile.stats.wins / profile.stats.gamesPlayed) * 100)
       : 0;
 
-  const handleSendOtp = async () => {
-    if (isSendingOtp) return;
+  const handleGoogleSignIn = async () => {
+    if (isSigningIn) return;
     setAuthError(null);
-    const cleanEmail = emailInput.trim();
-    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setAuthError('Please enter a valid Gmail or email address.');
-      return;
-    }
-
-    const isOnline = await networkService.isOnline();
-    if (!isOnline) {
-      setAuthError("You're offline! Please check your internet connection.");
-      return;
-    }
-
-    setIsSendingOtp(true);
+    setIsSigningIn(true);
     hapticsService.cardSnap();
     soundService.playCardSnap();
 
     try {
-      await sendEmailOtp(cleanEmail);
-      setAuthStep('enter_code');
-      setCountdown(60);
-      soundService.playCardSnap();
-      errorToastService.show({
-        message: 'Verification code sent to your email!',
-        type: 'info',
-        durationMs: 3000,
-      });
+      const isOnline = await networkService.isOnline();
+      if (!isOnline) {
+        setAuthError("You're offline! Please check your internet connection.");
+        return;
+      }
+
+      const res = await authService.signInWithGoogleNative();
+      if (res && !res.cancelled) {
+        soundService.playWinChime();
+        errorToastService.show({
+          message: 'Connected with Google! Cloud save active.',
+          type: 'info',
+          durationMs: 3000,
+        });
+        await playerProfileService.getProfile(true);
+      }
     } catch (err: any) {
-      setAuthError(err?.message || 'Failed to send verification code.');
+      if (err?.code !== 'SIGN_IN_CANCELLED' && err?.message !== 'SIGN_IN_CANCELLED') {
+        setAuthError(err?.message || 'Google sign-in failed. Please try again.');
+      }
     } finally {
-      setIsSendingOtp(false);
-    }
-  };
-
-  const handleVerifyOtp = async () => {
-    if (isVerifyingOtp) return;
-    setAuthError(null);
-    const cleanToken = otpInput.trim();
-    if (!cleanToken || cleanToken.length < 6) {
-      setAuthError('Please enter the 6-digit verification code.');
-      return;
-    }
-
-    const isOnline = await networkService.isOnline();
-    if (!isOnline) {
-      setAuthError("You're offline! Please check your internet connection.");
-      return;
-    }
-
-    setIsVerifyingOtp(true);
-    hapticsService.cardSnap();
-    soundService.playCardSnap();
-
-    try {
-      await verifyEmailOtp(emailInput, cleanToken);
-      soundService.playWinChime();
-      errorToastService.show({
-        message: 'Connected successfully! Progress saved to cloud.',
-        type: 'info',
-        durationMs: 3000,
-      });
-      setAuthStep('enter_email');
-      setEmailInput('');
-      setOtpInput('');
-      await playerProfileService.getProfile(true);
-    } catch (err: any) {
-      setAuthError(err?.message || 'Verification failed. Please check the code.');
-    } finally {
-      setIsVerifyingOtp(false);
+      setIsSigningIn(false);
+      await reassertImmersiveMode();
     }
   };
 
@@ -192,20 +155,19 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     hapticsService.cardSnap();
     soundService.playCardDraw();
     try {
-      await authService.signOut();
+      await authService.signOutNativeGoogle();
       setSession(null);
       errorToastService.show({
         message: 'Signed out. Playing as Guest.',
         type: 'info',
         durationMs: 2500,
       });
-      setAuthStep('enter_email');
-      setEmailInput('');
-      setOtpInput('');
       setAuthError(null);
       await playerProfileService.getProfile(true);
     } catch (err) {
       console.warn('Sign out warning:', err);
+    } finally {
+      await reassertImmersiveMode();
     }
   };
 
@@ -251,9 +213,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  // Safe close: discards uncommitted nickname changes without forcing 'Player'
-  const handleClose = () => {
+  // Safe close: discards uncommitted nickname changes without forcing 'Player' and reasserts sticky immersive mode
+  const handleClose = async () => {
     setNameError(null);
+    await reassertImmersiveMode();
     onClose();
   };
 
@@ -285,6 +248,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       await playerProfileService.updateAvatar(selectedAvatarId);
       setSaveStatus('saved');
       await onSave(trimmed, selectedAvatarId);
+      await reassertImmersiveMode();
       onClose();
     } catch (err) {
       console.warn('Failed to save profile:', err);
@@ -301,6 +265,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       onRequestClose={handleClose}
       statusBarTranslucent
     >
+      <StatusBar hidden={true} />
       <View style={styles.backdrop}>
         <View style={styles.dialogCard}>
           {/* Header: Title and Close button */}
@@ -506,7 +471,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             {isConnected ? (
               <View style={styles.connectedCard}>
                 <Text style={styles.connectedBadge}>✓ CONNECTED</Text>
-                <Text style={styles.userEmail}>{connectedEmail}</Text>
+                <Text style={styles.userEmail}>{connectedEmail || profile.nickname}</Text>
                 <TouchableOpacity
                   activeOpacity={0.8}
                   onPress={handleSignOut}
@@ -519,138 +484,36 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <View style={styles.authCard}>
                 <View style={styles.authHeaderRow}>
                   <View style={styles.authHeaderTitleRow}>
-                    <Text style={styles.authHeaderIcon}>📧</Text>
-                    <Text style={styles.authHeaderTitle}>CONNECT VIA GMAIL / EMAIL</Text>
+                    <Text style={styles.authHeaderIcon}>⚡</Text>
+                    <Text style={styles.authHeaderTitle}>SAVE PROGRESS TO CLOUD</Text>
                   </View>
                 </View>
 
-                {authStep === 'enter_email' ? (
-                  <>
-                    <Text style={styles.authSubtitle}>
-                      Enter your Gmail address to sync your progress, level, and coins across devices.
-                    </Text>
-                    <TextInput
-                      style={styles.authTextInput}
-                      value={emailInput}
-                      onChangeText={(txt) => {
-                        setEmailInput(txt);
-                        if (authError) setAuthError(null);
-                      }}
-                      placeholder="Enter your Gmail address"
-                      placeholderTextColor="#94A3B8"
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      returnKeyType="send"
-                      onSubmitEditing={handleSendOtp}
-                    />
+                <Text style={styles.authSubtitle}>
+                  Sign in with Google to sync your XP, level, coins, and unlocked cosmetics across devices.
+                </Text>
 
-                    {authError && (
-                      <View style={styles.authErrorBanner}>
-                        <Text style={styles.authErrorText}>{authError}</Text>
-                      </View>
-                    )}
-
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handleSendOtp}
-                      disabled={isSendingOtp || !emailInput.trim()}
-                      style={[
-                        styles.primaryAuthBtn,
-                        (!emailInput.trim() || isSendingOtp) && styles.primaryAuthBtnDisabled,
-                      ]}
-                    >
-                      {isSendingOtp ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                      ) : (
-                        <Text style={styles.primaryAuthBtnText}>Send Code</Text>
-                      )}
-                    </TouchableOpacity>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.authSubtitle}>
-                      Enter the 6-digit verification code sent to:
-                    </Text>
-                    <View style={styles.targetEmailRow}>
-                      <Text style={styles.targetEmailText} numberOfLines={1}>
-                        {emailInput}
-                      </Text>
-                      <TouchableOpacity
-                        onPress={() => {
-                          setAuthError(null);
-                          setAuthStep('enter_email');
-                        }}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Text style={styles.editEmailText}>Change Email</Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    <TextInput
-                      style={styles.otpInput}
-                      value={otpInput}
-                      onChangeText={(txt) => {
-                        const digits = txt.replace(/[^0-9]/g, '').slice(0, 6);
-                        setOtpInput(digits);
-                        if (authError) setAuthError(null);
-                      }}
-                      placeholder="Enter 6-digit code"
-                      placeholderTextColor="#CBD5E1"
-                      keyboardType="number-pad"
-                      maxLength={6}
-                      autoFocus
-                      returnKeyType="done"
-                      onSubmitEditing={handleVerifyOtp}
-                    />
-
-                    {authError && (
-                      <View style={styles.authErrorBanner}>
-                        <Text style={styles.authErrorText}>{authError}</Text>
-                      </View>
-                    )}
-
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handleVerifyOtp}
-                      disabled={isVerifyingOtp || otpInput.trim().length < 6}
-                      style={[
-                        styles.primaryAuthBtn,
-                        (otpInput.trim().length < 6 || isVerifyingOtp) && styles.primaryAuthBtnDisabled,
-                      ]}
-                    >
-                      {isVerifyingOtp ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                      ) : (
-                        <Text style={styles.primaryAuthBtnText}>Verify & Connect</Text>
-                      )}
-                    </TouchableOpacity>
-
-                    <View style={styles.subAuthActionsRow}>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={countdown > 0 ? undefined : handleSendOtp}
-                        disabled={countdown > 0 || isSendingOtp}
-                        style={[styles.smallSubBtn, countdown > 0 && styles.smallSubBtnDisabled]}
-                      >
-                        <Text style={[styles.smallSubBtnText, countdown > 0 && styles.smallSubBtnTextDisabled]}>
-                          {countdown > 0 ? `Resend Code (${countdown}s)` : 'Resend Code'}
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={() => {
-                          setAuthError(null);
-                          setAuthStep('enter_email');
-                        }}
-                        style={styles.smallSubBtn}
-                      >
-                        <Text style={styles.smallSubBtnText}>Change Email</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </>
+                {authError && (
+                  <View style={styles.authErrorBanner}>
+                    <Text style={styles.authErrorText}>{authError}</Text>
+                  </View>
                 )}
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={handleGoogleSignIn}
+                  disabled={isSigningIn}
+                  style={[styles.googleSignInBtn, isSigningIn && styles.googleSignInBtnDisabled]}
+                >
+                  {isSigningIn ? (
+                    <ActivityIndicator color="#0F172A" size="small" />
+                  ) : (
+                    <View style={styles.googleBtnContent}>
+                      <Text style={styles.googleGLogo}>G</Text>
+                      <Text style={styles.googleSignInBtnText}>Sign in with Google</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
               </View>
             )}
 
@@ -1308,86 +1171,43 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: 0.5,
   },
-  subAuthActionsRow: {
+  googleSignInBtn: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginTop: 4,
-    marginBottom: 4,
-  },
-  smallSubBtn: {
-    flex: 1,
-    height: 38,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1.5,
-    borderColor: '#CBD5E1',
-    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  smallSubBtnDisabled: {
-    backgroundColor: '#F8FAFC',
-    borderColor: '#E2E8F0',
-    opacity: 0.7,
-  },
-  smallSubBtnText: {
-    ...FONT_CARTOON_BOLD,
-    fontSize: 12,
-    color: '#475569',
-  },
-  smallSubBtnTextDisabled: {
-    color: '#94A3B8',
-  },
-  authTextInput: {
-    ...FONT_CARTOON_BOLD,
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#CBD5E1',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: '#0F172A',
-    marginBottom: 8,
+    borderWidth: 2.5,
+    borderColor: '#0F172A',
+    borderBottomWidth: 5,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginTop: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 3,
   },
-  targetEmailRow: {
+  googleSignInBtnDisabled: {
+    opacity: 0.65,
+  },
+  googleBtnContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 10,
+    justifyContent: 'center',
+    gap: 10,
   },
-  targetEmailText: {
+  googleGLogo: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 18,
+    color: '#4285F4',
+  },
+  googleSignInBtnText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 12,
-    color: '#334155',
-    flex: 1,
-  },
-  editEmailText: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 12,
-    color: '#2563EB',
-    paddingHorizontal: 6,
-  },
-  otpInput: {
-    ...FONT_CARTOON_HEAVY,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderWidth: 2.5,
-    borderColor: '#F59E0B',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    fontSize: 22,
+    fontSize: 14,
     color: '#0F172A',
-    textAlign: 'center',
-    letterSpacing: 8,
-    marginBottom: 8,
+    letterSpacing: 0.3,
   },
   authErrorBanner: {
     backgroundColor: '#FEE2E2',

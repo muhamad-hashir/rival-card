@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   AppState,
   AppStateStatus,
+  Linking,
   Platform,
   StyleSheet,
 } from 'react-native';
@@ -63,8 +64,11 @@ function MainAppContent() {
     isQuickMatch?: boolean;
   } | null>(null);
 
-  // 1. Fullscreen Immersive Sticky Mode on Android
+  // 1. Fullscreen Immersive Sticky Mode on Android with animation-settle delays
   useEffect(() => {
+    let timer1: NodeJS.Timeout | null = null;
+    let timer2: NodeJS.Timeout | null = null;
+
     const applyImmersiveMode = async () => {
       if (Platform.OS === 'android') {
         try {
@@ -83,16 +87,89 @@ function MainAppContent() {
       }
     };
 
-    applyImmersiveMode();
+    const triggerImmersiveSticky = () => {
+      applyImmersiveMode();
+      // Re-trigger after short delays to ensure sticky immersive mode after native activity transition settles
+      if (timer1) clearTimeout(timer1);
+      if (timer2) clearTimeout(timer2);
+      timer1 = setTimeout(applyImmersiveMode, 300);
+      timer2 = setTimeout(applyImmersiveMode, 1000);
+    };
+
+    triggerImmersiveSticky();
 
     const appStateSub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active') {
-        applyImmersiveMode();
+        triggerImmersiveSticky();
       }
     });
 
     return () => {
+      if (timer1) clearTimeout(timer1);
+      if (timer2) clearTimeout(timer2);
       appStateSub.remove();
+    };
+  }, []);
+
+  // 2. Cold Start & In-App Deep Link Listener (Auth Callback / Magic Link)
+  useEffect(() => {
+    const handleAuthUrl = async (url: string) => {
+      if (!url) return;
+      try {
+        if (
+          url.includes('code=') ||
+          url.includes('access_token=') ||
+          url.includes('token_hash=') ||
+          url.includes('refresh_token=')
+        ) {
+          await authService.handleAuthDeepLink(url);
+        }
+        const { data } = await supabase.auth.getSession();
+        if (data?.session?.user) {
+          await playerProfileService.migrateAndLinkGuestAccount(data.session.user);
+          await playerProfileService.getProfile(true);
+        }
+
+        // Re-enforce sticky fullscreen immersive mode after returning to the app from external email / browser intent
+        if (Platform.OS === 'android') {
+          setTimeout(async () => {
+            try {
+              if (typeof NavigationBar.setVisibilityAsync === 'function') {
+                await NavigationBar.setVisibilityAsync('hidden');
+              }
+              if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
+                await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
+              }
+            } catch {
+              // ignore
+            }
+          }, 300);
+        }
+      } catch (err) {
+        console.warn('[RivalCard DeepLink] Error handling auth redirect url:', err);
+      }
+    };
+
+    // Cold-start launch via deep link (external intent)
+    Linking.getInitialURL()
+      .then((url) => {
+        if (url) {
+          handleAuthUrl(url);
+        }
+      })
+      .catch((err) => {
+        console.warn('[RivalCard DeepLink] getInitialURL warning:', err);
+      });
+
+    // In-app warm resume via deep link
+    const linkingSub = Linking.addEventListener('url', (event) => {
+      if (event.url) {
+        handleAuthUrl(event.url);
+      }
+    });
+
+    return () => {
+      linkingSub.remove();
     };
   }, []);
 
