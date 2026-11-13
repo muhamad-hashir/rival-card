@@ -255,7 +255,7 @@ function getCornerDisplayLabel(value: string): string {
     case 'skip':
       return '⊘';
     case 'reverse':
-      return '↺';
+      return '↻';
     case 'draw2':
       return '+2';
     case 'wild':
@@ -285,7 +285,7 @@ const ReverseArrowsMotif: React.FC<{ size: 'small' | 'medium' | 'large'; color: 
 
   return (
     <View style={[styles.reverseMotifBox, { width: boxW, height: boxH }]}>
-      {/* Top curving arrow looping counter-clockwise to left */}
+      {/* Top curving arrow looping clockwise to right */}
       <View style={[styles.reverseArrowGroupTop, { height: boxH * 0.6 }]}>
         <View
           style={[
@@ -293,38 +293,9 @@ const ReverseArrowsMotif: React.FC<{ size: 'small' | 'medium' | 'large'; color: 
             {
               borderColor: color,
               borderTopWidth: stroke,
-              borderRightWidth: stroke,
-              borderTopRightRadius: boxW * 0.5,
-              borderTopLeftRadius: boxW * 0.3,
-            },
-          ]}
-        />
-        <View
-          style={[
-            styles.reverseArrowHeadLeft,
-            {
-              borderTopWidth: arrowHead,
-              borderBottomWidth: arrowHead,
-              borderRightWidth: arrowHead * 1.6,
-              borderRightColor: color,
-              top: -arrowHead + stroke / 2,
-              left: -1,
-            },
-          ]}
-        />
-      </View>
-
-      {/* Bottom curving arrow looping counter-clockwise to right */}
-      <View style={[styles.reverseArrowGroupBottom, { height: boxH * 0.6 }]}>
-        <View
-          style={[
-            styles.reverseArcBottom,
-            {
-              borderColor: color,
-              borderBottomWidth: stroke,
               borderLeftWidth: stroke,
-              borderBottomLeftRadius: boxW * 0.5,
-              borderBottomRightRadius: boxW * 0.3,
+              borderTopLeftRadius: boxW * 0.5,
+              borderTopRightRadius: boxW * 0.3,
             },
           ]}
         />
@@ -336,8 +307,37 @@ const ReverseArrowsMotif: React.FC<{ size: 'small' | 'medium' | 'large'; color: 
               borderBottomWidth: arrowHead,
               borderLeftWidth: arrowHead * 1.6,
               borderLeftColor: color,
-              bottom: -arrowHead + stroke / 2,
+              top: -arrowHead + stroke / 2,
               right: -1,
+            },
+          ]}
+        />
+      </View>
+
+      {/* Bottom curving arrow looping clockwise to left */}
+      <View style={[styles.reverseArrowGroupBottom, { height: boxH * 0.6 }]}>
+        <View
+          style={[
+            styles.reverseArcBottom,
+            {
+              borderColor: color,
+              borderBottomWidth: stroke,
+              borderRightWidth: stroke,
+              borderBottomRightRadius: boxW * 0.5,
+              borderBottomLeftRadius: boxW * 0.3,
+            },
+          ]}
+        />
+        <View
+          style={[
+            styles.reverseArrowHeadLeft,
+            {
+              borderTopWidth: arrowHead,
+              borderBottomWidth: arrowHead,
+              borderRightWidth: arrowHead * 1.6,
+              borderRightColor: color,
+              bottom: -arrowHead + stroke / 2,
+              left: -1,
             },
           ]}
         />
@@ -450,8 +450,8 @@ const styles = StyleSheet.create({
   reverseArcTop: {
     width: '85%',
     height: '100%',
-    alignSelf: 'flex-end',
-    borderLeftWidth: 0,
+    alignSelf: 'flex-start',
+    borderRightWidth: 0,
     borderBottomWidth: 0,
   },
   reverseArrowHeadLeft: {
@@ -470,8 +470,8 @@ const styles = StyleSheet.create({
   reverseArcBottom: {
     width: '85%',
     height: '100%',
-    alignSelf: 'flex-start',
-    borderRightWidth: 0,
+    alignSelf: 'flex-end',
+    borderLeftWidth: 0,
     borderTopWidth: 0,
   },
   reverseArrowHeadRight: {

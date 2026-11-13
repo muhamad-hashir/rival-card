@@ -6,7 +6,6 @@ import {
   Animated,
   AppState,
   Dimensions,
-  FlatList,
   Image,
   ImageBackground,
   Platform,
@@ -21,6 +20,8 @@ import {
 } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import {
+  calculateNextPlayerIndex,
+  canPlayerCallRival,
   catchRival,
   chooseWildColor,
   createGame,
@@ -45,19 +46,26 @@ import { DraggableCard } from '../components/DraggableCard';
 import { ColorPickerModal } from '../components/ColorPickerModal';
 import { PrivacyMaskModal } from '../components/PrivacyMaskModal';
 import { GameOverModal } from '../components/GameOverModal';
+import { PrivateSeriesModal } from '../components/PrivateSeriesModal';
 import { LeaveConfirmationModal } from '../components/LeaveConfirmationModal';
 import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { ErrorToast } from '../components/ErrorToast';
 import { errorToastService } from '../services/errorToastService';
 import { ModesModal } from '../components/ModesModal';
 import { SettingsModal } from '../components/SettingsModal';
-import { TauntBar } from '../components/TauntBar';
+import { TauntBar, TauntToastBanner } from '../components/TauntBar';
 import { TurnTimerBadge } from '../components/TurnTimerBadge';
 import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { audioService } from '../services/audioService';
-import { playerProfileService, getAvatarConfig, AwardRewardsResult, PlayerProfile } from '../services/playerProfileService';
+import {
+  isEligibleCareerStatMatch,
+  playerProfileService,
+  getAvatarConfig,
+  AwardRewardsResult,
+  PlayerProfile,
+} from '../services/playerProfileService';
 import { shopService, ShopItem } from '../services/shopService';
 import { settingsService, UserSettings, DEFAULT_SETTINGS } from '../services/settingsService';
 import {
@@ -65,10 +73,18 @@ import {
   TauntMessage,
   saveActiveMatchSession,
   clearActiveMatchSession,
+  resolveOnlinePerspectivePlayer,
+  isOnlineLocalPlayerTurn,
 } from '../services/multiplayerService';
 import { COLOR_HEX } from '../types';
 import type { Card, CardValue, GameMode, GameState, Player, StandardColor } from '../types';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
+import { getCardOverlapMargin, HAND_HORIZONTAL_PADDING } from '../utils/boardLayout';
+import {
+  applySeriesPlayerDeparture,
+  createNextSeriesMatchState,
+  recordSeriesRoundResult,
+} from '../utils/seriesEngine';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
@@ -149,17 +165,6 @@ export function getPresetPlayers(
   });
 }
 
-function getCardOverlapMargin(cardCount: number): number {
-  if (cardCount <= 1) return 0;
-  if (cardCount === 2) return -22;
-  if (cardCount === 3) return -27;
-  if (cardCount === 4) return -31;
-  if (cardCount === 5) return -34;
-  if (cardCount <= 7) return -37;
-  if (cardCount <= 9) return -40;
-  return -42;
-}
-
 export interface GameScreenProps {
   initialPresetKey?: SetupPreset;
   initialGameState?: GameState;
@@ -196,6 +201,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // 3-second RIVAL countdown tracking
   const [rivalCountdown, setRivalCountdown] = useState<number | null>(null);
   const rivalTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastHandledRivalCallRef = useRef<{ playerId: string; timestamp: number } | null>(null);
+  const matchSessionIdRef = useRef<string>(
+    `${initialOnlineRoomCode || 'local'}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  );
+  const localRivalCallsInMatchRef = useRef<number>(0);
+  const resetMatchTrackingIds = useCallback((roomHint?: string | null) => {
+    matchSessionIdRef.current = `${roomHint || 'local'}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    localRivalCallsInMatchRef.current = 0;
+  }, []);
+  const [seriesNextCountdown, setSeriesNextCountdown] = useState<number | null>(null);
+  const seriesNextTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isGameOverRef = useRef(gameState.isGameOver);
   isGameOverRef.current = gameState.isGameOver;
 
@@ -206,9 +222,34 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
   const [onlineRoomCode, setOnlineRoomCode] = useState<string | null>(initialOnlineRoomCode);
   const [localOnlinePlayerId, setLocalOnlinePlayerId] = useState<string | null>(initialLocalOnlinePlayerId);
+  const [activeIsQuickMatch, setActiveIsQuickMatch] = useState<boolean>(isQuickMatch);
   const [activeTaunt, setActiveTaunt] = useState<TauntMessage | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [matchRewards, setMatchRewards] = useState<AwardRewardsResult | null>(null);
+  const directionPulseAnim = useRef(new Animated.Value(1)).current;
+  const directionFlipAnim = useRef(new Animated.Value(gameState.direction === -1 ? -1 : 1)).current;
+  const prevDirectionRef = useRef(gameState.direction);
+
+  useEffect(() => {
+    if (prevDirectionRef.current !== gameState.direction) {
+      prevDirectionRef.current = gameState.direction;
+      directionPulseAnim.setValue(1.16);
+      Animated.parallel([
+        Animated.spring(directionPulseAnim, {
+          toValue: 1,
+          friction: 6,
+          tension: 140,
+          useNativeDriver: true,
+        }),
+        Animated.spring(directionFlipAnim, {
+          toValue: gameState.direction === -1 ? -1 : 1,
+          friction: 7,
+          tension: 120,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [gameState.direction, directionPulseAnim, directionFlipAnim]);
 
   // Equipped Cosmetics from Shop
   const [equippedScenery, setEquippedScenery] = useState<ShopItem | null>(null);
@@ -439,6 +480,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   }, []);
 
   const isOnlineMode = gameState.gameMode === 'multiplayer';
+  const isPrivateSeriesRoom = Boolean(
+    isOnlineMode && !activeIsQuickMatch && gameState.seriesState?.isPrivateSeries
+  );
+  const resolvedOnlineUserId =
+    localOnlinePlayerId || multiplayerService.getMyPlayer()?.id || playerProfile?.id || null;
   const currentPlayer = gameState.players[gameState.currentTurnIndex];
   const discardLen = gameState.discardPile.length;
   const cardMinus2 = discardLen >= 3 ? gameState.discardPile[discardLen - 3] : null;
@@ -447,13 +493,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Hand representation:
   // - In vs_bot mode, the human player's hand is always pinned to the bottom tray.
-  // - In online multiplayer, hand cards represent the local player's hand.
+  // - In online multiplayer, hand cards are strictly locked to the authenticated local user's ID.
   // - In pass_and_play, hand cards represent the current player taking their turn.
   const myPlayer =
     gameState.gameMode === 'vs_bot'
       ? gameState.players.find((p) => !p.isBot) || gameState.players[0]
       : isOnlineMode
-      ? gameState.players.find((p) => p.id === localOnlinePlayerId) || currentPlayer
+      ? resolveOnlinePerspectivePlayer(gameState.players, resolvedOnlineUserId)
       : currentPlayer;
   const myPlayerAvatar = getAvatarConfig(myPlayer.avatarId);
 
@@ -484,12 +530,45 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     : null;
 
   const isMyTurn = isOnlineMode
-    ? currentPlayer.id === localOnlinePlayerId
+    ? isOnlineLocalPlayerTurn(gameState, resolvedOnlineUserId)
     : currentPlayer.id === myPlayer.id;
   const isHumanTurn =
     isMyTurn && !gameState.privacyMask.isActive && !gameState.isGameOver && !isReconnecting;
 
-  // Record match result in persistent player profile and award match rewards (XP, Coins, Level Up)
+  // Play audible Rival callout SFX when any opponent (remote player or AI bot) calls RIVAL!, deduplicated cleanly
+  const playOpponentRivalCue = useCallback(
+    (callerId: string, callerName?: string, timestamp: number = Date.now()) => {
+      if (!callerId || callerId === myPlayer.id) return;
+      const prev = lastHandledRivalCallRef.current;
+      if (prev && prev.playerId === callerId && Math.abs(prev.timestamp - timestamp) < 1500) {
+        return;
+      }
+      lastHandledRivalCallRef.current = { playerId: callerId, timestamp };
+      soundService.playRivalCallout();
+      audioService.playRivalShout();
+      hapticsService.rivalCallout();
+      showQuickBanner(`⚡ ${callerName || 'Opponent'} called RIVAL!`);
+    },
+    [myPlayer.id, showQuickBanner]
+  );
+
+  // Detect Rival callouts propagated via GameState (solo bots & synced multiplayer state)
+  useEffect(() => {
+    const calledBy = gameState.lastRivalCalledBy;
+    const calledAt = gameState.lastRivalCallTimestamp;
+    if (!calledBy || !calledAt || calledBy === myPlayer.id) return;
+    if (Date.now() - calledAt > 8000) return; // Ignore stale timestamps on snapshots
+    playOpponentRivalCue(calledBy, gameState.lastRivalCalledName, calledAt);
+  }, [
+    gameState.lastRivalCallTimestamp,
+    gameState.lastRivalCalledBy,
+    gameState.lastRivalCalledName,
+    myPlayer.id,
+    playOpponentRivalCue,
+  ]);
+
+  // Record match result in persistent player profile (STRICTLY public human-vs-human multiplayer)
+  // and award match rewards (XP, Coins, Level Up)
   const hasRecordedResultRef = useRef(false);
   useEffect(() => {
     if (gameState.isGameOver && !hasRecordedResultRef.current) {
@@ -497,16 +576,33 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearActiveMatchSession().catch(() => {});
       const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
       const turns = gameState.turnCount;
-      playerProfileService.recordMatchResult(isWinner).catch((err) => {
-        console.warn('Failed to record match result:', err);
-      });
+
+      if (
+        isEligibleCareerStatMatch({
+          gameMode: gameState.gameMode,
+          isQuickMatch: activeIsQuickMatch,
+          isPrivateSeries: Boolean(gameState.seriesState?.isPrivateSeries),
+          players: gameState.players,
+          localPlayerId: myPlayer.id,
+        })
+      ) {
+        playerProfileService
+          .recordMatchResult(isWinner, {
+            matchId: matchSessionIdRef.current,
+            rivalCalls: localRivalCallsInMatchRef.current,
+          })
+          .catch((err) => {
+            console.warn('Failed to record match result:', err);
+          });
+      }
+
       // Rewards Balance according to game mode:
       // - Pass & Play & Custom Private Rooms: Completely disabled (0 XP, 0 Coins)
       // - Bot Match (Play vs CPU): Strictly 10% of standard rewards
       // - Online Ranked (Quick Match): 100% full rewards
       let matchType: 'online_ranked' | 'bot' | 'custom_private' | 'pass_and_play' = 'bot';
       if (isOnlineMode) {
-        matchType = isQuickMatch ? 'online_ranked' : 'custom_private';
+        matchType = activeIsQuickMatch ? 'online_ranked' : 'custom_private';
       } else if (gameState.gameMode === 'pass_and_play') {
         matchType = 'pass_and_play';
       } else {
@@ -525,7 +621,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       hasRecordedResultRef.current = false;
       setMatchRewards(null);
     }
-  }, [gameState.isGameOver, gameState.winner, gameState.turnCount, myPlayer.id, isOnlineMode, isQuickMatch, gameState.gameMode]);
+  }, [
+    gameState.isGameOver,
+    gameState.winner,
+    gameState.turnCount,
+    gameState.players,
+    gameState.seriesState?.isPrivateSeries,
+    myPlayer.id,
+    isOnlineMode,
+    activeIsQuickMatch,
+    gameState.gameMode,
+  ]);
 
   // Pulsing animation for floating "CATCH RIVAL!" button
   useEffect(() => {
@@ -665,21 +771,25 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     soundService.setMuted(nextMute);
     setIsAudioMuted(nextMute);
 
+    await settingsService.updateSetting('sfxEnabled', !nextMute);
+    await settingsService.updateSetting('bgmEnabled', !nextMute);
     if (nextMute) {
       await audioService.pauseBgm();
     } else {
       await audioService.resumeBgm();
     }
-    await settingsService.updateSetting('sfxEnabled', !nextMute);
-    await settingsService.updateSetting('bgmEnabled', !nextMute);
     hapticsService.cardSnap();
   };
 
-  // Broadcast state changes in multiplayer mode
+  // Broadcast state changes in multiplayer mode (recording Private Room Series standings on round end)
   const commitGameState = (nextState: GameState, actionDescription: string) => {
-    setGameState(nextState);
-    if (gameState.gameMode === 'multiplayer') {
-      multiplayerService.broadcastGameState(nextState, actionDescription);
+    const finalizedState =
+      nextState.isGameOver && nextState.seriesState?.isPrivateSeries
+        ? recordSeriesRoundResult(nextState)
+        : nextState;
+    setGameState(finalizedState);
+    if (finalizedState.gameMode === 'multiplayer') {
+      multiplayerService.broadcastGameState(finalizedState, actionDescription);
     }
   };
 
@@ -751,21 +861,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     const timedOutPlayer = gameState.players[gameState.currentTurnIndex];
     if (!timedOutPlayer) return;
 
-    // Online multiplayer synchronization:
-    // If it's my turn, I execute and broadcast the timeout action.
-    // If it's the other player's turn and I am host, I execute and broadcast so the match never freezes.
+    // Private rooms never auto-play human slots, and online clients may only submit moves for their own turn.
     if (isOnlineMode) {
-      const isHost = multiplayerService.getMyPlayer()?.isHost ?? false;
-      const isMyTurnOnline = currentPlayer.id === localOnlinePlayerId;
-      if (!isMyTurnOnline && !isHost) {
-        // Guest waiting for host or active player to broadcast
+      if (!activeIsQuickMatch) {
+        return;
+      }
+      if (!resolvedOnlineUserId || timedOutPlayer.id !== resolvedOnlineUserId) {
         return;
       }
     }
 
     // Check if player has any playable cards in hand
     const playableCards = timedOutPlayer.hand.filter((c) =>
-      isValidMove(c, topDiscardCard, gameState.activeColor)
+      isValidMove(c, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0)
     );
 
     if (playableCards.length > 0) {
@@ -803,8 +911,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     gameState,
     isDealing,
     isOnlineMode,
-    currentPlayer.id,
-    localOnlinePlayerId,
+    activeIsQuickMatch,
+    resolvedOnlineUserId,
     topDiscardCard,
     showQuickBanner,
   ]);
@@ -928,8 +1036,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Trigger dealing animation on initial match mount
   useEffect(() => {
-    runDealingAnimation(getPresetPlayers(initialPresetKey));
-  }, [initialPresetKey, runDealingAnimation]);
+    runDealingAnimation(initialGameState?.players || getPresetPlayers(initialPresetKey));
+  }, [initialPresetKey, initialGameState, runDealingAnimation]);
 
   // Restart match with current or new preset
   const handleStartGame = useCallback((presetKey: SetupPreset) => {
@@ -943,6 +1051,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setPendingWildPair(null);
     setOnlineRoomCode(null);
     setLocalOnlinePlayerId(null);
+    setActiveIsQuickMatch(false);
     setIsBotProcessing(false);
     setIsHumanDrawing(false);
     hapticsService.cardSnap();
@@ -951,9 +1060,16 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearInterval(rivalTimerRef.current);
       rivalTimerRef.current = null;
     }
+    if (seriesNextTimerRef.current) {
+      clearInterval(seriesNextTimerRef.current);
+      seriesNextTimerRef.current = null;
+    }
+    lastHandledRivalCallRef.current = null;
+    resetMatchTrackingIds(null);
+    setSeriesNextCountdown(null);
     setRivalCountdown(null);
     runDealingAnimation(players);
-  }, [runDealingAnimation]);
+  }, [runDealingAnimation, resetMatchTrackingIds]);
 
   // Handle post-game "Play Again" action
   const handlePlayAgain = async () => {
@@ -963,6 +1079,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearInterval(rivalTimerRef.current);
       rivalTimerRef.current = null;
     }
+    if (seriesNextTimerRef.current) {
+      clearInterval(seriesNextTimerRef.current);
+      seriesNextTimerRef.current = null;
+    }
+    lastHandledRivalCallRef.current = null;
+    resetMatchTrackingIds(null);
+    setSeriesNextCountdown(null);
     setRivalCountdown(null);
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
@@ -972,6 +1095,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setIsHumanDrawing(false);
 
     if (isOnlineMode) {
+      resetMatchTrackingIds(onlineRoomCode);
       const playerConfigs = gameState.players.map((p) => ({
         id: p.id,
         name: p.name,
@@ -990,6 +1114,101 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   };
 
+  // Host advances Private Room 5-Match Series into Match X + 1 (or restarts fresh 5-match series)
+  const handleAdvanceNextSeriesMatch = useCallback(
+    async (resetSeries: boolean = false) => {
+      if (!isPrivateSeriesRoom || !gameState.seriesState) return;
+      if (seriesNextTimerRef.current) {
+        clearInterval(seriesNextTimerRef.current);
+        seriesNextTimerRef.current = null;
+      }
+      setSeriesNextCountdown(null);
+      if (rivalTimerRef.current) {
+        clearInterval(rivalTimerRef.current);
+        rivalTimerRef.current = null;
+      }
+      setRivalCountdown(null);
+      setSelectedWildCard(null);
+      setIsColorPickerOpen(false);
+      setPendingPairPlay(null);
+      setPendingWildPair(null);
+      setIsBotProcessing(false);
+      setIsHumanDrawing(false);
+
+      const nextMatchState = createNextSeriesMatchState(gameState, resetSeries);
+      setGameState(nextMatchState);
+
+      try {
+        await multiplayerService.broadcastSeriesNextMatch(nextMatchState, resetSeries);
+      } catch (err) {
+        console.warn('Failed to broadcast series next match:', err);
+      }
+
+      if (!nextMatchState.seriesState?.seriesEndedEarly) {
+        hapticsService.cardSnap();
+        soundService.playCardDraw();
+        runDealingAnimation(nextMatchState.players);
+      }
+    },
+    [isPrivateSeriesRoom, gameState, runDealingAnimation]
+  );
+
+  // Between-round countdown timer (12s) in Private Room Series; Host auto-advances at 0
+  useEffect(() => {
+    const series = gameState.seriesState;
+    const isBetweenRounds =
+      isPrivateSeriesRoom &&
+      gameState.isGameOver &&
+      Boolean(series) &&
+      !series?.seriesEndedEarly &&
+      (series?.currentMatchNumber ?? 0) < (series?.totalMatches ?? 5);
+
+    if (!isBetweenRounds || !series) {
+      if (seriesNextTimerRef.current) {
+        clearInterval(seriesNextTimerRef.current);
+        seriesNextTimerRef.current = null;
+      }
+      setSeriesNextCountdown(null);
+      return;
+    }
+
+    setSeriesNextCountdown(12);
+    seriesNextTimerRef.current = setInterval(() => {
+      setSeriesNextCountdown((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          if (seriesNextTimerRef.current) {
+            clearInterval(seriesNextTimerRef.current);
+            seriesNextTimerRef.current = null;
+          }
+          if (series.hostPlayerId === myPlayer.id) {
+            setTimeout(() => {
+              handleAdvanceNextSeriesMatch(false);
+            }, 0);
+          }
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (seriesNextTimerRef.current) {
+        clearInterval(seriesNextTimerRef.current);
+        seriesNextTimerRef.current = null;
+      }
+    };
+  }, [
+    isPrivateSeriesRoom,
+    gameState.isGameOver,
+    gameState.seriesState?.currentMatchNumber,
+    gameState.seriesState?.totalMatches,
+    gameState.seriesState?.seriesEndedEarly,
+    gameState.seriesState?.hostPlayerId,
+    myPlayer.id,
+    handleAdvanceNextSeriesMatch,
+  ]);
+
   // Handle post-game or header "Quit Room" action
   const handleQuitGame = useCallback(async () => {
     hapticsService.cardSnap();
@@ -997,12 +1216,24 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearInterval(disconnectCountdownRef.current);
       disconnectCountdownRef.current = null;
     }
+    if (seriesNextTimerRef.current) {
+      clearInterval(seriesNextTimerRef.current);
+      seriesNextTimerRef.current = null;
+    }
+    setSeriesNextCountdown(null);
     errorToastService.hide();
     await clearActiveMatchSession();
     if (rivalTimerRef.current) {
       clearInterval(rivalTimerRef.current);
       rivalTimerRef.current = null;
     }
+    if (seriesNextTimerRef.current) {
+      clearInterval(seriesNextTimerRef.current);
+      seriesNextTimerRef.current = null;
+    }
+    lastHandledRivalCallRef.current = null;
+    resetMatchTrackingIds(null);
+    setSeriesNextCountdown(null);
     setRivalCountdown(null);
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
@@ -1028,6 +1259,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearInterval(disconnectCountdownRef.current);
       disconnectCountdownRef.current = null;
     }
+    if (seriesNextTimerRef.current) {
+      clearInterval(seriesNextTimerRef.current);
+      seriesNextTimerRef.current = null;
+    }
+    setSeriesNextCountdown(null);
     errorToastService.hide();
   }, []);
 
@@ -1075,27 +1311,32 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     multiplayerService.setCallbacks({
       onGameStateUpdate: (remoteState, senderId) => {
         stopDisconnectionCountdown();
-        if (senderId !== localOnlinePlayerId) {
+        if (senderId !== resolvedOnlineUserId) {
           const wasGameOver = isGameOverRef.current;
-          setGameState(remoteState);
+          const normalizedRemote =
+            remoteState.isGameOver && remoteState.seriesState?.isPrivateSeries
+              ? recordSeriesRoundResult(remoteState)
+              : remoteState;
+          setGameState(normalizedRemote);
           setIsReconnecting(false);
-          if (remoteState.isGameOver) {
+          if (normalizedRemote.isGameOver) {
             soundService.playWinChime();
             hapticsService.victory();
           } else {
             soundService.playCardSnap();
             hapticsService.cardSnap();
-            const topCard = remoteState.discardPile[remoteState.discardPile.length - 1];
+            const topCard = normalizedRemote.discardPile[normalizedRemote.discardPile.length - 1];
             if (topCard) {
               triggerCardActionSfx(topCard.value);
             }
             if (wasGameOver) {
+              resetMatchTrackingIds(onlineRoomCode);
               setSelectedWildCard(null);
               setIsColorPickerOpen(false);
               setPendingPairPlay(null);
               setPendingWildPair(null);
               setRivalCountdown(null);
-              runDealingAnimation(remoteState.players);
+              runDealingAnimation(normalizedRemote.players);
             }
           }
         }
@@ -1116,6 +1357,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       },
       onStateSnapshotReceived: (syncedState) => {
         stopDisconnectionCountdown();
+        if (syncedState.lastRivalCalledBy && syncedState.lastRivalCallTimestamp) {
+          lastHandledRivalCallRef.current = {
+            playerId: syncedState.lastRivalCalledBy,
+            timestamp: syncedState.lastRivalCallTimestamp,
+          };
+        }
         setGameState(syncedState);
         setIsReconnecting(false);
         showQuickBanner('Match state synchronized!');
@@ -1125,8 +1372,41 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         soundService.playCardSnap();
         hapticsService.cardSelection();
       },
-      onPlayerLeft: (_id, name) => {
-        Alert.alert('Player Disconnected', `${name} has left the match.`);
+      onRivalCalled: (event) => {
+        playOpponentRivalCue(event.playerId, event.playerName, event.timestamp);
+      },
+      onSeriesNextMatch: (nextState, isNewSeries) => {
+        stopDisconnectionCountdown();
+        if (seriesNextTimerRef.current) {
+          clearInterval(seriesNextTimerRef.current);
+          seriesNextTimerRef.current = null;
+        }
+        setSeriesNextCountdown(null);
+        setSelectedWildCard(null);
+        setIsColorPickerOpen(false);
+        setPendingPairPlay(null);
+        setPendingWildPair(null);
+        setRivalCountdown(null);
+        setGameState(nextState);
+        setIsReconnecting(false);
+        if (!nextState.seriesState?.seriesEndedEarly) {
+          soundService.playCardDraw();
+          hapticsService.cardSnap();
+          runDealingAnimation(nextState.players);
+          const matchNum = nextState.seriesState?.currentMatchNumber ?? 1;
+          const total = nextState.seriesState?.totalMatches ?? 5;
+          showQuickBanner(
+            isNewSeries ? 'New 5-Match Series started!' : `Match ${matchNum}/${total} started!`
+          );
+        }
+      },
+      onPlayerLeft: (departedId, name) => {
+        if (isPrivateSeriesRoom) {
+          showQuickBanner(`👋 ${name || 'A player'} left the room`);
+          setGameState((prev) => applySeriesPlayerDeparture(prev, departedId));
+        } else {
+          Alert.alert('Player Disconnected', `${name} has left the match.`);
+        }
       },
       onError: (errMsg) => {
         errorToastService.showError(errMsg);
@@ -1134,28 +1414,33 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     });
   }, [
     isOnlineMode,
-    localOnlinePlayerId,
+    isPrivateSeriesRoom,
+    resolvedOnlineUserId,
     runDealingAnimation,
     gameState,
     myPlayer.id,
+    playOpponentRivalCue,
     showQuickBanner,
     startDisconnectionCountdown,
     stopDisconnectionCountdown,
   ]);
 
-  // AppState background/foreground resume listener
+  // AppState background/foreground resume listener (audio lifecycle + online reconnection)
   useEffect(() => {
-    if (!isOnlineMode) return;
-
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
-        const status = multiplayerService.getConnectionStatus();
-        if (status !== 'connected') {
-          setIsReconnecting(true);
-          multiplayerService.reconnect();
-        } else {
-          multiplayerService.requestStateSnapshot();
+        audioService.ensureAudioMode(true).then(() => audioService.resumeBgm()).catch(() => {});
+        if (isOnlineMode) {
+          const status = multiplayerService.getConnectionStatus();
+          if (status !== 'connected') {
+            setIsReconnecting(true);
+            multiplayerService.reconnect();
+          } else {
+            multiplayerService.requestStateSnapshot();
+          }
         }
+      } else if (nextAppState === 'background') {
+        audioService.pauseBgm().catch(() => {});
       }
     });
 
@@ -1384,7 +1669,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             : undefined;
 
           // If action card causes draw on victim (+2, +4)
-          const targetIndex = (stateForBot.currentTurnIndex + stateForBot.direction + stateForBot.players.length) % stateForBot.players.length;
+          const targetIndex = calculateNextPlayerIndex(
+            stateForBot.currentTurnIndex,
+            stateForBot.direction,
+            stateForBot.players.length,
+            1
+          );
           const victim = stateForBot.players[targetIndex];
           const isDrawAction = chosenCard.value === 'draw2' || chosenCard.value === 'wild_draw4';
           const canVictimStack = victim && victim.hand.some((c) => c.value === chosenCard.value);
@@ -1479,7 +1769,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     // Play standard card
     try {
       if (card.value === 'draw2') {
-        const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
+        const targetIndex = calculateNextPlayerIndex(
+          gameState.currentTurnIndex,
+          gameState.direction,
+          gameState.players.length,
+          1
+        );
         const victim = gameState.players[targetIndex];
         const isEscalation = (gameState.pendingDrawCount || 0) > 0;
         const totalPenalty = (gameState.pendingDrawCount || 0) + 2;
@@ -1554,7 +1849,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
     try {
       if (card1.value === 'draw2') {
-        const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
+        const targetIndex = calculateNextPlayerIndex(
+          gameState.currentTurnIndex,
+          gameState.direction,
+          gameState.players.length,
+          1
+        );
         const victim = gameState.players[targetIndex];
         const isEscalation = (gameState.pendingDrawCount || 0) > 0;
         const totalPenalty = (gameState.pendingDrawCount || 0) + 4;
@@ -1618,7 +1918,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const handleCardPress = (card: Card) => {
     if (!isHumanTurn) return;
 
-    if (!isValidMove(card, topDiscardCard, gameState.activeColor)) {
+    if (!isValidMove(card, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0)) {
       hapticsService.invalidMove();
       soundService.playError();
       Alert.alert(
@@ -1647,6 +1947,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Color Selection for Wild Cards
   const handleSelectWildColor = (color: StandardColor) => {
+    if (!isHumanTurn) {
+      setIsColorPickerOpen(false);
+      return;
+    }
     setIsColorPickerOpen(false);
 
     if (pendingWildPair) {
@@ -1655,7 +1959,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       setPendingPairPlay(null);
       try {
         if (pair.card1.value === 'wild_draw4') {
-          const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
+          const targetIndex = calculateNextPlayerIndex(
+          gameState.currentTurnIndex,
+          gameState.direction,
+          gameState.players.length,
+          1
+        );
           const victim = gameState.players[targetIndex];
           if (victim) {
             setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: 8 }));
@@ -1733,7 +2042,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     if (selectedWildCard) {
       try {
         if (selectedWildCard.value === 'wild_draw4') {
-          const targetIndex = (gameState.currentTurnIndex + gameState.direction + gameState.players.length) % gameState.players.length;
+          const targetIndex = calculateNextPlayerIndex(
+          gameState.currentTurnIndex,
+          gameState.direction,
+          gameState.players.length,
+          1
+        );
           const victim = gameState.players[targetIndex];
           const isEscalation = (gameState.pendingDrawCount || 0) > 0;
           const totalPenalty = (gameState.pendingDrawCount || 0) + 4;
@@ -1950,13 +2264,28 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     });
   };
 
-  // Declare RIVAL!
+  // Declare RIVAL! (Strictly restricted to 2 cards left on active human turn)
   const handleDeclareRival = () => {
     if (!myPlayer || myPlayer.isBot) return;
+    if (
+      !canPlayerCallRival(
+        myPlayer.hand.length,
+        myPlayer.hasDeclaredRival,
+        isHumanTurn,
+        isDealing,
+        gameState.isGameOver
+      )
+    ) {
+      return;
+    }
     const nextState = declareRival(gameState, myPlayer.id);
+    localRivalCallsInMatchRef.current += 1;
     hapticsService.rivalCallout();
     soundService.playRivalCallout();
     audioService.playRivalShout();
+    if (isOnlineMode) {
+      multiplayerService.broadcastRivalCallout(myPlayer.id, myPlayer.name);
+    }
     commitGameState(nextState, `${myPlayer.name} declared RIVAL!`);
 
     if (catchTimerRef.current) {
@@ -1973,6 +2302,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearInterval(rivalTimerRef.current);
       rivalTimerRef.current = null;
     }
+    if (seriesNextTimerRef.current) {
+      clearInterval(seriesNextTimerRef.current);
+      seriesNextTimerRef.current = null;
+    }
+    lastHandledRivalCallRef.current = null;
+    resetMatchTrackingIds(null);
+    setSeriesNextCountdown(null);
     setRivalCountdown(null);
   };
 
@@ -2274,12 +2610,21 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                     <Text style={styles.onlineRoomText}>#{onlineRoomCode}</Text>
                   </View>
                 )}
+
+                {isPrivateSeriesRoom && gameState.seriesState && (
+                  <View style={styles.seriesRoundBadge}>
+                    <Text style={styles.seriesRoundBadgeText}>
+                      Match {gameState.seriesState.currentMatchNumber}/{gameState.seriesState.totalMatches}
+                    </Text>
+                  </View>
+                )}
               </View>
 
               <View style={styles.headerRight}>
                 {/* Real-time Quick Taunt Bar Button */}
                 <TauntBar
                   activeTaunt={activeTaunt}
+                  hideToast={true}
                   onSendTaunt={(emoji) => {
                     if (isOnlineMode) {
                       multiplayerService.broadcastTaunt(emoji);
@@ -2320,6 +2665,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </TouchableOpacity>
               </View>
             </View>
+
+        {/* Board-Level Auto-Sizing Active Taunt Banner (cleanly below header, never clips usernames) */}
+        <TauntToastBanner activeTaunt={activeTaunt} />
 
         {/* ================================================================= */}
         {/* 2. TOP OPPONENT (12 O'CLOCK POSITION) */}
@@ -2374,29 +2722,51 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               </View>
             )}
 
-            {/* Circular Turn Direction Arrows encircling the center cards */}
-            <View
+            {/* Minimalist Orbiting Turn Direction Ring & Curved Tangent Arrows */}
+            <Animated.View
               style={[
                 styles.turnDirectionRingContainer,
-                { transform: [{ scaleX: gameState.direction === -1 ? -1 : 1 }] },
+                {
+                  transform: [
+                    { scaleX: directionFlipAnim },
+                    { scale: directionPulseAnim },
+                  ],
+                },
               ]}
               pointerEvents="none"
             >
-              <View style={styles.turnDirectionRing}>
-                <View style={styles.flowArrowTop}>
-                  <Text style={styles.flowArrowText}>➔</Text>
-                </View>
-                <View style={styles.flowArrowRight}>
-                  <Text style={styles.flowArrowText}>➔</Text>
-                </View>
-                <View style={styles.flowArrowBottom}>
-                  <Text style={styles.flowArrowText}>➔</Text>
-                </View>
-                <View style={styles.flowArrowLeft}>
-                  <Text style={styles.flowArrowText}>➔</Text>
-                </View>
+              <View
+                style={[
+                  styles.turnDirectionRing,
+                  gameState.direction === -1 && styles.turnDirectionRingReversed,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.orbitChevronTop,
+                    gameState.direction === -1 && styles.orbitChevronReversed,
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.orbitChevronRight,
+                    gameState.direction === -1 && styles.orbitChevronReversed,
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.orbitChevronBottom,
+                    gameState.direction === -1 && styles.orbitChevronReversed,
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.orbitChevronLeft,
+                    gameState.direction === -1 && styles.orbitChevronReversed,
+                  ]}
+                />
               </View>
-            </View>
+            </Animated.View>
 
             {/* Draw Deck: Positioned top-left of discard pile with counter badge */}
             <View style={styles.drawDeckAbsoluteAnchor}>
@@ -2538,6 +2908,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             : pendingPenaltyCount[myPlayer.id]
             ? myPlayer.hand.slice(0, Math.max(0, myPlayer.hand.length - pendingPenaltyCount[myPlayer.id]))
             : myPlayer.hand;
+          const canCallRival = canPlayerCallRival(
+            visiblePlayerHand.length,
+            myPlayer.hasDeclaredRival,
+            isHumanTurn,
+            isDealing,
+            gameState.isGameOver
+          );
 
           return (
             <View style={styles.playerSection}>
@@ -2604,14 +2981,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={handleDeclareRival}
-                  disabled={!isHumanTurn || isDealing}
+                  disabled={!canCallRival}
                   style={[
                     styles.rivalBuzzerBtn,
-                    (visiblePlayerHand.length <= 2 || rivalCountdown !== null) && styles.rivalBuzzerActive,
-                    (!isHumanTurn || isDealing) && styles.rivalBuzzerDisabled,
+                    canCallRival && styles.rivalBuzzerActive,
+                    !canCallRival && styles.rivalBuzzerDisabled,
                   ]}
                   accessibilityRole="button"
                   accessibilityLabel="Call Rival"
+                  accessibilityState={{ disabled: !canCallRival }}
                 >
                   <View style={styles.rivalBuzzerInner}>
                     <Text style={styles.rivalBuzzerIcon}>⚡</Text>
@@ -2671,41 +3049,41 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </View>
               )}
 
-              {/* Hand anchored to bottom-center with smooth fan overlap */}
-              <FlatList
-                horizontal
-                data={visiblePlayerHand}
-                keyExtractor={(item) => item.id}
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={[
-                  styles.handScrollList,
-                  visiblePlayerHand.length <= 7 && styles.handScrollListCentered,
-                ]}
-                renderItem={({ item, index }) => {
-                  const playable =
-                    isHumanTurn &&
-                    !isDealing &&
-                    isValidMove(item, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0);
-                  const overlapMargin = index === 0 ? 0 : getCardOverlapMargin(visiblePlayerHand.length);
-                  const isPairSelected = Boolean(
-                    pendingPairPlay &&
-                      (item.id === pendingPairPlay.card1.id || item.id === pendingPairPlay.card2.id)
-                  );
+              {/* Hand anchored strictly centered in bottom slot regardless of card count */}
+              <View style={styles.handTrayWrapper}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.handScrollView}
+                  contentContainerStyle={styles.handScrollList}
+                >
+                  {visiblePlayerHand.map((item, index) => {
+                    const playable =
+                      isHumanTurn &&
+                      !isDealing &&
+                      isValidMove(item, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0);
+                    const overlapMargin =
+                      index === 0 ? 0 : getCardOverlapMargin(visiblePlayerHand.length, windowWidth);
+                    const isPairSelected = Boolean(
+                      pendingPairPlay &&
+                        (item.id === pendingPairPlay.card1.id || item.id === pendingPairPlay.card2.id)
+                    );
 
-                  return (
-                    <DraggableCard
-                      key={item.id}
-                      card={item}
-                      isPlayable={playable}
-                      disabled={!isHumanTurn || isDealing}
-                      isSelected={isPairSelected}
-                      zIndex={index + 1}
-                      overlapMargin={overlapMargin}
-                      onPlay={handleCardPress}
-                    />
-                  );
-                }}
-              />
+                    return (
+                      <DraggableCard
+                        key={item.id}
+                        card={item}
+                        isPlayable={playable}
+                        disabled={!isHumanTurn || isDealing}
+                        isSelected={isPairSelected}
+                        zIndex={index + 1}
+                        overlapMargin={overlapMargin}
+                        onPlay={handleCardPress}
+                      />
+                    );
+                  })}
+                </ScrollView>
+              </View>
             </View>
           );
         })()}
@@ -2761,11 +3139,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         <MultiplayerLobbyModal
           visible={isLobbyModalOpen}
           onClose={() => setIsLobbyModalOpen(false)}
-          onGameStart={(initialState, playerId, roomCode) => {
+          onGameStart={(initialState, playerId, roomCode, isQuick) => {
+            resetMatchTrackingIds(roomCode);
             setGameState(initialState);
             setLocalOnlinePlayerId(playerId);
             setOnlineRoomCode(roomCode);
+            setActiveIsQuickMatch(Boolean(isQuick));
             setIsLobbyModalOpen(false);
+            runDealingAnimation(initialState.players);
           }}
         />
 
@@ -2778,9 +3159,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           onGoHome={handleExitToHome}
         />
 
-        {/* Game Over Victory Screen */}
+        {/* Game Over Victory Screen (Solo / Pass & Play / Quick Match) */}
         <GameOverModal
-          visible={gameState.isGameOver}
+          visible={gameState.isGameOver && !isPrivateSeriesRoom}
           winner={gameState.winner}
           turnCount={gameState.turnCount}
           players={gameState.players}
@@ -2795,6 +3176,18 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           onPlay1v1={() => handleStartGame('vs_bot_2p')}
           onSelectPreset={(preset) => handleStartGame(preset)}
           onMainMenu={handleExitToHome}
+        />
+
+        {/* Private Room 5-Match Series Modal (Between-Round & Final Scorecard) */}
+        <PrivateSeriesModal
+          visible={gameState.isGameOver && isPrivateSeriesRoom}
+          seriesState={gameState.seriesState}
+          roundWinner={gameState.winner}
+          localPlayerId={myPlayer.id}
+          nextMatchCountdown={seriesNextCountdown}
+          onNextMatch={() => handleAdvanceNextSeriesMatch(false)}
+          onPlayNewSeries={() => handleAdvanceNextSeriesMatch(true)}
+          onLeaveRoom={handleQuitGame}
         />
 
         {/* Styled In-Game Leave Confirmation Modal */}
@@ -2882,7 +3275,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.45)',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-    zIndex: 20,
+    zIndex: 60,
+    overflow: 'visible',
   },
   headerLeft: {
     flexDirection: 'row',
@@ -3012,9 +3406,29 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#A7F3D0',
   },
+  seriesRoundBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF6E9',
+    paddingHorizontal: 9,
+    paddingVertical: 2,
+    borderRadius: 9,
+    marginLeft: 6,
+    borderWidth: 1.5,
+    borderBottomWidth: 2.5,
+    borderColor: '#E2D9C8',
+  },
+  seriesRoundBadgeText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#92400E',
+    letterSpacing: 0.4,
+  },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    zIndex: 60,
+    overflow: 'visible',
   },
   iconBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
@@ -3351,94 +3765,78 @@ const styles = StyleSheet.create({
   },
   turnDirectionRingContainer: {
     position: 'absolute',
-    width: 220,
-    height: 154,
+    width: 224,
+    height: 156,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2,
   },
   turnDirectionRing: {
-    width: 206,
+    width: 208,
     height: 144,
     borderRadius: 72,
-    borderWidth: 1.5,
-    borderColor: 'rgba(16, 185, 129, 0.35)',
+    borderWidth: 1.25,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
     borderStyle: 'dashed',
     position: 'relative',
   },
-  flowArrowTop: {
-    position: 'absolute',
-    top: -9,
-    alignSelf: 'center',
-    backgroundColor: '#10B981',
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
-    elevation: 3,
+  turnDirectionRingReversed: {
+    borderColor: 'rgba(251, 191, 36, 0.42)',
   },
-  flowArrowRight: {
+  orbitChevronReversed: {
+    borderColor: '#FBBF24',
+  },
+  orbitChevronTop: {
     position: 'absolute',
-    right: -9,
+    top: -5,
+    left: '50%',
+    marginLeft: -4,
+    width: 8,
+    height: 8,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderRadius: 1,
+    borderColor: 'rgba(255, 255, 255, 0.72)',
+    transform: [{ rotate: '45deg' }],
+  },
+  orbitChevronRight: {
+    position: 'absolute',
+    right: -5,
     top: '50%',
-    marginTop: -9,
-    backgroundColor: '#10B981',
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ rotate: '90deg' }],
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
-    elevation: 3,
+    marginTop: -4,
+    width: 8,
+    height: 8,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderRadius: 1,
+    borderColor: 'rgba(255, 255, 255, 0.72)',
+    transform: [{ rotate: '135deg' }],
   },
-  flowArrowBottom: {
+  orbitChevronBottom: {
     position: 'absolute',
-    bottom: -9,
-    alignSelf: 'center',
-    backgroundColor: '#10B981',
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ rotate: '180deg' }],
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
-    elevation: 3,
+    bottom: -5,
+    left: '50%',
+    marginLeft: -4,
+    width: 8,
+    height: 8,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderRadius: 1,
+    borderColor: 'rgba(255, 255, 255, 0.72)',
+    transform: [{ rotate: '225deg' }],
   },
-  flowArrowLeft: {
+  orbitChevronLeft: {
     position: 'absolute',
-    left: -9,
+    left: -5,
     top: '50%',
-    marginTop: -9,
-    backgroundColor: '#10B981',
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ rotate: '270deg' }],
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  flowArrowText: {
-    color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: '900',
+    marginTop: -4,
+    width: 8,
+    height: 8,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderRadius: 1,
+    borderColor: 'rgba(255, 255, 255, 0.72)',
+    transform: [{ rotate: '315deg' }],
   },
   drawDeckAbsoluteAnchor: {
     position: 'absolute',
@@ -3695,12 +4093,12 @@ const styles = StyleSheet.create({
     zIndex: 35,
   },
   rivalBuzzerBtn: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 74,
+    height: 74,
+    borderRadius: 37,
     backgroundColor: '#EF4444',
-    borderWidth: 2.5,
-    borderBottomWidth: 4,
+    borderWidth: 3,
+    borderBottomWidth: 5,
     borderColor: '#B91C1C',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3717,21 +4115,21 @@ const styles = StyleSheet.create({
     transform: [{ scale: 1.05 }],
   },
   rivalBuzzerDisabled: {
-    opacity: 0.75,
+    opacity: 0.45,
   },
   rivalBuzzerInner: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   rivalBuzzerIcon: {
-    fontSize: 14,
-    lineHeight: 16,
+    fontSize: 18,
+    lineHeight: 20,
   },
   rivalBuzzerText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 9,
+    fontSize: 12,
     color: '#FFFFFF',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
   passTurnBtn: {
     backgroundColor: '#2563EB',
@@ -3754,16 +4152,21 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#FFFFFF',
   },
+  handTrayWrapper: {
+    width: '100%',
+    alignSelf: 'center',
+    justifyContent: 'center',
+  },
+  handScrollView: {
+    width: '100%',
+  },
   handScrollList: {
-    paddingLeft: 96,
-    paddingRight: 84,
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: HAND_HORIZONTAL_PADDING,
     paddingTop: 2,
     paddingBottom: 0,
-    alignItems: 'center',
-  },
-  handScrollListCentered: {
-    minWidth: '100%',
-    justifyContent: 'center',
   },
   catchRivalFloatingContainer: {
     position: 'absolute',

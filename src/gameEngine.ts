@@ -149,6 +149,26 @@ export function isWildCard(card: Card): boolean {
   );
 }
 
+const NUMBER_CARD_VALUES = new Set<string>([
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+]);
+
+/**
+ * Checks whether a card is strictly a standard numbered card (0-9) with a standard color.
+ */
+export function isNumberCard(card: Card): boolean {
+  return card.color !== 'wild' && NUMBER_CARD_VALUES.has(String(card.value));
+}
+
 /**
  * Validates whether a card can be legally played onto the discard pile:
  * - If pendingDrawCount > 0 (active draw penalty stack):
@@ -240,6 +260,16 @@ export function drawFromDeck(
     }
   }
 
+  // If the draw pile just became empty after drawing, automatically replenish
+  // from buried discard cards (keeping top active card) so draw pile never stalls.
+  if (currentDeck.length === 0 && currentDiscard.length > 1) {
+    const topCard = currentDiscard[currentDiscard.length - 1];
+    const cardsToReshuffle = currentDiscard.slice(0, -1);
+    currentDeck = shuffleDeck(cardsToReshuffle);
+    currentDiscard = [topCard];
+    didReshuffle = true;
+  }
+
   return {
     drawnCards,
     remainingDeck: currentDeck,
@@ -304,7 +334,7 @@ export interface CreateGameOptions {
 /**
  * Creates and initializes a new Rival Card game:
  * - Deals 7 cards to each player.
- * - Draws initial top card for discard pile (ensures first card is non-wild for fair start).
+ * - Draws initial top card for discard pile (strictly a standard numbered card 0-9).
  * - Sets activeColor and initial turn index.
  * - Sets privacy mask if pass-and-play mode and first player is human.
  */
@@ -318,7 +348,7 @@ export function createGame(
   }
 
   const rawDeck = generateDeck();
-  const shuffledDeck = shuffleDeck(rawDeck);
+  let shuffledDeck = shuffleDeck(rawDeck);
 
   // Deal 7 cards per player
   const players: Player[] = playerConfigs.map((config) => {
@@ -336,68 +366,41 @@ export function createGame(
   });
 
   // Pick top card from deck for discard pile.
-  // Standard rule: first card cannot be Wild or Rival action.
-  let topCardIndex = -1;
-  for (let i = shuffledDeck.length - 1; i >= 0; i--) {
-    if (!isWildCard(shuffledDeck[i])) {
-      topCardIndex = i;
+  // Strict rule: first face-up discard card must be a standard numbered card (0-9).
+  // If an action or wild card is drawn, return it to the deck, reshuffle, and draw again.
+  let initialTopCard: Card | undefined;
+  const maxReshuffleAttempts = Math.max(shuffledDeck.length * 3, 120);
+
+  for (let attempt = 0; attempt < maxReshuffleAttempts && shuffledDeck.length > 0; attempt++) {
+    const candidate = shuffledDeck.pop()!;
+    if (isNumberCard(candidate)) {
+      initialTopCard = candidate;
       break;
+    }
+    shuffledDeck.unshift(candidate);
+    shuffledDeck = shuffleDeck(shuffledDeck);
+  }
+
+  if (!initialTopCard) {
+    // Deterministic fallback search if random reshuffles didn't surface one in time
+    const numberIdx = shuffledDeck.findIndex((c) => isNumberCard(c));
+    if (numberIdx !== -1) {
+      [initialTopCard] = shuffledDeck.splice(numberIdx, 1);
+    } else {
+      initialTopCard = shuffledDeck.pop()!;
     }
   }
 
-  if (topCardIndex === -1) {
-    // Fallback if somehow no non-wild found
-    topCardIndex = shuffledDeck.length - 1;
-  }
-
-  const [initialTopCard] = shuffledDeck.splice(topCardIndex, 1);
   const discardPile: Card[] = [initialTopCard];
 
   const initialActiveColor: StandardColor =
     initialTopCard.color === 'wild' ? 'red' : (initialTopCard.color as StandardColor);
 
-  let currentTurnIndex = 0;
-  let direction: TurnDirection = 1;
+  const currentTurnIndex = 0;
+  const direction: TurnDirection = 1;
   const initialLogs: GameEventLog[] = [
     createLogEntry('PLAY_CARD', `Game started! Top card is ${initialTopCard.color.toUpperCase()} ${initialTopCard.value}.`),
   ];
-
-  // Handle standard action card starting effects
-  if (initialTopCard.value === 'skip') {
-    const skippedStartMsg =
-      players[0].name === 'You'
-        ? 'You were skipped by initial Skip card!'
-        : `${players[0].name} was skipped by initial Skip card!`;
-    initialLogs.push(createLogEntry('PLAY_CARD', skippedStartMsg));
-    currentTurnIndex = calculateNextPlayerIndex(0, direction, players.length, 1);
-  } else if (initialTopCard.value === 'reverse') {
-    if (players.length === 2) {
-      initialLogs.push(
-        createLogEntry('PLAY_CARD', `Initial Reverse card skips ${players[0].name} in 2-player game!`)
-      );
-      currentTurnIndex = 1;
-    } else {
-      direction = -1;
-      initialLogs.push(
-        createLogEntry('PLAY_CARD', `Initial Reverse card set rotation counter-clockwise!`)
-      );
-    }
-  } else if (initialTopCard.value === 'draw2') {
-    // First player draws 2 and turn skips to next
-    const drawn = shuffledDeck.splice(0, 2);
-    players[0].hand.push(...drawn);
-    const drawSkipMsg =
-      players[0].name === 'You'
-        ? 'You drew 2 cards from initial Draw2 and were skipped!'
-        : `${players[0].name} drew 2 cards from initial Draw2 and was skipped!`;
-    initialLogs.push(
-      createLogEntry('DRAW_CARD', drawSkipMsg, {
-        playerId: players[0].id,
-        playerName: players[0].name,
-      })
-    );
-    currentTurnIndex = calculateNextPlayerIndex(0, direction, players.length, 1);
-  }
 
   const startingPlayer = players[currentTurnIndex];
   const isPrivacyMaskActive = gameMode === 'pass_and_play' && !startingPlayer.isBot;
@@ -546,8 +549,22 @@ export function playerDrawCard(state: GameState, playerId: string): GameState {
   );
 
   if (drawnCards.length === 0) {
-    // No cards available even after reshuffle
-    return state;
+    // No cards available even after reshuffle — mark turn as having attempted draw so player can pass without deadlocking
+    const noCardLogs = [
+      ...state.logs,
+      createLogEntry('DRAW_CARD', `${currentPlayer.name} attempted to draw, but no cards remain in deck or discard pile.`, {
+        playerId,
+        playerName: currentPlayer.name,
+      }),
+    ];
+    return {
+      ...state,
+      deck: remainingDeck,
+      discardPile: remainingDiscard,
+      hasDrawnThisTurn: true,
+      drawnCard: null,
+      logs: noCardLogs,
+    };
   }
 
   const drawnCard = drawnCards[0];
@@ -775,10 +792,11 @@ export function playCard(
     }
 
     case 'reverse': {
+      newDirection = (state.direction * -1) as TurnDirection;
       if (updatedPlayers.length === 2) {
-        // Standard 2-player UNO rule: Reverse acts as a Skip
+        // Standard 2-player UNO rule: Reverse acts as a Skip while still flipping turn direction visually/logically
         nextSteps = 2;
-        const skippedIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+        const skippedIndex = calculateNextPlayerIndex(state.currentTurnIndex, newDirection, updatedPlayers.length, 1);
         const skippedPlayer = updatedPlayers[skippedIndex];
         const reverseSkipMsg =
           skippedPlayer.name === 'You'
@@ -791,7 +809,6 @@ export function playCard(
           })
         );
       } else {
-        newDirection = (state.direction * -1) as TurnDirection;
         nextSteps = 1;
         newLogs.push(
           createLogEntry('PLAY_CARD', `Turn order reversed! Now moving ${newDirection === 1 ? 'clockwise' : 'counter-clockwise'}.`)
@@ -1545,12 +1562,27 @@ export function advanceToNextTurn(state: GameState, steps: number = 1): GameStat
 // ============================================================================
 
 /**
+ * Determines whether the local player can activate the RIVAL! callout button.
+ * Strictly restricted to holding exactly 2 cards on an active turn before declaring.
+ */
+export function canPlayerCallRival(
+  handLength: number,
+  hasDeclaredRival: boolean,
+  isPlayerTurn: boolean,
+  isDealing = false,
+  isGameOver = false
+): boolean {
+  return !isGameOver && !isDealing && isPlayerTurn && handLength === 2 && !hasDeclaredRival;
+}
+
+/**
  * Player declares "RIVAL!" when down to 1 card.
  */
 export function declareRival(state: GameState, playerId: string): GameState {
   const player = state.players.find((p) => p.id === playerId);
   if (!player) return state;
 
+  const now = Date.now();
   const updatedPlayers = state.players.map((p) =>
     p.id === playerId ? { ...p, hasDeclaredRival: true } : p
   );
@@ -1565,7 +1597,10 @@ export function declareRival(state: GameState, playerId: string): GameState {
         playerName: player.name,
       }),
     ],
-    lastActionTimestamp: Date.now(),
+    lastActionTimestamp: now,
+    lastRivalCalledBy: playerId,
+    lastRivalCalledName: player.name,
+    lastRivalCallTimestamp: now,
   };
 }
 

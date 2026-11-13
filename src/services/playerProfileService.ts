@@ -1,11 +1,75 @@
 // src/services/playerProfileService.ts - Persistent Guest Player Profile, Progression, and Economy System
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
+import type { GameMode, Player } from '../types';
 
 export interface PlayerStats {
   gamesPlayed: number;
   wins: number;
+  losses?: number;
+  winRate?: number;
   winStreak: number;
+  bestStreak?: number;
+  rivalCalls?: number;
+}
+
+export interface RecordMatchResultOptions {
+  matchId?: string;
+  rivalCalls?: number;
+}
+
+export interface CareerStatEligibilityInput {
+  gameMode: GameMode;
+  isQuickMatch: boolean;
+  isPrivateSeries?: boolean;
+  players: ReadonlyArray<Pick<Player, 'id' | 'isBot'>>;
+  localPlayerId: string;
+}
+
+/**
+ * Career Statistics are tracked strictly and exclusively for public human-vs-human Multiplayer
+ * matchmaking games (excluding Private Rooms, Solo vs Bot / Bot Fallback, and Local Pass & Play).
+ */
+export function isEligibleCareerStatMatch(input: CareerStatEligibilityInput): boolean {
+  if (input.gameMode !== 'multiplayer') return false;
+  if (!input.isQuickMatch) return false;
+  if (input.isPrivateSeries) return false;
+  return input.players.some((p) => p.id !== input.localPlayerId && !p.isBot);
+}
+
+export function normalizePlayerStats(raw: any): PlayerStats {
+  const gamesPlayed =
+    typeof raw?.gamesPlayed === 'number' && raw.gamesPlayed >= 0 ? raw.gamesPlayed : 0;
+  const wins =
+    typeof raw?.wins === 'number' && raw.wins >= 0
+      ? gamesPlayed > 0
+        ? Math.min(raw.wins, gamesPlayed)
+        : raw.wins
+      : 0;
+  const rawLosses =
+    typeof raw?.losses === 'number' && raw.losses >= 0
+      ? raw.losses
+      : Math.max(0, gamesPlayed - wins);
+  const losses = gamesPlayed > 0 ? Math.max(rawLosses, gamesPlayed - wins) : rawLosses;
+  const winStreak =
+    typeof raw?.winStreak === 'number' && raw.winStreak >= 0 ? raw.winStreak : 0;
+  const bestStreak = Math.max(
+    typeof raw?.bestStreak === 'number' && raw.bestStreak >= 0 ? raw.bestStreak : 0,
+    winStreak
+  );
+  const rivalCalls =
+    typeof raw?.rivalCalls === 'number' && raw.rivalCalls >= 0 ? raw.rivalCalls : 0;
+  const winRate = gamesPlayed > 0 ? Math.round((wins / gamesPlayed) * 100) : 0;
+
+  return {
+    gamesPlayed,
+    wins,
+    losses,
+    winRate,
+    winStreak,
+    bestStreak,
+    rivalCalls,
+  };
 }
 
 export interface PlayerProfile {
@@ -64,6 +128,7 @@ export const STORAGE_KEY = '@rivalcard:player_profile';
 export const LEGACY_STORAGE_KEY = '@rival_card_guest_player_profile_v1';
 export const ALT_STORAGE_KEY = '@rival_card_profile';
 export const DAILY_BOT_STORAGE_KEY = '@rivalcard:daily_bot_earnings';
+export const RECORDED_MATCHES_STORAGE_KEY = '@rivalcard:recorded_career_matches';
 export const DAILY_BOT_COIN_CAP = 100;
 
 export interface DailyBotEarnings {
@@ -267,11 +332,7 @@ class PlayerProfileService {
           xpToNextLevel,
           coins,
           gems,
-          stats: {
-            gamesPlayed: typeof best.stats?.gamesPlayed === 'number' ? best.stats.gamesPlayed : 0,
-            wins: typeof best.stats?.wins === 'number' ? best.stats.wins : 0,
-            winStreak: typeof best.stats?.winStreak === 'number' ? best.stats.winStreak : 0,
-          },
+          stats: normalizePlayerStats(best.stats),
           isGuest,
           email,
         };
@@ -292,11 +353,7 @@ class PlayerProfileService {
       xpToNextLevel: 100,
       coins: 250,
       gems: 10,
-      stats: {
-        gamesPlayed: 0,
-        wins: 0,
-        winStreak: 0,
-      },
+      stats: normalizePlayerStats(null),
       isGuest: true,
     };
 
@@ -319,6 +376,9 @@ class PlayerProfileService {
     this.cachedProfile = updated;
     await persistProfile(updated);
     this.notify();
+    if (!updated.isGuest) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
     return updated;
   }
 
@@ -335,25 +395,185 @@ class PlayerProfileService {
     this.cachedProfile = updated;
     await persistProfile(updated);
     this.notify();
+    if (!updated.isGuest) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
     return updated;
   }
 
+  private async getRecordedMatchIds(): Promise<string[]> {
+    try {
+      const raw = await storageGet(RECORDED_MATCHES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((id): id is string => typeof id === 'string');
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  }
+
+  private async markMatchIdRecorded(matchId: string): Promise<void> {
+    const existing = await this.getRecordedMatchIds();
+    if (existing.includes(matchId)) return;
+    const updated = [...existing, matchId].slice(-100);
+    await storageSet(RECORDED_MATCHES_STORAGE_KEY, JSON.stringify(updated));
+  }
+
   /**
-   * Records the match result, updating gamesPlayed, wins, and winStreak.
+   * Sync local career stats and progression to Supabase `profiles` table for signed-in users.
    */
-  public async recordMatchResult(isWinner: boolean): Promise<PlayerProfile> {
+  public async syncProfileToCloud(profile: PlayerProfile): Promise<void> {
+    if (!profile || profile.isGuest || !profile.id) return;
+    try {
+      await Promise.race([
+        supabase.from('profiles').upsert({
+          id: profile.id,
+          email: profile.email || '',
+          nickname: profile.nickname,
+          avatar_id: profile.avatarId,
+          level: profile.level,
+          current_xp: profile.currentXp,
+          xp_to_next_level: profile.xpToNextLevel,
+          coins: profile.coins,
+          gems: profile.gems,
+          games_played: profile.stats.gamesPlayed,
+          wins: profile.stats.wins,
+          win_streak: profile.stats.winStreak,
+          is_guest: false,
+          updated_at: new Date().toISOString(),
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('cloud sync timeout')), 2500)),
+      ]);
+    } catch (err) {
+      console.warn('[PlayerProfileService] Cloud stat sync skipped/warning:', err);
+    }
+  }
+
+  /**
+   * Refresh Career Statistics and progression from Supabase for authenticated sessions.
+   * Merges monotonically so offline local increments are preserved and never reset to 0.
+   */
+  public async refreshFromCloudIfAuthenticated(): Promise<PlayerProfile> {
+    const local = await this.getProfile(true);
+    try {
+      const { data: sessionData } = await Promise.race([
+        supabase.auth.getSession(),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('session timeout')), 2000)),
+      ]);
+      const userId = sessionData?.session?.user?.id;
+      if (!userId) return local;
+
+      const { data: remoteProfile } = await Promise.race([
+        supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('profile fetch timeout')), 2500)),
+      ]);
+      if (!remoteProfile) return local;
+
+      const remoteGamesPlayed =
+        typeof (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed) === 'number'
+          ? (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed)
+          : 0;
+      const remoteWins =
+        typeof (remoteProfile.wins ?? remoteProfile.stats?.wins) === 'number'
+          ? (remoteProfile.wins ?? remoteProfile.stats?.wins)
+          : 0;
+      const remoteWinStreak =
+        typeof (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak) === 'number'
+          ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
+          : 0;
+
+      const gamesPlayed = Math.max(local.stats.gamesPlayed, remoteGamesPlayed);
+      const wins = Math.max(local.stats.wins, remoteWins);
+      const losses = Math.max(
+        local.stats.losses ?? 0,
+        Math.max(0, gamesPlayed - wins)
+      );
+      const winStreak =
+        remoteGamesPlayed > local.stats.gamesPlayed ? remoteWinStreak : local.stats.winStreak;
+      const bestStreak = Math.max(
+        local.stats.bestStreak ?? 0,
+        remoteWinStreak,
+        winStreak
+      );
+
+      const merged: PlayerProfile = {
+        ...local,
+        stats: normalizePlayerStats({
+          gamesPlayed,
+          wins,
+          losses,
+          winStreak,
+          bestStreak,
+          rivalCalls: local.stats.rivalCalls ?? 0,
+        }),
+      };
+
+      this.cachedProfile = merged;
+      await persistProfile(merged);
+      this.notify();
+
+      if (local.stats.gamesPlayed > remoteGamesPlayed) {
+        await this.syncProfileToCloud(merged);
+      }
+
+      return merged;
+    } catch {
+      return local;
+    }
+  }
+
+  /**
+   * Records a qualifying public human-vs-human multiplayer match result,
+   * updating gamesPlayed, wins, losses, winRate, winStreak, bestStreak, and rivalCalls.
+   * Supports matchId idempotency to prevent double-counting on re-renders or remounts.
+   */
+  public async recordMatchResult(
+    isWinner: boolean,
+    options?: RecordMatchResultOptions
+  ): Promise<PlayerProfile> {
     const current = await this.getProfile();
+    const matchId = options?.matchId?.trim();
+    if (matchId) {
+      const recordedIds = await this.getRecordedMatchIds();
+      if (recordedIds.includes(matchId)) {
+        return current;
+      }
+    }
+
+    const baseStats = normalizePlayerStats(current.stats);
+    const nextGamesPlayed = baseStats.gamesPlayed + 1;
+    const nextWins = isWinner ? baseStats.wins + 1 : baseStats.wins;
+    const nextLosses = isWinner ? (baseStats.losses ?? 0) : (baseStats.losses ?? 0) + 1;
+    const nextWinStreak = isWinner ? baseStats.winStreak + 1 : 0;
+    const nextBestStreak = Math.max(baseStats.bestStreak ?? 0, nextWinStreak);
+    const nextRivalCalls = (baseStats.rivalCalls ?? 0) + Math.max(0, options?.rivalCalls ?? 0);
+
     const updated: PlayerProfile = {
       ...current,
-      stats: {
-        gamesPlayed: current.stats.gamesPlayed + 1,
-        wins: isWinner ? current.stats.wins + 1 : current.stats.wins,
-        winStreak: isWinner ? current.stats.winStreak + 1 : 0,
-      },
+      stats: normalizePlayerStats({
+        gamesPlayed: nextGamesPlayed,
+        wins: nextWins,
+        losses: nextLosses,
+        winStreak: nextWinStreak,
+        bestStreak: nextBestStreak,
+        rivalCalls: nextRivalCalls,
+      }),
     };
+
     this.cachedProfile = updated;
     await persistProfile(updated);
+    if (matchId) {
+      await this.markMatchIdRecorded(matchId);
+    }
     this.notify();
+
+    if (!updated.isGuest) {
+      await this.syncProfileToCloud(updated);
+    }
     return updated;
   }
 
@@ -441,6 +661,9 @@ class PlayerProfileService {
     this.cachedProfile = updated;
     await persistProfile(updated);
     this.notify();
+    if (!updated.isGuest && (earnedXp > 0 || earnedCoins > 0 || leveledUp)) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
 
     return {
       leveledUp,
@@ -493,6 +716,9 @@ class PlayerProfileService {
     this.cachedProfile = updated;
     await persistProfile(updated);
     this.notify();
+    if (!updated.isGuest) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
     return updated;
   }
 
@@ -515,6 +741,9 @@ class PlayerProfileService {
     this.cachedProfile = updated;
     await persistProfile(updated);
     this.notify();
+    if (!updated.isGuest) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
     return true;
   }
 
@@ -533,6 +762,7 @@ class PlayerProfileService {
     await storageRemove(LEGACY_STORAGE_KEY);
     await storageRemove(ALT_STORAGE_KEY);
     await storageRemove(DAILY_BOT_STORAGE_KEY);
+    await storageRemove(RECORDED_MATCHES_STORAGE_KEY);
     this.cachedProfile = null;
     return this.getProfile(true);
   }
@@ -688,11 +918,7 @@ class PlayerProfileService {
         xpToNextLevel: guestXpToNextLevel,
         coins: guestCoins,
         gems: guestGems,
-        stats: {
-          gamesPlayed: guestGamesPlayed,
-          wins: guestWins,
-          winStreak: guestWinStreak,
-        },
+        stats: normalizePlayerStats(currentGuest.stats),
         isGuest: false,
       };
 
@@ -749,11 +975,13 @@ class PlayerProfileService {
           xpToNextLevel: safeRemoteXpToNextLevel,
           coins: safeRemoteCoins,
           gems: safeRemoteGems,
-          stats: {
+          stats: normalizePlayerStats({
             gamesPlayed: remoteGamesPlayed,
             wins: remoteWins,
+            losses: remoteProfile.losses,
             winStreak: remoteWinStreak,
-          },
+            bestStreak: remoteProfile.best_streak,
+          }),
           isGuest: false,
         };
       } else {
@@ -809,11 +1037,17 @@ class PlayerProfileService {
           xpToNextLevel: mergedXpToNextLevel,
           coins: mergedCoins,
           gems: mergedGems,
-          stats: {
+          stats: normalizePlayerStats({
             gamesPlayed: mergedGamesPlayed,
             wins: mergedWins,
             winStreak: mergedWinStreak,
-          },
+            bestStreak: Math.max(
+              currentGuest.stats?.bestStreak ?? 0,
+              remoteProfile.best_streak ?? 0,
+              mergedWinStreak
+            ),
+            rivalCalls: currentGuest.stats?.rivalCalls ?? 0,
+          }),
           isGuest: false,
         };
 
@@ -911,12 +1145,13 @@ class PlayerProfileService {
       xpToNextLevel: 100,
       coins: 250,
       gems: 10,
-      stats: { gamesPlayed: 0, wins: 0, winStreak: 0 },
+      stats: normalizePlayerStats(null),
       isGuest: true,
     };
     this.cachedProfile = cleanGuest;
     await persistProfile(cleanGuest);
     await storageRemove('@rivalcard:active_online_match');
+    await storageRemove(RECORDED_MATCHES_STORAGE_KEY);
     this.notify();
     return cleanGuest;
   }
@@ -941,6 +1176,7 @@ class PlayerProfileService {
     await storageRemove('@rivalcard:settings');
     await storageRemove('@rivalcard:active_online_match');
     await storageRemove('@rivalcard:onboarding_completed');
+    await storageRemove(RECORDED_MATCHES_STORAGE_KEY);
 
     const freshGuest: PlayerProfile = {
       id: generateUUID(),
@@ -951,7 +1187,7 @@ class PlayerProfileService {
       xpToNextLevel: 100,
       coins: 250,
       gems: 10,
-      stats: { gamesPlayed: 0, wins: 0, winStreak: 0 },
+      stats: normalizePlayerStats(null),
       isGuest: true,
     };
     this.cachedProfile = freshGuest;

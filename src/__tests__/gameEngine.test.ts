@@ -6,12 +6,14 @@ import {
   shuffleDeck,
   isValidMove,
   isWildCard,
+  isNumberCard,
   createGame,
   drawFromDeck,
   playCard,
   chooseWildColor,
   playerDrawCard,
   playerPassTurn,
+  canPlayerCallRival,
   declareRival,
   catchRival,
   dismissPrivacyMask,
@@ -256,13 +258,19 @@ describe('Action Cards Mechanics', () => {
     assert.equal(state.currentTurnIndex, 2, 'In reverse from 0, turn goes to 2');
   });
 
-  test('Reverse in 2-player game acts as Skip', () => {
+  test('Reverse in 2-player game acts as Skip and flips direction', () => {
     let state = makeMockGame(2);
     const revCard: Card = { id: 'rev1', color: 'red', value: 'reverse', scoreValue: 20 };
     state.players[0].hand.push(revCard);
 
     state = playCard(state, 'p0', 'rev1');
     assert.equal(state.currentTurnIndex, 0, 'Player 1 skipped, so Player 0 goes again');
+    assert.equal(state.direction, -1, 'Direction flips visually/logically even in 2-player games');
+
+    const revCard2: Card = { id: 'rev2', color: 'red', value: 'reverse', scoreValue: 20 };
+    state.players[0].hand.push(revCard2);
+    state = playCard(state, 'p0', 'rev2');
+    assert.equal(state.direction, 1, 'Second Reverse flips direction back to clockwise (1)');
   });
 
   test('Draw2 forces next player to draw 2 cards and skips them', () => {
@@ -400,6 +408,17 @@ describe('RIVAL! Declaration and Catch Mechanics', () => {
 
     game = catchRival(game, 'p2', 'p1');
     assert.equal(game.players[0].hand.length, 1, 'P1 hand should remain 1 because RIVAL was declared');
+  });
+
+  test('canPlayerCallRival is strictly enabled only when player has 2 cards on their turn', () => {
+    assert.equal(canPlayerCallRival(2, false, true, false, false), true);
+    assert.equal(canPlayerCallRival(7, false, true, false, false), false);
+    assert.equal(canPlayerCallRival(3, false, true, false, false), false);
+    assert.equal(canPlayerCallRival(1, false, true, false, false), false);
+    assert.equal(canPlayerCallRival(2, true, true, false, false), false);
+    assert.equal(canPlayerCallRival(2, false, false, false, false), false);
+    assert.equal(canPlayerCallRival(2, false, true, true, false), false);
+    assert.equal(canPlayerCallRival(2, false, true, false, true), false);
   });
 });
 
@@ -596,6 +615,62 @@ describe('1v1 Action Cards & Consecutive Turn Transitions', () => {
     // Since bot played its last card, game should be won by bot
     assert.equal(stateAfterSecondMove.isGameOver, true);
     assert.equal(stateAfterSecondMove.winner?.id, 'bot1');
+  });
+
+  test('Starting discard card is strictly a standard numbered card (0-9) across repeated deals', () => {
+    for (let i = 0; i < 40; i++) {
+      const game = createGame(
+        [
+          { id: 'p1', name: 'Player 1', isBot: false },
+          { id: 'p2', name: 'Player 2', isBot: false },
+        ],
+        'multiplayer'
+      );
+      const topCard = game.discardPile[game.discardPile.length - 1];
+      assert.equal(game.discardPile.length, 1);
+      assert.equal(
+        isNumberCard(topCard),
+        true,
+        `Expected starting discard card to be 0-9 number card, got ${topCard.color} ${topCard.value}`
+      );
+      assert.equal(game.direction, 1);
+      assert.equal(game.currentTurnIndex, 0);
+    }
+  });
+
+  test('Drawing the last deck card automatically reshuffles buried discard pile except top card', () => {
+    const lastDeckCard: Card = { id: 'deck_last', color: 'red', value: '3', scoreValue: 3 };
+    const buriedDiscard1: Card = { id: 'disc_1', color: 'blue', value: '7', scoreValue: 7 };
+    const buriedDiscard2: Card = { id: 'disc_2', color: 'green', value: '9', scoreValue: 9 };
+    const activeTopCard: Card = { id: 'disc_top', color: 'yellow', value: '5', scoreValue: 5 };
+
+    const result = drawFromDeck([lastDeckCard], [buriedDiscard1, buriedDiscard2, activeTopCard], 1);
+    assert.equal(result.drawnCards.length, 1);
+    assert.equal(result.drawnCards[0].id, 'deck_last');
+    assert.equal(result.didReshuffle, true);
+    assert.equal(result.remainingDeck.length, 2, 'Buried discard cards should replenish deck immediately');
+    assert.equal(result.remainingDiscard.length, 1);
+    assert.equal(result.remainingDiscard[0].id, 'disc_top');
+  });
+
+  test('Drawing when both deck and discard pile are exhausted allows safe turn pass without deadlocking', () => {
+    let state = createGame(
+      [
+        { id: 'p1', name: 'P1', isBot: false },
+        { id: 'p2', name: 'P2', isBot: false },
+      ],
+      'multiplayer'
+    );
+    state.deck = [];
+    state.discardPile = [{ id: 'only_top', color: 'red', value: '2', scoreValue: 2 }];
+    state.activeColor = 'red';
+
+    const drawnState = playerDrawCard(state, 'p1');
+    assert.equal(drawnState.hasDrawnThisTurn, true);
+    assert.equal(drawnState.drawnCard, null);
+
+    const passedState = playerPassTurn(drawnState, 'p1');
+    assert.equal(passedState.currentTurnIndex, 1, 'Turn must advance cleanly without throwing');
   });
 });
 

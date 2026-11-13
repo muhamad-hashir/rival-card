@@ -80,6 +80,40 @@ export interface GameEventLog {
   message: string;
 }
 
+export interface SeriesPlayerStats {
+  playerId: string;
+  name: string;
+  avatarId?: string;
+  wins: number;
+  totalPoints: number;
+  roundPlacements: number[];
+  isActive: boolean;
+}
+
+export interface SeriesRoundResult {
+  matchNumber: number;
+  winnerId: string;
+  winnerName: string;
+  placements: Array<{
+    playerId: string;
+    name: string;
+    rank: number;
+    cardsLeft: number;
+    pointsEarned: number;
+  }>;
+}
+
+export interface SeriesState {
+  isPrivateSeries: boolean;
+  currentMatchNumber: number;
+  totalMatches: number;
+  hostPlayerId: string;
+  playerStats: Record<string, SeriesPlayerStats>;
+  roundResults: SeriesRoundResult[];
+  seriesEndedEarly?: boolean;
+  endedReason?: string;
+}
+
 export interface GameState {
   deck: Card[];
   discardPile: Card[];
@@ -100,4 +134,8 @@ export interface GameState {
   lastActionTimestamp?: number;
   pendingDrawCount?: number;
   allowStacking?: boolean;
+  lastRivalCalledBy?: string;
+  lastRivalCalledName?: string;
+  lastRivalCallTimestamp?: number;
+  seriesState?: SeriesState;
 }

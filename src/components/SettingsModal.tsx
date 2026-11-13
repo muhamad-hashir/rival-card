@@ -30,6 +30,19 @@ import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { audioService } from '../services/audioService';
 
+function getAppVersion(): string {
+  try {
+    const Constants = require('expo-constants')?.default ?? require('expo-constants');
+    const expoVersion = Constants?.expoConfig?.version;
+    if (typeof expoVersion === 'string' && expoVersion.trim().length > 0) {
+      return expoVersion.trim();
+    }
+  } catch {
+    // Fallback if expo-constants is unavailable in test runner
+  }
+  return '1.1.0';
+}
+
 export interface SettingsModalProps {
   visible: boolean;
   onClose: () => void;
@@ -135,9 +148,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
     } else {
       soundService.setMuted(false);
       soundService.playCardSnap();
-      await audioService.resumeBgm();
       await settingsService.updateSetting('sfxEnabled', true);
       await settingsService.updateSetting('bgmEnabled', true);
+      await audioService.resumeBgm();
       setSettings((prev) => ({ ...prev, sfxEnabled: true, bgmEnabled: true }));
       showToast('Audio preset: Full Arcade (SFX + BGM)');
     }
@@ -425,6 +438,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
                 </TouchableOpacity>
               </View>
             </View>
+
+            {/* App Version Footer */}
+            <Text style={styles.versionFooterText}>Rival Card • v{getAppVersion()}</Text>
           </ScrollView>
 
           {/* In-Modal Confirmation Overlay */}
@@ -904,5 +920,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#FFFFFF',
     letterSpacing: 0.3,
+  },
+  versionFooterText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 10,
+    marginBottom: 4,
   },
 });

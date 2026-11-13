@@ -5,6 +5,7 @@ import { soundService } from './soundService';
 let ExpoAudio: any = null;
 let AudioModule: any = null;
 let createAudioPlayer: any = null;
+let ExpoAsset: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const expoAudio = require('expo-audio');
@@ -17,6 +18,16 @@ try {
   ExpoAudio = null;
   AudioModule = null;
   createAudioPlayer = null;
+}
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const expoAsset = require('expo-asset');
+  if (expoAsset && expoAsset.Asset) {
+    ExpoAsset = expoAsset.Asset;
+  }
+} catch {
+  ExpoAsset = null;
 }
 
 export type BgmTrackType = 'none' | 'menu' | 'gameplay';
@@ -134,6 +145,9 @@ function getMuteAsset(): any {
 export class AudioService {
   private currentBgmType: BgmTrackType = 'none';
   private currentBgmPlayer: any | null = null;
+  private bgmStatusSubscription: { remove?: () => void } | null = null;
+  private bgmTransitionEpoch: number = 0;
+  private isBgmPaused: boolean = false;
   private sfxPlayers: Map<string, any> = new Map();
   private audioModeConfigured: boolean = false;
   private isBgmLoading: boolean = false;
@@ -154,8 +168,8 @@ export class AudioService {
 
   private audioModePromise: Promise<void> | null = null;
 
-  public async ensureAudioMode(): Promise<void> {
-    if (this.audioModeConfigured) return;
+  public async ensureAudioMode(forceRefresh: boolean = false): Promise<void> {
+    if (this.audioModeConfigured && !forceRefresh) return;
     if (this.audioModePromise) {
       await this.audioModePromise;
       return;
@@ -164,13 +178,17 @@ export class AudioService {
       try {
         const modeConfig = {
           playsInSilentMode: true,
+          playsInSilentModeIOS: true,
           shouldDuckAndroid: true,
           interruptionMode: 'duckOthers',
+          allowsRecording: false,
+          shouldPlayInBackground: false,
+          shouldRouteThroughEarpiece: false,
         };
-        if (AudioModule && typeof AudioModule.setAudioModeAsync === 'function') {
-          await AudioModule.setAudioModeAsync(modeConfig);
-        } else if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+        if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
           await ExpoAudio.setAudioModeAsync(modeConfig);
+        } else if (AudioModule && typeof AudioModule.setAudioModeAsync === 'function') {
+          await AudioModule.setAudioModeAsync(modeConfig);
         }
         this.audioModeConfigured = true;
       } catch (err) {
@@ -180,6 +198,24 @@ export class AudioService {
       }
     })();
     await this.audioModePromise;
+  }
+
+  private async resolveAudioSource(asset: any): Promise<any> {
+    if (!asset) return null;
+    if (typeof asset === 'number' && ExpoAsset && typeof ExpoAsset.fromModule === 'function') {
+      try {
+        const loaded = ExpoAsset.fromModule(asset);
+        if (loaded && !loaded.localUri && typeof loaded.downloadAsync === 'function') {
+          await loaded.downloadAsync();
+        }
+        if (loaded?.localUri) {
+          return { uri: loaded.localUri };
+        }
+      } catch (err) {
+        safeWarn('[AudioService] Asset download warning, falling back to module source:', err);
+      }
+    }
+    return asset;
   }
 
   private safeCreatePlayer(source: any): any | null {
@@ -246,17 +282,68 @@ export class AudioService {
     return this.currentBgmType;
   }
 
-  /**
-   * Background Music: Menu Loop (plays across HomeScreen, Modals)
-   * Loops seamlessly at volume 1.0.
-   */
-  public async playMenuBgm(): Promise<void> {
+  private attachBgmLoopSafety(player: any, trackType: Exclude<BgmTrackType, 'none'>): void {
+    if (!player || typeof player.addListener !== 'function') return;
     try {
-      if (this.currentBgmType === 'menu' && this.currentBgmPlayer) {
+      this.bgmStatusSubscription = player.addListener('playbackStatusUpdate', (status: any) => {
+        if (this.currentBgmPlayer !== player || this.currentBgmType !== trackType) return;
+        if (this.isBgmPaused) return;
+
+        // Expo-audio players created from local modules can finish native load asynchronously after initial play()
+        if (status?.isLoaded && !status?.playing && !status?.didJustFinish) {
+          settingsService.getSettings().then((s) => {
+            if (
+              s.bgmEnabled &&
+              !this.isBgmPaused &&
+              this.currentBgmPlayer === player &&
+              this.currentBgmType === trackType
+            ) {
+              try {
+                player.loop = true;
+                player.muted = false;
+                player.volume = 1.0;
+                player.play();
+              } catch {}
+            }
+          }).catch(() => {});
+        } else if (status?.didJustFinish) {
+          settingsService.getSettings().then((s) => {
+            if (
+              s.bgmEnabled &&
+              !this.isBgmPaused &&
+              this.currentBgmPlayer === player &&
+              this.currentBgmType === trackType
+            ) {
+              try {
+                player.seekTo?.(0)?.catch?.(() => {});
+                player.play();
+              } catch {}
+            }
+          }).catch(() => {});
+        }
+      });
+    } catch {
+      // Ignore on environments without addListener
+    }
+  }
+
+  private async startBgmTrack(
+    trackType: Exclude<BgmTrackType, 'none'>,
+    assetGetter: () => any
+  ): Promise<void> {
+    const label = trackType === 'menu' ? 'menu' : 'gameplay';
+    const epoch = ++this.bgmTransitionEpoch;
+
+    try {
+      if (this.currentBgmType === trackType && this.currentBgmPlayer) {
+        this.isBgmPaused = false;
         const settings = await settingsService.getSettings();
+        if (epoch !== this.bgmTransitionEpoch) return;
+        await this.ensureAudioMode(true);
         if (settings.bgmEnabled) {
           try {
             this.currentBgmPlayer.loop = true;
+            this.currentBgmPlayer.muted = false;
             this.currentBgmPlayer.volume = 1.0;
             this.currentBgmPlayer.play();
           } catch {}
@@ -264,33 +351,40 @@ export class AudioService {
         return;
       }
 
-      this.currentBgmType = 'menu';
+      this.currentBgmType = trackType;
+      this.isBgmPaused = false;
       const settings = await settingsService.getSettings();
+      if (epoch !== this.bgmTransitionEpoch) return;
 
       await this.stopBgmSoundOnly();
+      if (epoch !== this.bgmTransitionEpoch) return;
 
-      const asset = getMenuBgmAsset();
-      if (!asset) {
-        safeWarn('[AudioService] Cannot play menu BGM: asset unavailable');
+      const rawAsset = assetGetter();
+      if (!rawAsset) {
+        safeWarn(`[AudioService] Cannot play ${label} BGM: asset unavailable`);
         return;
       }
 
-      await this.ensureAudioMode();
+      await this.ensureAudioMode(true);
+      if (epoch !== this.bgmTransitionEpoch) return;
       this.isBgmLoading = true;
 
-      const player = this.safeCreatePlayer(asset);
+      const resolvedSource = await this.resolveAudioSource(rawAsset);
+      if (epoch !== this.bgmTransitionEpoch || this.currentBgmType !== trackType) return;
+
+      const player = this.safeCreatePlayer(resolvedSource);
       if (!player) {
-        safeWarn('[AudioService] Cannot play menu BGM: AudioPlayer creation failed');
+        safeWarn(`[AudioService] Cannot play ${label} BGM: AudioPlayer creation failed`);
         return;
       }
 
       try {
         player.loop = true;
+        player.muted = false;
         player.volume = 1.0;
       } catch {}
 
-      // If user switched track while loading, release
-      if (this.currentBgmType !== 'menu') {
+      if (epoch !== this.bgmTransitionEpoch || this.currentBgmType !== trackType) {
         try {
           player.remove();
         } catch {}
@@ -298,18 +392,28 @@ export class AudioService {
       }
 
       this.currentBgmPlayer = player;
-      if (settings.bgmEnabled) {
+      this.attachBgmLoopSafety(player, trackType);
+
+      if (settings.bgmEnabled && !this.isBgmPaused) {
         try {
           player.play();
         } catch (playErr) {
-          safeWarn('[AudioService] Error calling player.play() for menu BGM:', playErr);
+          safeWarn(`[AudioService] Error calling player.play() for ${label} BGM:`, playErr);
         }
       }
     } catch (err) {
-      safeWarn('[AudioService] Failed to play menu BGM:', err);
+      safeWarn(`[AudioService] Failed to play ${label} BGM:`, err);
     } finally {
       this.isBgmLoading = false;
     }
+  }
+
+  /**
+   * Background Music: Menu Loop (plays across HomeScreen, Modals)
+   * Loops seamlessly at volume 1.0.
+   */
+  public async playMenuBgm(): Promise<void> {
+    await this.startBgmTrack('menu', getMenuBgmAsset);
   }
 
   /**
@@ -317,76 +421,26 @@ export class AudioService {
    * Loops comfortably at volume 1.0.
    */
   public async playGameplayBgm(): Promise<void> {
-    try {
-      if (this.currentBgmType === 'gameplay' && this.currentBgmPlayer) {
-        const settings = await settingsService.getSettings();
-        if (settings.bgmEnabled) {
-          try {
-            this.currentBgmPlayer.loop = true;
-            this.currentBgmPlayer.volume = 1.0;
-            this.currentBgmPlayer.play();
-          } catch {}
-        }
-        return;
-      }
-
-      this.currentBgmType = 'gameplay';
-      const settings = await settingsService.getSettings();
-
-      await this.stopBgmSoundOnly();
-
-      const asset = getGameplayBgmAsset();
-      if (!asset) {
-        safeWarn('[AudioService] Cannot play gameplay BGM: asset unavailable');
-        return;
-      }
-
-      await this.ensureAudioMode();
-      this.isBgmLoading = true;
-
-      const player = this.safeCreatePlayer(asset);
-      if (!player) {
-        safeWarn('[AudioService] Cannot play gameplay BGM: AudioPlayer creation failed');
-        return;
-      }
-
-      try {
-        player.loop = true;
-        player.volume = 1.0;
-      } catch {}
-
-      // If user switched track while loading, release
-      if (this.currentBgmType !== 'gameplay') {
-        try {
-          player.remove();
-        } catch {}
-        return;
-      }
-
-      this.currentBgmPlayer = player;
-      if (settings.bgmEnabled) {
-        try {
-          player.play();
-        } catch (playErr) {
-          safeWarn('[AudioService] Error calling player.play() for gameplay BGM:', playErr);
-        }
-      }
-    } catch (err) {
-      safeWarn('[AudioService] Failed to play gameplay BGM:', err);
-    } finally {
-      this.isBgmLoading = false;
-    }
+    await this.startBgmTrack('gameplay', getGameplayBgmAsset);
   }
 
   /**
    * Unloads current BGM track cleanly on unmounts.
    */
   public async stopBgm(): Promise<void> {
+    this.bgmTransitionEpoch++;
     this.currentBgmType = 'none';
+    this.isBgmPaused = false;
     await this.stopBgmSoundOnly();
   }
 
   private async stopBgmSoundOnly(): Promise<void> {
+    if (this.bgmStatusSubscription) {
+      try {
+        this.bgmStatusSubscription.remove?.();
+      } catch {}
+      this.bgmStatusSubscription = null;
+    }
     if (this.currentBgmPlayer) {
       const player = this.currentBgmPlayer;
       this.currentBgmPlayer = null;
@@ -403,6 +457,7 @@ export class AudioService {
    * Pauses the active BGM track immediately (e.g. when BGM toggled off in settings).
    */
   public async pauseBgm(): Promise<void> {
+    this.isBgmPaused = true;
     try {
       if (this.currentBgmPlayer) {
         try {
@@ -425,9 +480,13 @@ export class AudioService {
       const settings = await settingsService.getSettings();
       if (!settings.bgmEnabled) return;
 
+      this.isBgmPaused = false;
+      await this.ensureAudioMode(true);
+
       if (this.currentBgmPlayer) {
         try {
           this.currentBgmPlayer.loop = true;
+          this.currentBgmPlayer.muted = false;
           this.currentBgmPlayer.volume = 1.0;
           this.currentBgmPlayer.play();
         } catch {}

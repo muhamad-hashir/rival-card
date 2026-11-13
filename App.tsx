@@ -208,13 +208,17 @@ function MainAppContent() {
         try {
           const modeConfig = {
             playsInSilentMode: true,
+            playsInSilentModeIOS: true,
             shouldDuckAndroid: true,
             interruptionMode: 'duckOthers',
+            allowsRecording: false,
+            shouldPlayInBackground: false,
+            shouldRouteThroughEarpiece: false,
           };
-          if (ExpoAudio && (ExpoAudio as any).AudioModule && typeof (ExpoAudio as any).AudioModule.setAudioModeAsync === 'function') {
-            await (ExpoAudio as any).AudioModule.setAudioModeAsync(modeConfig);
-          } else if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+          if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
             await ExpoAudio.setAudioModeAsync(modeConfig as any);
+          } else if (ExpoAudio && (ExpoAudio as any).AudioModule && typeof (ExpoAudio as any).AudioModule.setAudioModeAsync === 'function') {
+            await (ExpoAudio as any).AudioModule.setAudioModeAsync(modeConfig);
           }
           await audioService.ensureAudioMode();
           await soundService.ensureAudioMode();

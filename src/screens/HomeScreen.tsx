@@ -246,11 +246,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setIsSettingsOpen(true);
   };
 
-  // Header: Open Profile Editor Modal
+  // Header: Open Profile Editor Modal (refresh persisted & cloud Career Stats immediately)
   const handlePressProfile = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
     setIsProfileModalOpen(true);
+    playerProfileService.refreshFromCloudIfAuthenticated().then(setProfile).catch(() => {});
   };
 
   const handleSaveProfile = async (newNickname: string, newAvatarId: string) => {

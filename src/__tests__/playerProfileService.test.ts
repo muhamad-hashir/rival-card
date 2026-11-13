@@ -2,6 +2,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isEligibleCareerStatMatch,
   playerProfileService,
   AVATAR_OPTIONS,
   getAvatarConfig,
@@ -123,5 +124,118 @@ describe('Player Profile Service (Guest Profile System)', () => {
     assert.strictEqual(parsed.nickname, 'WebHero');
 
     delete (globalThis as any).window;
+  });
+
+  it('tracks losses, winRate, bestStreak, rivalCalls, and enforces matchId idempotency', async () => {
+    let p = await playerProfileService.recordMatchResult(true, {
+      matchId: 'mp_match_1',
+      rivalCalls: 1,
+    });
+    assert.strictEqual(p.stats.gamesPlayed, 1);
+    assert.strictEqual(p.stats.wins, 1);
+    assert.strictEqual(p.stats.losses, 0);
+    assert.strictEqual(p.stats.winRate, 100);
+    assert.strictEqual(p.stats.winStreak, 1);
+    assert.strictEqual(p.stats.bestStreak, 1);
+    assert.strictEqual(p.stats.rivalCalls, 1);
+
+    // Duplicate matchId must NOT double-count
+    p = await playerProfileService.recordMatchResult(true, {
+      matchId: 'mp_match_1',
+      rivalCalls: 1,
+    });
+    assert.strictEqual(p.stats.gamesPlayed, 1);
+    assert.strictEqual(p.stats.wins, 1);
+    assert.strictEqual(p.stats.rivalCalls, 1);
+
+    // Loss increments losses, resets winStreak, preserves bestStreak=1, updates winRate=50%
+    p = await playerProfileService.recordMatchResult(false, {
+      matchId: 'mp_match_2',
+      rivalCalls: 2,
+    });
+    assert.strictEqual(p.stats.gamesPlayed, 2);
+    assert.strictEqual(p.stats.wins, 1);
+    assert.strictEqual(p.stats.losses, 1);
+    assert.strictEqual(p.stats.winRate, 50);
+    assert.strictEqual(p.stats.winStreak, 0);
+    assert.strictEqual(p.stats.bestStreak, 1);
+    assert.strictEqual(p.stats.rivalCalls, 3);
+  });
+
+  it('allows Career Stats strictly for public human-vs-human multiplayer matches only', () => {
+    // Qualifying public human-vs-human Quick Match
+    assert.strictEqual(
+      isEligibleCareerStatMatch({
+        gameMode: 'multiplayer',
+        isQuickMatch: true,
+        isPrivateSeries: false,
+        localPlayerId: 'user_1',
+        players: [
+          { id: 'user_1', isBot: false },
+          { id: 'user_2', isBot: false },
+        ],
+      }),
+      true
+    );
+
+    // Excluded: Private Room match
+    assert.strictEqual(
+      isEligibleCareerStatMatch({
+        gameMode: 'multiplayer',
+        isQuickMatch: false,
+        isPrivateSeries: true,
+        localPlayerId: 'user_1',
+        players: [
+          { id: 'user_1', isBot: false },
+          { id: 'user_2', isBot: false },
+        ],
+      }),
+      false
+    );
+
+    // Excluded: Solo vs Bot
+    assert.strictEqual(
+      isEligibleCareerStatMatch({
+        gameMode: 'vs_bot',
+        isQuickMatch: false,
+        isPrivateSeries: false,
+        localPlayerId: 'p1',
+        players: [
+          { id: 'p1', isBot: false },
+          { id: 'bot_1', isBot: true },
+        ],
+      }),
+      false
+    );
+
+    // Excluded: Matchmaking fallback vs Bot even if marked isQuickMatch
+    assert.strictEqual(
+      isEligibleCareerStatMatch({
+        gameMode: 'multiplayer',
+        isQuickMatch: true,
+        isPrivateSeries: false,
+        localPlayerId: 'user_1',
+        players: [
+          { id: 'user_1', isBot: false },
+          { id: 'bot_rival', isBot: true },
+        ],
+      }),
+      false
+    );
+
+    // Excluded: Local Pass & Play
+    assert.strictEqual(
+      isEligibleCareerStatMatch({
+        gameMode: 'pass_and_play',
+        isQuickMatch: false,
+        isPrivateSeries: false,
+        localPlayerId: 'p1',
+        players: [
+          { id: 'p1', isBot: false },
+          { id: 'p2', isBot: false },
+        ],
+      }),
+      false
+    );
   });
 });

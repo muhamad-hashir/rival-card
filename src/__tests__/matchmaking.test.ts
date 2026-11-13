@@ -141,4 +141,48 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
     assert.strictEqual(isP1Coordinator, true, 'Alice has smaller ID so Alice coordinates');
     assert.strictEqual(isP2Coordinator, false, 'Bob has larger ID so Bob is guest');
   });
+
+  test('Re-searching immediately after cancel does not deadlock or get cancelled by stale idle callback', async () => {
+    const service = new MatchmakingService();
+    const statusesFirstRun: string[] = [];
+    const statusesSecondRun: string[] = [];
+
+    await service.startMatchmaking(
+      { id: 'user_retry', name: 'RetryHero', avatarId: 'avatar_1' },
+      {
+        onStatusChange: (status) => {
+          statusesFirstRun.push(status);
+        },
+      },
+      12
+    );
+    assert.strictEqual(service.getStatus(), 'searching');
+
+    await service.cancelMatchmaking();
+    assert.strictEqual(service.getStatus(), 'idle');
+    assert.ok(statusesFirstRun.includes('idle'));
+
+    const secondMatch = await new Promise<any>((resolve) => {
+      service.startMatchmaking(
+        { id: 'user_retry', name: 'RetryHero', avatarId: 'avatar_1' },
+        {
+          onStatusChange: (status) => {
+            statusesSecondRun.push(status);
+          },
+          onMatchFound: (res) => {
+            resolve(res);
+          },
+        },
+        0.1
+      );
+    });
+
+    assert.ok(secondMatch, 'Second search after cancel must complete normally');
+    assert.strictEqual(secondMatch.myPlayerId, 'user_retry');
+    assert.strictEqual(statusesFirstRun[statusesFirstRun.length - 1], 'idle');
+    assert.strictEqual(statusesSecondRun[0], 'searching');
+    assert.ok(!statusesSecondRun.slice(0, 1).includes('idle'), 'Stale idle callback must not cancel new search');
+
+    await service.cancelMatchmaking();
+  });
 });

@@ -18,6 +18,7 @@ import {
   AvatarOption,
   PlayerProfile,
   getAvatarConfig,
+  normalizePlayerStats,
   playerProfileService,
 } from '../services/playerProfileService';
 import { authService } from '../services/authService';
@@ -46,6 +47,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onClose,
   onSave,
 }) => {
+  // Live profile bound to playerProfileService updates + cloud/storage refresh on open
+  const [liveProfile, setLiveProfile] = useState<PlayerProfile>(profile);
   // Isolated local input buffer (allows clearing freely without forcing 'Player' while typing)
   const [inputValue, setInputValue] = useState<string>(profile.nickname || 'Player');
   const [nameError, setNameError] = useState<string | null>(null);
@@ -94,28 +97,47 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     };
   }, []);
 
-  // Sync state whenever modal opens or profile changes
+  // Subscribe to live profile/career-stats updates on mount and keep prop in sync
+  useEffect(() => {
+    setLiveProfile(profile);
+  }, [profile]);
+
+  useEffect(() => {
+    playerProfileService.getProfile(true).then(setLiveProfile).catch(() => {});
+    const unsubscribe = playerProfileService.subscribe(setLiveProfile);
+    return () => unsubscribe();
+  }, []);
+
+  // Sync state & refresh latest persisted/cloud Career Statistics whenever modal opens
   useEffect(() => {
     if (visible) {
-      setInputValue(profile.nickname || 'Player');
+      playerProfileService
+        .refreshFromCloudIfAuthenticated()
+        .then((refreshed) => {
+          setLiveProfile(refreshed);
+        })
+        .catch(() => {});
+      setInputValue(liveProfile.nickname || profile.nickname || 'Player');
       setNameError(null);
-      setSelectedAvatarId(profile.avatarId);
+      setSelectedAvatarId(liveProfile.avatarId || profile.avatarId);
       setIsSaving(false);
       setSaveStatus('idle');
       setIsSigningIn(false);
       setAuthError(null);
       reassertImmersiveMode();
     }
-  }, [visible, profile]);
+  }, [visible]);
 
-  const isConnected = !profile.isGuest || Boolean(session?.user);
-  const connectedEmail = session?.user?.email || profile.email;
+  const activeProfile = liveProfile || profile;
+  const careerStats = normalizePlayerStats(activeProfile.stats);
+  const isConnected = !activeProfile.isGuest || Boolean(session?.user);
+  const connectedEmail = session?.user?.email || activeProfile.email;
 
   const activeAvatar = getAvatarConfig(selectedAvatarId);
-  const winRate =
-    profile.stats.gamesPlayed > 0
-      ? Math.round((profile.stats.wins / profile.stats.gamesPlayed) * 100)
-      : 0;
+  const winRate = careerStats.winRate ?? 0;
+  const losses = careerStats.losses ?? Math.max(0, careerStats.gamesPlayed - careerStats.wins);
+  const bestStreak = Math.max(careerStats.bestStreak ?? 0, careerStats.winStreak);
+  const rivalCalls = careerStats.rivalCalls ?? 0;
 
   const handleGoogleSignIn = async () => {
     if (isSigningIn) return;
@@ -424,7 +446,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </View>
             </View>
 
-            {/* Expanded Career Stats 2x2 Grid */}
+            {/* Expanded Career Stats Grid (Public Human Multiplayer Only) */}
             <View style={styles.statsCard}>
               <View style={styles.statsCardHeader}>
                 <Text style={styles.statsCardHeaderIcon}>📊</Text>
@@ -434,7 +456,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 {/* 1. Matches */}
                 <View style={styles.statBox}>
                   <View style={styles.statBoxGlint} />
-                  <Text style={styles.statNumber}>{profile.stats.gamesPlayed}</Text>
+                  <Text style={styles.statNumber}>{careerStats.gamesPlayed}</Text>
                   <Text style={styles.statLabel}>MATCHES</Text>
                 </View>
 
@@ -442,12 +464,21 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 <View style={styles.statBox}>
                   <View style={styles.statBoxGlint} />
                   <Text style={[styles.statNumber, styles.statWinsNumber]}>
-                    {profile.stats.wins}
+                    {careerStats.wins}
                   </Text>
                   <Text style={styles.statLabel}>WINS 🏆</Text>
                 </View>
 
-                {/* 3. Win Rate */}
+                {/* 3. Losses */}
+                <View style={styles.statBox}>
+                  <View style={styles.statBoxGlint} />
+                  <Text style={[styles.statNumber, styles.statLossesNumber]}>
+                    {losses}
+                  </Text>
+                  <Text style={styles.statLabel}>LOSSES</Text>
+                </View>
+
+                {/* 4. Win Rate */}
                 <View style={styles.statBox}>
                   <View style={styles.statBoxGlint} />
                   <Text style={[styles.statNumber, styles.statRateNumber]}>
@@ -456,15 +487,27 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   <Text style={styles.statLabel}>WIN RATE</Text>
                 </View>
 
-                {/* 4. Streak */}
+                {/* 5. Current Streak */}
                 <View style={styles.statBox}>
                   <View style={styles.statBoxGlint} />
                   <Text style={[styles.statNumber, styles.statStreakNumber]}>
-                    {profile.stats.winStreak}
+                    {careerStats.winStreak}
                   </Text>
                   <Text style={styles.statLabel}>STREAK 🔥</Text>
                 </View>
+
+                {/* 6. Best Streak */}
+                <View style={styles.statBox}>
+                  <View style={styles.statBoxGlint} />
+                  <Text style={[styles.statNumber, styles.statBestStreakNumber]}>
+                    {bestStreak}
+                  </Text>
+                  <Text style={styles.statLabel}>BEST STREAK ⚡</Text>
+                </View>
               </View>
+              <Text style={styles.statsScopeFootnote}>
+                Public Human Multiplayer • ⚡ {rivalCalls} Rival Calls
+              </Text>
             </View>
 
             {/* Cloud Save & Account Management Card */}
@@ -1023,11 +1066,24 @@ const styles = StyleSheet.create({
   statWinsNumber: {
     color: '#10B981',
   },
+  statLossesNumber: {
+    color: '#F87171',
+  },
   statRateNumber: {
     color: '#38BDF8',
   },
   statStreakNumber: {
     color: '#FACC15',
+  },
+  statBestStreakNumber: {
+    color: '#F59E0B',
+  },
+  statsScopeFootnote: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 8,
   },
   statLabel: {
     ...FONT_CARTOON_BOLD,

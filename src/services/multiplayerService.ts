@@ -1,9 +1,60 @@
 // src/services/multiplayerService.ts - Online Multiplayer Realtime Service with Session Persistence & Auto-Reconnection
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, safeStorage } from './supabase';
-import type { GameState } from '../types';
+import type { GameState, Player } from '../types';
 
 export const ACTIVE_MATCH_STORAGE_KEY = '@rivalcard:active_online_match';
+export const MIN_ROOM_PLAYERS = 2;
+export const MAX_ROOM_PLAYERS = 4;
+
+/**
+ * Pure helper to add or update a player in a private room while enforcing MAX_ROOM_PLAYERS.
+ */
+export function addPlayerToRoom(
+  players: RoomPlayer[],
+  incomingPlayer: RoomPlayer,
+  maxPlayers: number = MAX_ROOM_PLAYERS
+): { players: RoomPlayer[]; accepted: boolean } {
+  const existingIndex = players.findIndex((p) => p.id === incomingPlayer.id);
+  if (existingIndex !== -1) {
+    const updated = [...players];
+    updated[existingIndex] = incomingPlayer;
+    return { players: updated, accepted: true };
+  }
+
+  if (players.length >= maxPlayers) {
+    return { players, accepted: false };
+  }
+
+  return { players: [...players, incomingPlayer], accepted: true };
+}
+
+/**
+ * Strictly resolve the local client's perspective player in an online match by authenticated user ID.
+ * Never derives the local hand from `currentTurnIndex` so opponents' turns never swap the local tray.
+ */
+export function resolveOnlinePerspectivePlayer(
+  players: readonly Player[],
+  localUserId: string | null | undefined
+): Player {
+  if (localUserId) {
+    const matched = players.find((p) => p.id === localUserId);
+    if (matched) return matched;
+  }
+  return players.find((p) => !p.isBot) || players[0];
+}
+
+/**
+ * Checks whether the current active turn in an online match belongs strictly to the authenticated local user.
+ */
+export function isOnlineLocalPlayerTurn(
+  state: Pick<GameState, 'players' | 'currentTurnIndex' | 'gameMode'>,
+  localUserId: string | null | undefined
+): boolean {
+  if (state.gameMode !== 'multiplayer' || !localUserId) return false;
+  const activePlayer = state.players[state.currentTurnIndex];
+  return Boolean(activePlayer && activePlayer.id === localUserId && !activePlayer.isBot);
+}
 
 export interface ActiveMatchSession {
   roomId: string;
@@ -65,12 +116,20 @@ export interface TauntMessage {
   timestamp: number;
 }
 
+export interface RivalCalloutEvent {
+  playerId: string;
+  playerName: string;
+  timestamp: number;
+}
+
 export interface MultiplayerCallbacks {
   onConnectionChange?: (status: ConnectionStatus) => void;
   onRoomPlayersUpdate?: (players: RoomPlayer[]) => void;
   onGameStarted?: (initialState: GameState) => void;
   onGameStateUpdate?: (state: GameState, senderId: string, actionDescription: string) => void;
   onTauntReceived?: (taunt: TauntMessage) => void;
+  onRivalCalled?: (event: RivalCalloutEvent) => void;
+  onSeriesNextMatch?: (nextState: GameState, isNewSeries: boolean) => void;
   onPlayerLeft?: (playerId: string, playerName: string) => void;
   onError?: (errorMessage: string) => void;
   onReconnecting?: (attempt: number) => void;
@@ -219,9 +278,31 @@ export class MultiplayerService {
       const incomingPlayer = payload?.player as RoomPlayer;
       if (!incomingPlayer) return;
 
-      const exists = this.roomPlayers.some((p) => p.id === incomingPlayer.id);
-      if (!exists) {
-        this.roomPlayers = [...this.roomPlayers, incomingPlayer];
+      const { players: nextPlayers, accepted } = addPlayerToRoom(
+        this.roomPlayers,
+        incomingPlayer,
+        MAX_ROOM_PLAYERS
+      );
+
+      if (!accepted) {
+        if (this.myPlayer?.isHost && this.channel) {
+          this.channel
+            .send({
+              type: 'broadcast',
+              event: 'room_full',
+              payload: {
+                targetId: incomingPlayer.id,
+                message: `Room is full (maximum ${MAX_ROOM_PLAYERS} players).`,
+              },
+            })
+            .catch(() => {});
+          this.broadcastRoomPlayers();
+        }
+        return;
+      }
+
+      if (nextPlayers !== this.roomPlayers) {
+        this.roomPlayers = nextPlayers;
         this.callbacks.onRoomPlayersUpdate?.(this.roomPlayers);
       }
 
@@ -231,11 +312,24 @@ export class MultiplayerService {
       }
     });
 
+    // 1b. Room Capacity Rejection
+    this.channel.on('broadcast', { event: 'room_full' }, async ({ payload }) => {
+      const targetId = payload?.targetId as string | undefined;
+      if (targetId && this.myPlayer?.id && targetId !== this.myPlayer.id) {
+        return;
+      }
+      const message =
+        (payload?.message as string | undefined) ||
+        `Room is full (maximum ${MAX_ROOM_PLAYERS} players).`;
+      await this.leaveRoom();
+      this.callbacks.onError?.(message);
+    });
+
     // 2. Authoritative Room Players List (from Host)
     this.channel.on('broadcast', { event: 'room_players_sync' }, ({ payload }) => {
       const players = payload?.players as RoomPlayer[];
       if (Array.isArray(players)) {
-        this.roomPlayers = players;
+        this.roomPlayers = players.slice(0, MAX_ROOM_PLAYERS);
         this.callbacks.onRoomPlayersUpdate?.(this.roomPlayers);
       }
     });
@@ -287,6 +381,25 @@ export class MultiplayerService {
       const taunt = payload as TauntMessage;
       if (taunt && taunt.emoji) {
         this.callbacks.onTauntReceived?.(taunt);
+      }
+    });
+
+    // 7b. Opponent RIVAL! Callout Audio Cue Event
+    this.channel.on('broadcast', { event: 'rival_called' }, ({ payload }) => {
+      const playerId = payload?.playerId as string;
+      const playerName = (payload?.playerName as string) || 'Opponent';
+      const timestamp = typeof payload?.timestamp === 'number' ? payload.timestamp : Date.now();
+      if (playerId) {
+        this.callbacks.onRivalCalled?.({ playerId, playerName, timestamp });
+      }
+    });
+
+    // 7c. Private Room Series: Host Advances to Next Match (or New 5-Match Series)
+    this.channel.on('broadcast', { event: 'series_next_match' }, ({ payload }) => {
+      const nextState = payload?.nextState as GameState;
+      const isNewSeries = Boolean(payload?.isNewSeries);
+      if (nextState) {
+        this.callbacks.onSeriesNextMatch?.(nextState, isNewSeries);
       }
     });
 
@@ -506,6 +619,50 @@ export class MultiplayerService {
     } catch (err: any) {
       console.warn('Failed to broadcast taunt:', err?.message || err);
       return null;
+    }
+  }
+
+  /**
+   * Broadcast a RIVAL! callout cue so all connected opponents hear the callout SFX.
+   */
+  public async broadcastRivalCallout(playerId: string, playerName: string): Promise<void> {
+    if (!this.channel || this.connectionStatus !== 'connected') return;
+
+    try {
+      await this.channel.send({
+        type: 'broadcast',
+        event: 'rival_called',
+        payload: {
+          playerId,
+          playerName,
+          timestamp: Date.now(),
+        },
+      });
+    } catch (err: any) {
+      console.warn('Failed to broadcast rival callout:', err?.message || err);
+    }
+  }
+
+  /**
+   * Broadcast next match state for a Private Room 5-Match Series (or fresh 5-Match Series restart).
+   */
+  public async broadcastSeriesNextMatch(
+    nextState: GameState,
+    isNewSeries: boolean = false
+  ): Promise<void> {
+    if (!this.channel || this.connectionStatus !== 'connected') return;
+
+    try {
+      await this.channel.send({
+        type: 'broadcast',
+        event: 'series_next_match',
+        payload: {
+          nextState,
+          isNewSeries,
+        },
+      });
+    } catch (err: any) {
+      console.warn('Failed to broadcast series_next_match:', err?.message || err);
     }
   }
 

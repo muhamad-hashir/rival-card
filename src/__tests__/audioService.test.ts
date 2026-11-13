@@ -117,4 +117,21 @@ describe('Audio & Music Engine (BGM & SFX)', () => {
     await audioService.stopBgm();
     assert.strictEqual(audioService.getCurrentBgmType(), 'none');
   });
+
+  test('concurrent menu-to-gameplay BGM calls converge cleanly on gameplay track', async () => {
+    await Promise.all([
+      audioService.playMenuBgm(),
+      audioService.playGameplayBgm(),
+    ]);
+    assert.strictEqual(audioService.getCurrentBgmType(), 'gameplay');
+
+    await assert.doesNotReject(async () => {
+      await audioService.ensureAudioMode(true);
+      await audioService.pauseBgm();
+      await audioService.resumeBgm();
+    });
+
+    await audioService.stopBgm();
+    assert.strictEqual(audioService.getCurrentBgmType(), 'none');
+  });
 });

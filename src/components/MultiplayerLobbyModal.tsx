@@ -1,5 +1,5 @@
 // src/components/MultiplayerLobbyModal.tsx - Unified Multiplayer Hub (Quick Match & Private Rooms)
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,8 +17,16 @@ import {
   multiplayerService,
   RoomPlayer,
 } from '../services/supabase';
+import {
+  MAX_ROOM_PLAYERS,
+  MIN_ROOM_PLAYERS,
+} from '../services/multiplayerService';
 import { matchmakingService } from '../services/matchmakingService';
 import { createGame } from '../gameEngine';
+import {
+  createInitialSeriesState,
+  PRIVATE_SERIES_TOTAL_MATCHES,
+} from '../utils/seriesEngine';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { errorToastService } from '../services/errorToastService';
@@ -60,7 +68,29 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
   // Matchmaking State
   const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [isStartingSearch, setIsStartingSearch] = useState<boolean>(false);
   const [searchSeconds, setSearchSeconds] = useState<number>(0);
+
+  const getResolvedPlayerId = useCallback(
+    (loadedProfile?: PlayerProfile | null) =>
+      loadedProfile?.id || profile?.id || multiplayerService.getMyPlayer()?.id || myPlayerId,
+    [profile?.id, myPlayerId]
+  );
+
+  // Ensure matchmaking state & locks are cleaned up when modal closes or unmounts
+  useEffect(() => {
+    if (!visible) {
+      setIsSearching(false);
+      setIsStartingSearch(false);
+      setSearchSeconds(0);
+      setIsBusy(false);
+      matchmakingService.cancelMatchmaking().catch(() => {});
+    }
+
+    return () => {
+      matchmakingService.cancelMatchmaking().catch(() => {});
+    };
+  }, [visible]);
 
   // Preload player profile and wire multiplayer callbacks
   useEffect(() => {
@@ -73,6 +103,9 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
     multiplayerService.setCallbacks({
       onConnectionChange: (status) => {
         setConnectionStatus(status);
+        if (status === 'disconnected') {
+          setRoomPlayers([]);
+        }
       },
       onRoomPlayersUpdate: (players) => {
         setRoomPlayers(players);
@@ -81,7 +114,8 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
         soundService.playCardDraw();
         hapticsService.validPlay();
         const code = multiplayerService.getRoomCode() || roomCode;
-        onGameStart(initialState, myPlayerId, code, false);
+        const resolvedId = getResolvedPlayerId();
+        onGameStart(initialState, resolvedId, code, false);
       },
       onError: (errMsg) => {
         setIsBusy(false);
@@ -95,31 +129,38 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
     return () => {
       // Don't auto-leave room on unmount if game is in progress
     };
-  }, [visible, myPlayerId, roomCode, onGameStart]);
+  }, [visible, roomCode, onGameStart, getResolvedPlayerId]);
 
   // Handle Quick Match "Find Match"
   const handleFindMatch = async () => {
+    if (isStartingSearch || isSearching) return;
+
     const canProceed = await networkService.ensureOnline('Quick Match');
     if (!canProceed) return;
 
     try {
+      setIsStartingSearch(true);
       hapticsService.cardSelection();
       soundService.playCardSnap();
 
       const userProfile = profile || (await playerProfileService.getProfile());
+      const resolvedId = getResolvedPlayerId(userProfile);
       setIsSearching(true);
       setSearchSeconds(0);
 
       await matchmakingService.startMatchmaking(
         {
-          id: userProfile.id || myPlayerId,
+          id: resolvedId,
           name: userProfile.nickname || 'Player',
           avatarId: userProfile.avatarId || 'avatar_1',
         },
         {
           onStatusChange: (status) => {
-            if (status === 'idle') {
+            if (status === 'searching') {
+              setIsSearching(true);
+            } else if (status === 'idle') {
               setIsSearching(false);
+              setIsStartingSearch(false);
             }
           },
           onTick: (secs) => {
@@ -127,6 +168,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
           },
           onMatchFound: (result) => {
             setIsSearching(false);
+            setIsStartingSearch(false);
             soundService.playCardDraw();
             hapticsService.validPlay();
             onClose();
@@ -134,6 +176,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
           },
           onError: (errMsg) => {
             setIsSearching(false);
+            setIsStartingSearch(false);
             soundService.playError();
             hapticsService.invalidMove();
             errorToastService.showError(errMsg);
@@ -145,6 +188,8 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
     } catch (err: any) {
       setIsSearching(false);
       Alert.alert('Matchmaking Error', err?.message || 'Could not start matchmaking');
+    } finally {
+      setIsStartingSearch(false);
     }
   };
 
@@ -152,9 +197,10 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
   const handleCancelSearch = async () => {
     hapticsService.cardSnap();
     soundService.playCardSnap();
-    await matchmakingService.cancelMatchmaking();
+    setIsStartingSearch(false);
     setIsSearching(false);
     setSearchSeconds(0);
+    await matchmakingService.cancelMatchmaking();
   };
 
   // Private Room: Host creates 4-digit code room
@@ -225,8 +271,11 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
   // Host starts the match for private room
   const handleHostStartGame = async () => {
-    if (roomPlayers.length < 2) {
-      Alert.alert('Waiting for Players', 'At least 2 players are needed to begin the match.');
+    if (roomPlayers.length < MIN_ROOM_PLAYERS) {
+      Alert.alert(
+        'Waiting for Players',
+        `At least ${MIN_ROOM_PLAYERS} players are needed to begin the match.`
+      );
       return;
     }
 
@@ -235,18 +284,25 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
       hapticsService.validPlay();
       soundService.playCardDraw();
 
-      const playerConfigs = roomPlayers.map((p) => ({
+      const activeRoomPlayers = roomPlayers.slice(0, MAX_ROOM_PLAYERS);
+      const playerConfigs = activeRoomPlayers.map((p) => ({
         id: p.id,
         name: p.name,
         isBot: false,
         avatarId: p.avatarId || 'avatar_1',
       }));
 
-      const initialState = createGame(playerConfigs, 'multiplayer');
+      const resolvedHostId = getResolvedPlayerId();
+      const initialState = createGame(playerConfigs, 'multiplayer', { allowStacking: true });
+      initialState.seriesState = createInitialSeriesState(
+        playerConfigs,
+        resolvedHostId,
+        PRIVATE_SERIES_TOTAL_MATCHES
+      );
 
       await multiplayerService.startGame(initialState);
       setIsBusy(false);
-      onGameStart(initialState, myPlayerId, roomCode, false);
+      onGameStart(initialState, resolvedHostId, roomCode, false);
     } catch (err: any) {
       setIsBusy(false);
       Alert.alert('Start Error', err?.message || 'Could not start match');
@@ -256,10 +312,13 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
   // Close Hub Modal
   const handleClose = async () => {
     hapticsService.cardSnap();
-    await matchmakingService.cancelMatchmaking();
-    await multiplayerService.leaveRoom();
+    setIsStartingSearch(false);
     setIsSearching(false);
     setSearchSeconds(0);
+    setIsBusy(false);
+    await matchmakingService.cancelMatchmaking();
+    await multiplayerService.leaveRoom();
+    setConnectionStatus('disconnected');
     setRoomPlayers([]);
     setRoomCode('');
     setJoinCode('');
@@ -447,7 +506,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                       {/* Joined Players List */}
                       <View style={styles.playersListCard}>
                         <Text style={styles.playersListTitle}>
-                          PLAYERS IN ROOM ({roomPlayers.length}/4)
+                          PLAYERS IN ROOM ({roomPlayers.length}/{MAX_ROOM_PLAYERS})
                         </Text>
                         {roomPlayers.map((p) => {
                           const pAvatar = getAvatarConfig(p.avatarId);
@@ -456,7 +515,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                               <View style={styles.playerItemLeft}>
                                 <Text style={styles.playerItemEmoji}>{pAvatar.emoji}</Text>
                                 <Text style={styles.playerItemName}>
-                                  {p.name} {p.id === (profile?.id || myPlayerId) ? '(You)' : ''}
+                                  {p.name} {p.id === getResolvedPlayerId() ? '(You)' : ''}
                                 </Text>
                               </View>
                               <View
@@ -480,11 +539,11 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                           );
                         })}
 
-                        {roomPlayers.length < 2 && (
+                        {roomPlayers.length < MIN_ROOM_PLAYERS && (
                           <View style={styles.waitingNotice}>
                             <ActivityIndicator size="small" color="#2B8EEA" />
                             <Text style={styles.waitingNoticeText}>
-                              Waiting for opponent to enter code...
+                              Waiting for players to enter code ({MIN_ROOM_PLAYERS}–{MAX_ROOM_PLAYERS} players)...
                             </Text>
                           </View>
                         )}
@@ -494,9 +553,9 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                       <TouchableOpacity
                         style={[
                           styles.primaryBtn,
-                          roomPlayers.length < 2 && styles.btnDisabled,
+                          roomPlayers.length < MIN_ROOM_PLAYERS && styles.btnDisabled,
                         ]}
-                        disabled={roomPlayers.length < 2 || isBusy}
+                        disabled={roomPlayers.length < MIN_ROOM_PLAYERS || isBusy}
                         onPress={handleHostStartGame}
                         activeOpacity={0.8}
                       >
@@ -504,7 +563,9 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                           <ActivityIndicator color="#FFFFFF" />
                         ) : (
                           <Text style={styles.primaryBtnText}>
-                            {roomPlayers.length < 2 ? 'Need 2+ Players to Start' : 'Start Match'}
+                            {roomPlayers.length < MIN_ROOM_PLAYERS
+                              ? `Need ${MIN_ROOM_PLAYERS}+ Players to Start`
+                              : `Start Match (${roomPlayers.length}/${MAX_ROOM_PLAYERS})`}
                           </Text>
                         )}
                       </TouchableOpacity>
@@ -561,7 +622,43 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
                   {connectionStatus === 'connected' && roomCode && (
                     <View style={styles.joinedNotice}>
-                      <Text style={styles.joinedNoticeTitle}>Connected to Room #{roomCode}</Text>
+                      <Text style={styles.joinedNoticeTitle}>
+                        Connected to Room #{roomCode} ({roomPlayers.length}/{MAX_ROOM_PLAYERS})
+                      </Text>
+                      {roomPlayers.length > 0 && (
+                        <View style={[styles.playersListCard, { width: '100%', marginTop: 8 }]}>
+                          {roomPlayers.map((p) => {
+                            const pAvatar = getAvatarConfig(p.avatarId);
+                            return (
+                              <View key={p.id} style={styles.playerItemRow}>
+                                <View style={styles.playerItemLeft}>
+                                  <Text style={styles.playerItemEmoji}>{pAvatar.emoji}</Text>
+                                  <Text style={styles.playerItemName}>
+                                    {p.name} {p.id === getResolvedPlayerId() ? '(You)' : ''}
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.playerItemBadge,
+                                    p.isHost ? styles.playerHostBadge : styles.playerReadyBadge,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.playerItemBadgeText,
+                                      p.isHost
+                                        ? styles.playerHostBadgeText
+                                        : styles.playerReadyBadgeText,
+                                    ]}
+                                  >
+                                    {p.isHost ? 'Host' : 'Ready'}
+                                  </Text>
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      )}
                       <Text style={styles.joinedNoticeSub}>
                         Waiting for host to start the match...
                       </Text>

@@ -56,13 +56,17 @@ class SoundService {
       try {
         const modeConfig = {
           playsInSilentMode: true,
+          playsInSilentModeIOS: true,
           shouldDuckAndroid: true,
           interruptionMode: 'duckOthers',
+          allowsRecording: false,
+          shouldPlayInBackground: false,
+          shouldRouteThroughEarpiece: false,
         };
-        if (!isWeb && AudioModule && typeof AudioModule.setAudioModeAsync === 'function') {
-          await AudioModule.setAudioModeAsync(modeConfig);
-        } else if (!isWeb && ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+        if (!isWeb && ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
           await ExpoAudio.setAudioModeAsync(modeConfig as any);
+        } else if (!isWeb && AudioModule && typeof AudioModule.setAudioModeAsync === 'function') {
+          await AudioModule.setAudioModeAsync(modeConfig);
         }
         this.audioModeConfigured = true;
       } catch {
