@@ -41,6 +41,7 @@ export const ResumeMatchModal: React.FC<ResumeMatchModalProps> = ({
       visible={visible}
       onRequestClose={onAbandon}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.dialogCard}>

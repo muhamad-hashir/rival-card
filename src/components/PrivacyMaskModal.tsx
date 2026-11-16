@@ -37,6 +37,7 @@ export const PrivacyMaskModal: React.FC<PrivacyMaskModalProps> = ({
       animationType="fade"
       visible={visible}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.container}>
         <View style={styles.cardContainer}>

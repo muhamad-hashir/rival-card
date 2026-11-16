@@ -34,6 +34,7 @@ export const LeaveConfirmationModal: React.FC<LeaveConfirmationModalProps> = ({
       visible={visible}
       onRequestClose={onCancel}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <ScrollView

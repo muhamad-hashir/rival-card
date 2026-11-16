@@ -132,6 +132,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
       animationType="slide"
       visible={visible}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.dialogCard}>

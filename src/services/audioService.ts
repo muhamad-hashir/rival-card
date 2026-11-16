@@ -549,8 +549,9 @@ export class AudioService {
 
       if (!player) return;
 
-      // Reuse pattern: rewind to 0s and play
+      // Reuse pattern: ensure non-looping, rewind to 0s and play
       try {
+        player.loop = false;
         player.volume = volume;
         if (typeof player.seekTo === 'function') {
           try {

@@ -201,6 +201,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
       visible={visible}
       onRequestClose={handleClose}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.shopCard}>

@@ -214,6 +214,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const seriesNextTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isGameOverRef = useRef(gameState.isGameOver);
   isGameOverRef.current = gameState.isGameOver;
+  const lastTopDiscardIdRef = useRef<string | null>(
+    gameState.discardPile[gameState.discardPile.length - 1]?.id ?? null
+  );
+  const lastPendingColorChoiceRef = useRef<boolean>(Boolean(gameState.pendingColorChoice));
 
   // Multiplayer Online & Modes states
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
@@ -787,6 +791,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       nextState.isGameOver && nextState.seriesState?.isPrivateSeries
         ? recordSeriesRoundResult(nextState)
         : nextState;
+    lastTopDiscardIdRef.current =
+      finalizedState.discardPile[finalizedState.discardPile.length - 1]?.id ?? null;
+    lastPendingColorChoiceRef.current = Boolean(finalizedState.pendingColorChoice);
     setGameState(finalizedState);
     if (finalizedState.gameMode === 'multiplayer') {
       multiplayerService.broadcastGameState(finalizedState, actionDescription);
@@ -1044,7 +1051,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     setCurrentPresetKey(presetKey);
     const preset = PRESETS[presetKey];
     const players = getPresetPlayers(presetKey);
-    setGameState(createGame(players, preset.mode, { allowStacking: true }));
+    const newState = createGame(players, preset.mode, { allowStacking: true });
+    lastTopDiscardIdRef.current =
+      newState.discardPile[newState.discardPile.length - 1]?.id ?? null;
+    lastPendingColorChoiceRef.current = Boolean(newState.pendingColorChoice);
+    setGameState(newState);
     setSelectedWildCard(null);
     setIsColorPickerOpen(false);
     setPendingPairPlay(null);
@@ -1102,6 +1113,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         isBot: false,
       }));
       const freshState = createGame(playerConfigs, 'multiplayer', { allowStacking: true });
+      lastTopDiscardIdRef.current =
+        freshState.discardPile[freshState.discardPile.length - 1]?.id ?? null;
+      lastPendingColorChoiceRef.current = Boolean(freshState.pendingColorChoice);
       setGameState(freshState);
       try {
         await multiplayerService.broadcastGameState(freshState, 'Restarted Match');
@@ -1136,6 +1150,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       setIsHumanDrawing(false);
 
       const nextMatchState = createNextSeriesMatchState(gameState, resetSeries);
+      lastTopDiscardIdRef.current =
+        nextMatchState.discardPile[nextMatchState.discardPile.length - 1]?.id ?? null;
+      lastPendingColorChoiceRef.current = Boolean(nextMatchState.pendingColorChoice);
       setGameState(nextMatchState);
 
       try {
@@ -1313,31 +1330,50 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         stopDisconnectionCountdown();
         if (senderId !== resolvedOnlineUserId) {
           const wasGameOver = isGameOverRef.current;
+          const prevTopId = lastTopDiscardIdRef.current;
+          const prevPendingColor = lastPendingColorChoiceRef.current;
           const normalizedRemote =
             remoteState.isGameOver && remoteState.seriesState?.isPrivateSeries
               ? recordSeriesRoundResult(remoteState)
               : remoteState;
+          const topCard = normalizedRemote.discardPile[normalizedRemote.discardPile.length - 1];
+          const remoteTopId = topCard?.id ?? null;
+          const isNewCardPlayed = !wasGameOver && Boolean(remoteTopId && remoteTopId !== prevTopId);
+          const didFinishColorChoice =
+            !wasGameOver &&
+            prevPendingColor &&
+            !normalizedRemote.pendingColorChoice &&
+            remoteTopId === prevTopId;
+
+          lastTopDiscardIdRef.current = remoteTopId;
+          lastPendingColorChoiceRef.current = Boolean(normalizedRemote.pendingColorChoice);
           setGameState(normalizedRemote);
           setIsReconnecting(false);
+
           if (normalizedRemote.isGameOver) {
-            soundService.playWinChime();
-            hapticsService.victory();
-          } else {
+            if (!wasGameOver) {
+              soundService.playWinChime();
+              hapticsService.victory();
+            }
+          } else if (wasGameOver) {
+            resetMatchTrackingIds(onlineRoomCode);
+            setSelectedWildCard(null);
+            setIsColorPickerOpen(false);
+            setPendingPairPlay(null);
+            setPendingWildPair(null);
+            setRivalCountdown(null);
+            runDealingAnimation(normalizedRemote.players);
+          } else if (isNewCardPlayed && topCard) {
             soundService.playCardSnap();
             hapticsService.cardSnap();
-            const topCard = normalizedRemote.discardPile[normalizedRemote.discardPile.length - 1];
-            if (topCard) {
-              triggerCardActionSfx(topCard.value);
-            }
-            if (wasGameOver) {
-              resetMatchTrackingIds(onlineRoomCode);
-              setSelectedWildCard(null);
-              setIsColorPickerOpen(false);
-              setPendingPairPlay(null);
-              setPendingWildPair(null);
-              setRivalCountdown(null);
-              runDealingAnimation(normalizedRemote.players);
-            }
+            triggerCardActionSfx(
+              topCard.value,
+              !normalizedRemote.pendingColorChoice && isWildCard(topCard)
+            );
+          } else if (didFinishColorChoice) {
+            audioService.playColorChangeSfx();
+          } else if (normalizedRemote.hasDrawnThisTurn) {
+            soundService.playCardDraw();
           }
         }
       },
@@ -1363,6 +1399,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             timestamp: syncedState.lastRivalCallTimestamp,
           };
         }
+        lastTopDiscardIdRef.current =
+          syncedState.discardPile[syncedState.discardPile.length - 1]?.id ?? null;
+        lastPendingColorChoiceRef.current = Boolean(syncedState.pendingColorChoice);
         setGameState(syncedState);
         setIsReconnecting(false);
         showQuickBanner('Match state synchronized!');
@@ -1387,6 +1426,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         setPendingPairPlay(null);
         setPendingWildPair(null);
         setRivalCountdown(null);
+        lastTopDiscardIdRef.current =
+          nextState.discardPile[nextState.discardPile.length - 1]?.id ?? null;
+        lastPendingColorChoiceRef.current = Boolean(nextState.pendingColorChoice);
         setGameState(nextState);
         setIsReconnecting(false);
         if (!nextState.seriesState?.seriesEndedEarly) {
@@ -1604,7 +1646,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             }
 
             soundService.playCardSnap();
-            audioService.playPlusTwoSfx();
             soundService.playRivalCallout();
             triggerCardActionSfx(cardToStack.value, Boolean(chosenColor));
 
@@ -1795,7 +1836,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           }
         }
         if (isEscalation) {
-          audioService.playPlusTwoSfx();
           soundService.playRivalCallout();
           hapticsService.rivalCallout();
         }
@@ -1875,7 +1915,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           }
         }
         if (isEscalation) {
-          audioService.playPlusTwoSfx();
           soundService.playRivalCallout();
           hapticsService.rivalCallout();
         }
@@ -2068,7 +2107,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             }
           }
           if (isEscalation) {
-            audioService.playPlusFourSfx();
             soundService.playRivalCallout();
             hapticsService.rivalCallout();
           }
@@ -2302,13 +2340,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       clearInterval(rivalTimerRef.current);
       rivalTimerRef.current = null;
     }
-    if (seriesNextTimerRef.current) {
-      clearInterval(seriesNextTimerRef.current);
-      seriesNextTimerRef.current = null;
-    }
-    lastHandledRivalCallRef.current = null;
-    resetMatchTrackingIds(null);
-    setSeriesNextCountdown(null);
     setRivalCountdown(null);
   };
 

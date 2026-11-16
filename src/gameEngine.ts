@@ -297,6 +297,142 @@ export function calculateNextPlayerIndex(
   return (rawIndex + playerCount) % playerCount;
 }
 
+const SWAP_CARD_STRENGTH: Partial<Record<CardValue, number>> = {
+  wild_draw4: 50,
+  wild: 40,
+  rival_swap: 40,
+  mute: 40,
+  draw2: 20,
+  skip: 20,
+  reverse: 20,
+};
+
+/**
+ * Scores a single card's strength for Rival Swap tie-breaking:
+ * - Wild Draw Four (+4): 50 pts
+ * - Wild / Swap / Mute: 40 pts
+ * - Action cards (+2, Skip, Reverse): 20 pts
+ * - Number cards (0-9): face value
+ */
+export function getCardSwapStrength(card: Card): number {
+  const mappedStrength = SWAP_CARD_STRENGTH[card.value];
+  if (mappedStrength !== undefined) {
+    return mappedStrength;
+  }
+  const numericValue = Number(card.value);
+  return Number.isFinite(numericValue) ? numericValue : 0;
+}
+
+/**
+ * Selects the swap target opponent index using a 3-tier strategy:
+ * 1. Fewest cards in hand among opponents.
+ * 2. Highest total card strength among opponents tied for fewest cards.
+ * 3. Earliest opponent in active turn order from `currentTurnIndex` in `direction`.
+ */
+export function selectSwapTargetIndex(
+  players: readonly Player[],
+  currentTurnIndex: number,
+  direction: TurnDirection
+): number {
+  if (players.length <= 1) return -1;
+
+  // Traverse opponents strictly in active turn order so Tier 3 tie-breaking is inherent.
+  const orderedOpponentIndices: number[] = [];
+  for (let step = 1; step < players.length; step++) {
+    const idx = calculateNextPlayerIndex(currentTurnIndex, direction, players.length, step);
+    if (idx !== currentTurnIndex) {
+      orderedOpponentIndices.push(idx);
+    }
+  }
+
+  if (orderedOpponentIndices.length === 0) return -1;
+
+  // Tier 1: Fewest cards
+  let minHandCount = Infinity;
+  for (const idx of orderedOpponentIndices) {
+    const count = players[idx].hand.length;
+    if (count < minHandCount) {
+      minHandCount = count;
+    }
+  }
+
+  const fewestCandidates = orderedOpponentIndices.filter(
+    (idx) => players[idx].hand.length === minHandCount
+  );
+
+  if (fewestCandidates.length === 1) {
+    return fewestCandidates[0];
+  }
+
+  // Tier 2 & Tier 3: Highest hand strength; strict '>' preserves earliest turn-order on equal score.
+  let bestIndex = fewestCandidates[0];
+  let bestStrength = -1;
+
+  for (const idx of fewestCandidates) {
+    const handStrength = players[idx].hand.reduce(
+      (sum, card) => sum + getCardSwapStrength(card),
+      0
+    );
+    if (handStrength > bestStrength) {
+      bestStrength = handStrength;
+      bestIndex = idx;
+    }
+  }
+
+  return bestIndex;
+}
+
+function applyRivalSwap(
+  players: Player[],
+  currentTurnIndex: number,
+  direction: TurnDirection,
+  currentPlayer: Player,
+  updatedCurrentPlayerHand: readonly Card[],
+  logs: GameEventLog[]
+): Player[] {
+  const targetPlayerIndex = selectSwapTargetIndex(players, currentTurnIndex, direction);
+  if (targetPlayerIndex === -1) {
+    return players;
+  }
+
+  const targetPlayer = players[targetPlayerIndex];
+  const playerHandBeforeSwap = [...updatedCurrentPlayerHand];
+  const targetHandBeforeSwap = [...targetPlayer.hand];
+
+  const swappedPlayers = players.map((p, idx) => {
+    if (idx === currentTurnIndex) {
+      return {
+        ...p,
+        hand: targetHandBeforeSwap,
+        hasDeclaredRival: targetHandBeforeSwap.length === 1 ? p.hasDeclaredRival : false,
+      };
+    }
+    if (idx === targetPlayerIndex) {
+      return {
+        ...p,
+        hand: playerHandBeforeSwap,
+        hasDeclaredRival: playerHandBeforeSwap.length === 1 ? p.hasDeclaredRival : false,
+      };
+    }
+    return p;
+  });
+
+  logs.push(
+    createLogEntry(
+      'SWAP_HANDS',
+      `🔄 RIVAL SWAP! ${currentPlayer.name} (${playerHandBeforeSwap.length} cards) swapped hands with ${targetPlayer.name} (${targetHandBeforeSwap.length} cards)!`,
+      {
+        playerId: currentPlayer.id,
+        playerName: currentPlayer.name,
+        targetPlayerId: targetPlayer.id,
+        targetPlayerName: targetPlayer.name,
+      }
+    )
+  );
+
+  return swappedPlayers;
+}
+
 // ============================================================================
 // 6. EVENT LOGGING HELPER
 // ============================================================================
@@ -569,7 +705,7 @@ export function playerDrawCard(state: GameState, playerId: string): GameState {
 
   const drawnCard = drawnCards[0];
   const updatedPlayers = state.players.map((p) =>
-    p.id === playerId ? { ...p, hand: [...p.hand, drawnCard] } : p
+    p.id === playerId ? { ...p, hand: [...p.hand, drawnCard], hasDeclaredRival: false } : p
   );
 
   const newLogs = [...state.logs];
@@ -965,57 +1101,14 @@ export function playCard(
     }
 
     case 'rival_swap': {
-      // AGENT.md: "Swaps hand with the player who currently has the fewest cards in hand."
-      let minHandCount = Infinity;
-      let targetPlayerIndex = -1;
-
-      // Search among opponents only
-      for (let i = 0; i < updatedPlayers.length; i++) {
-        if (i !== state.currentTurnIndex) {
-          const count = updatedPlayers[i].hand.length;
-          if (count < minHandCount) {
-            minHandCount = count;
-            targetPlayerIndex = i;
-          }
-        }
-      }
-
-      if (targetPlayerIndex !== -1) {
-        const targetPlayer = updatedPlayers[targetPlayerIndex];
-        const playerHandBeforeSwap = [...updatedCurrentPlayer.hand];
-        const targetHandBeforeSwap = [...targetPlayer.hand];
-
-        updatedPlayers = updatedPlayers.map((p, idx) => {
-          if (idx === state.currentTurnIndex) {
-            return {
-              ...p,
-              hand: targetHandBeforeSwap,
-              hasDeclaredRival: targetHandBeforeSwap.length === 1 ? p.hasDeclaredRival : false,
-            };
-          }
-          if (idx === targetPlayerIndex) {
-            return {
-              ...p,
-              hand: playerHandBeforeSwap,
-              hasDeclaredRival: playerHandBeforeSwap.length === 1 ? p.hasDeclaredRival : false,
-            };
-          }
-          return p;
-        });
-
-        newLogs.push(
-          createLogEntry(
-            'SWAP_HANDS',
-            `🔄 RIVAL SWAP! ${currentPlayer.name} (${playerHandBeforeSwap.length} cards) swapped hands with ${targetPlayer.name} (${targetHandBeforeSwap.length} cards)!`,
-            {
-              playerId: currentPlayer.id,
-              playerName: currentPlayer.name,
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      }
+      updatedPlayers = applyRivalSwap(
+        updatedPlayers,
+        state.currentTurnIndex,
+        state.direction,
+        currentPlayer,
+        updatedCurrentPlayer.hand,
+        newLogs
+      );
       nextSteps = 1;
       break;
     }
@@ -1327,47 +1420,14 @@ export function playPairCards(
     }
 
     case 'rival_swap': {
-      let minHandCount = Infinity;
-      let targetPlayerIndex = -1;
-
-      for (let i = 0; i < updatedPlayers.length; i++) {
-        if (i !== state.currentTurnIndex) {
-          const count = updatedPlayers[i].hand.length;
-          if (count < minHandCount) {
-            minHandCount = count;
-            targetPlayerIndex = i;
-          }
-        }
-      }
-
-      if (targetPlayerIndex !== -1) {
-        const targetPlayer = updatedPlayers[targetPlayerIndex];
-        const playerHandBeforeSwap = updatedCurrentPlayer.hand;
-        const targetHandBeforeSwap = targetPlayer.hand;
-
-        updatedPlayers = updatedPlayers.map((p, idx) => {
-          if (idx === state.currentTurnIndex) {
-            return { ...p, hand: targetHandBeforeSwap, hasDeclaredRival: false };
-          }
-          if (idx === targetPlayerIndex) {
-            return { ...p, hand: playerHandBeforeSwap, hasDeclaredRival: false };
-          }
-          return p;
-        });
-
-        newLogs.push(
-          createLogEntry(
-            'SWAP_HANDS',
-            `🔄 RIVAL SWAP! ${currentPlayer.name} swapped hands with ${targetPlayer.name}!`,
-            {
-              playerId: currentPlayer.id,
-              playerName: currentPlayer.name,
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      }
+      updatedPlayers = applyRivalSwap(
+        updatedPlayers,
+        state.currentTurnIndex,
+        state.direction,
+        currentPlayer,
+        updatedCurrentPlayer.hand,
+        newLogs
+      );
       nextSteps = 1;
       break;
     }
@@ -1518,17 +1578,19 @@ export function advanceToNextTurn(state: GameState, steps: number = 1): GameStat
     steps
   );
 
-  // Update muted states
+  // Update muted states and reset stale RIVAL! declarations whenever a player does not hold 1 card
   const updatedPlayers = state.players.map((p, idx) => {
-    if (idx === nextIndex && p.isMuted) {
-      const remaining = p.mutedRoundsRemaining - 1;
+    const basePlayer =
+      p.hand.length !== 1 && p.hasDeclaredRival ? { ...p, hasDeclaredRival: false } : p;
+    if (idx === nextIndex && basePlayer.isMuted) {
+      const remaining = basePlayer.mutedRoundsRemaining - 1;
       return {
-        ...p,
+        ...basePlayer,
         mutedRoundsRemaining: Math.max(0, remaining),
         isMuted: remaining > 0,
       };
     }
-    return p;
+    return basePlayer;
   });
 
   const nextPlayer = updatedPlayers[nextIndex];

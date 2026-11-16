@@ -228,6 +228,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
       visible={visible}
       onRequestClose={handleClose}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.modalCard}>

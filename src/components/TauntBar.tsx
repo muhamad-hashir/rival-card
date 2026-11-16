@@ -14,7 +14,7 @@ import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 
-const TAUNT_EMOJIS = ['🔥', '⚡', '😂', '😱', '👑', '🃏', '💥', '🛡️', '😈', '👋'];
+const TAUNT_EMOJIS = ['🔥', '⚡', '😂', '😭', '😱', '👑', '🃏', '💥', '🛡️', '😈', '👋'];
 
 export const TAUNT_TOAST_TOP_OFFSET = 36;
 
@@ -196,6 +196,7 @@ export const TauntBar: React.FC<TauntBarProps> = ({
         visible={isTrayOpen}
         onRequestClose={() => setIsTrayOpen(false)}
         statusBarTranslucent
+        navigationBarTranslucent
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setIsTrayOpen(false)}>
           <Pressable onPress={(e) => e.stopPropagation()}>

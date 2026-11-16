@@ -114,6 +114,7 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
       animationType="slide"
       visible={visible}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.dialogCard}>

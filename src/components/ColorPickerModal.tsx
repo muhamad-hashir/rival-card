@@ -53,6 +53,7 @@ export const ColorPickerModal: React.FC<ColorPickerModalProps> = ({
       animationType="fade"
       visible={visible}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.dialogCard}>

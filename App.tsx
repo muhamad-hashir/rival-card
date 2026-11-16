@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   AppState,
   AppStateStatus,
+  Dimensions,
   Linking,
   Platform,
   StyleSheet,
@@ -10,6 +11,7 @@ import {
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 import * as NavigationBar from 'expo-navigation-bar';
+import { scheduleImmersiveNavigationBar } from './src/utils/immersiveMode';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Font from 'expo-font';
 import {
@@ -64,39 +66,17 @@ function MainAppContent() {
     isQuickMatch?: boolean;
   } | null>(null);
 
-  // 1. Fullscreen Immersive Sticky Mode on Android with animation-settle delays
+  // 1. Fullscreen Immersive Mode on Android (handles Huawei EMUI & orientation/splash/modal resets)
   useEffect(() => {
-    let timer1: NodeJS.Timeout | null = null;
-    let timer2: NodeJS.Timeout | null = null;
+    if (Platform.OS !== 'android') return;
 
-    const applyImmersiveMode = async () => {
-      if (Platform.OS === 'android') {
-        try {
-          if (typeof (NavigationBar as any).setHidden === 'function') {
-            (NavigationBar as any).setHidden(true);
-          }
-          if (typeof NavigationBar.setVisibilityAsync === 'function') {
-            await NavigationBar.setVisibilityAsync('hidden');
-          }
-          if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
-            await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
-          }
-        } catch (err) {
-          console.warn('[Immersive] NavigationBar configuration warning:', err);
-        }
-      }
+    let cancelScheduled = scheduleImmersiveNavigationBar([0, 300, 1000]);
+    let rehideTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const triggerImmersiveSticky = (delays: readonly number[] = [0, 180, 650]) => {
+      cancelScheduled();
+      cancelScheduled = scheduleImmersiveNavigationBar(delays);
     };
-
-    const triggerImmersiveSticky = () => {
-      applyImmersiveMode();
-      // Re-trigger after short delays to ensure sticky immersive mode after native activity transition settles
-      if (timer1) clearTimeout(timer1);
-      if (timer2) clearTimeout(timer2);
-      timer1 = setTimeout(applyImmersiveMode, 300);
-      timer2 = setTimeout(applyImmersiveMode, 1000);
-    };
-
-    triggerImmersiveSticky();
 
     const appStateSub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active') {
@@ -104,12 +84,39 @@ function MainAppContent() {
       }
     });
 
+    const dimensionsSub = Dimensions.addEventListener('change', () => {
+      triggerImmersiveSticky([100, 400]);
+    });
+
+    const navVisibilitySub =
+      typeof NavigationBar.addVisibilityListener === 'function'
+        ? NavigationBar.addVisibilityListener(({ visibility }) => {
+            if (visibility === 'visible') {
+              if (rehideTimer) clearTimeout(rehideTimer);
+              rehideTimer = setTimeout(() => {
+                triggerImmersiveSticky([0, 300]);
+              }, 1200);
+            } else if (rehideTimer) {
+              clearTimeout(rehideTimer);
+              rehideTimer = null;
+            }
+          })
+        : null;
+
     return () => {
-      if (timer1) clearTimeout(timer1);
-      if (timer2) clearTimeout(timer2);
+      cancelScheduled();
+      if (rehideTimer) clearTimeout(rehideTimer);
       appStateSub.remove();
+      dimensionsSub.remove();
+      navVisibilitySub?.remove?.();
     };
   }, []);
+
+  // Re-assert immersive navigation bar after SplashScreen dismissal and Portrait <-> Landscape screen switches
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    return scheduleImmersiveNavigationBar([0, 200, 600]);
+  }, [isReady, currentScreen]);
 
   // 2. Cold Start & In-App Deep Link Listener (Auth Callback / Magic Link)
   useEffect(() => {
@@ -132,18 +139,7 @@ function MainAppContent() {
 
         // Re-enforce sticky fullscreen immersive mode after returning to the app from external email / browser intent
         if (Platform.OS === 'android') {
-          setTimeout(async () => {
-            try {
-              if (typeof NavigationBar.setVisibilityAsync === 'function') {
-                await NavigationBar.setVisibilityAsync('hidden');
-              }
-              if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
-                await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
-              }
-            } catch {
-              // ignore
-            }
-          }, 300);
+          scheduleImmersiveNavigationBar([150, 450]);
         }
       } catch (err) {
         console.warn('[RivalCard DeepLink] Error handling auth redirect url:', err);
@@ -354,6 +350,7 @@ function MainAppContent() {
     return (
       <GestureHandlerRootView style={styles.root}>
         <StatusBar hidden={true} />
+        {Platform.OS === 'android' && <NavigationBar.NavigationBar hidden style="light" />}
         <LoadingScreen progress={loadProgress} status={statusText} />
       </GestureHandlerRootView>
     );
@@ -362,6 +359,7 @@ function MainAppContent() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <StatusBar hidden={true} />
+      {Platform.OS === 'android' && <NavigationBar.NavigationBar hidden style="light" />}
       {currentScreen === 'home' ? (
         <HomeScreen
           onStartOfflineGame={handleStartOfflineGame}

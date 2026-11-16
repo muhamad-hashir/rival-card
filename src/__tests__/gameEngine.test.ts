@@ -10,6 +10,7 @@ import {
   createGame,
   drawFromDeck,
   playCard,
+  playPairCards,
   chooseWildColor,
   playerDrawCard,
   playerPassTurn,
@@ -20,6 +21,8 @@ import {
   makeBotMove,
   calculateNextPlayerIndex,
   getDominantColor,
+  getCardSwapStrength,
+  selectSwapTargetIndex,
 } from '../gameEngine';
 import type { Card, GameState, Player } from '../types';
 
@@ -420,6 +423,45 @@ describe('RIVAL! Declaration and Catch Mechanics', () => {
     assert.equal(canPlayerCallRival(2, false, true, true, false), false);
     assert.equal(canPlayerCallRival(2, false, true, false, true), false);
   });
+
+  test('Drawing a card resets hasDeclaredRival so RIVAL! must be pressed again every time player reaches 2 cards', () => {
+    let game = createGame([
+      { id: 'p1', name: 'P1' },
+      { id: 'p2', name: 'P2' },
+    ]);
+    game.discardPile = [{ id: 'top_r5', color: 'red', value: '5', scoreValue: 5 }];
+    game.activeColor = 'red';
+    game.deck = [{ id: 'draw_b9', color: 'blue', value: '9', scoreValue: 9 }];
+    game.players[0].hand = [
+      { id: 'p1_r5', color: 'red', value: '8', scoreValue: 8 },
+      { id: 'p1_g2', color: 'green', value: '2', scoreValue: 2 },
+    ];
+    game.players[0].hasDeclaredRival = false;
+
+    // 1. At 2 cards, player presses RIVAL! and plays down to 1 card
+    game = declareRival(game, 'p1');
+    assert.equal(game.players[0].hasDeclaredRival, true);
+    game = playCard(game, 'p1', 'p1_r5');
+    assert.equal(game.players[0].hand.length, 1);
+    assert.equal(game.players[0].hasDeclaredRival, true);
+
+    // 2. Opponent plays, returning turn to P1
+    game.players[1].hand = [
+      { id: 'p2_r7', color: 'red', value: '7', scoreValue: 7 },
+      { id: 'p2_b7', color: 'blue', value: '7', scoreValue: 7 },
+    ];
+    game = playCard(game, 'p2', 'p2_r7');
+
+    // 3. P1 cannot play green 2 on red 7, so P1 draws back up to 2 cards
+    game = playerDrawCard(game, 'p1');
+    assert.equal(game.players[0].hand.length, 2);
+    assert.equal(game.players[0].hasDeclaredRival, false, 'Drawing up to 2 cards must reset hasDeclaredRival');
+    assert.equal(
+      canPlayerCallRival(game.players[0].hand.length, game.players[0].hasDeclaredRival, true, false, false),
+      true,
+      'RIVAL! button must be clickable again whenever player holds 2 cards'
+    );
+  });
 });
 
 describe('Bot AI Engine (makeBotMove)', () => {
@@ -671,6 +713,204 @@ describe('1v1 Action Cards & Consecutive Turn Transitions', () => {
 
     const passedState = playerPassTurn(drawnState, 'p1');
     assert.equal(passedState.currentTurnIndex, 1, 'Turn must advance cleanly without throwing');
+  });
+});
+
+describe('RivalSwap 3-Tier Opponent Selection', () => {
+  function makeSwapTestGame(playersCount = 4, direction: 1 | -1 = 1, currentTurnIndex = 0): GameState {
+    const players: Player[] = [];
+    for (let i = 0; i < playersCount; i++) {
+      players.push({
+        id: `p${i}`,
+        name: `Player ${i}`,
+        isBot: false,
+        hand: [],
+        isMuted: false,
+        mutedRoundsRemaining: 0,
+        hasDeclaredRival: false,
+      });
+    }
+
+    return {
+      deck: [{ id: 'deck1', color: 'red', value: '1', scoreValue: 1 }],
+      discardPile: [{ id: 'top0', color: 'red', value: '9', scoreValue: 9 }],
+      players,
+      currentTurnIndex,
+      direction,
+      activeColor: 'red',
+      winner: null,
+      isGameOver: false,
+      gameMode: 'multiplayer',
+      hasDrawnThisTurn: false,
+      drawnCard: null,
+      pendingColorChoice: false,
+      pendingWildCard: null,
+      privacyMask: {
+        isActive: false,
+        targetPlayerId: players[currentTurnIndex].id,
+        targetPlayerName: players[currentTurnIndex].name,
+        promptText: '',
+      },
+      logs: [],
+      lastActionTimestamp: Date.now(),
+      pendingDrawCount: 0,
+      turnCount: 0,
+    };
+  }
+
+  test('Tier 1: selects the sole opponent with the fewest cards regardless of card strength', () => {
+    let state = makeSwapTestGame(4, 1, 0);
+    state.players[0].hand = [
+      { id: 'rs_p0', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'p0_r2', color: 'red', value: '2', scoreValue: 2 },
+    ];
+    // Player 1: 3 cards including Wild Draw 4 (strong, but more cards)
+    state.players[1].hand = [
+      { id: 'p1_wd4', color: 'wild', value: 'wild_draw4', scoreValue: 50 },
+      { id: 'p1_w', color: 'wild', value: 'wild', scoreValue: 50 },
+      { id: 'p1_r9', color: 'red', value: '9', scoreValue: 9 },
+    ];
+    // Player 2: 2 cards (FEWEST!)
+    state.players[2].hand = [
+      { id: 'p2_b1', color: 'blue', value: '1', scoreValue: 1 },
+      { id: 'p2_g2', color: 'green', value: '2', scoreValue: 2 },
+    ];
+    // Player 3: 4 cards
+    state.players[3].hand = [
+      { id: 'p3_y1', color: 'yellow', value: '1', scoreValue: 1 },
+      { id: 'p3_y2', color: 'yellow', value: '2', scoreValue: 2 },
+      { id: 'p3_y3', color: 'yellow', value: '3', scoreValue: 3 },
+      { id: 'p3_y4', color: 'yellow', value: '4', scoreValue: 4 },
+    ];
+
+    state = playCard(state, 'p0', 'rs_p0', { chosenColor: 'blue' });
+    assert.deepEqual(
+      state.players[0].hand.map((c) => c.id),
+      ['p2_b1', 'p2_g2'],
+      'Player 0 must steal Player 2 hand (sole fewest-card opponent)'
+    );
+    assert.deepEqual(state.players[2].hand.map((c) => c.id), ['p0_r2']);
+  });
+
+  test('Tier 2: breaks card-count tie (3 vs 3) by picking opponent holding +4 / Wild over number cards', () => {
+    assert.equal(getCardSwapStrength({ id: 'wd4', color: 'wild', value: 'wild_draw4', scoreValue: 50 }), 50);
+    assert.equal(getCardSwapStrength({ id: 'w', color: 'wild', value: 'wild', scoreValue: 50 }), 40);
+    assert.equal(getCardSwapStrength({ id: 'rs', color: 'wild', value: 'rival_swap', scoreValue: 50 }), 40);
+    assert.equal(getCardSwapStrength({ id: 'd2', color: 'red', value: 'draw2', scoreValue: 20 }), 20);
+    assert.equal(getCardSwapStrength({ id: 'n8', color: 'blue', value: '8', scoreValue: 8 }), 8);
+
+    // Subcase A: Opponent 2 has +4 (3 cards) vs Opponent 1 has numbers (3 cards)
+    let state = makeSwapTestGame(4, 1, 0);
+    state.players[0].hand = [
+      { id: 'rs_p0', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    // Player 1: 3 number cards (score = 9 + 8 + 7 = 24)
+    state.players[1].hand = [
+      { id: 'p1_r9', color: 'red', value: '9', scoreValue: 9 },
+      { id: 'p1_b8', color: 'blue', value: '8', scoreValue: 8 },
+      { id: 'p1_g7', color: 'green', value: '7', scoreValue: 7 },
+    ];
+    // Player 2: 3 cards including Wild Draw 4 (score = 50 + 1 + 2 = 53)
+    state.players[2].hand = [
+      { id: 'p2_wd4', color: 'wild', value: 'wild_draw4', scoreValue: 50 },
+      { id: 'p2_b1', color: 'blue', value: '1', scoreValue: 1 },
+      { id: 'p2_g2', color: 'green', value: '2', scoreValue: 2 },
+    ];
+    // Player 3: 5 cards (excluded by Tier 1)
+    state.players[3].hand = [
+      { id: 'p3_1', color: 'yellow', value: '1', scoreValue: 1 },
+      { id: 'p3_2', color: 'yellow', value: '2', scoreValue: 2 },
+      { id: 'p3_3', color: 'yellow', value: '3', scoreValue: 3 },
+      { id: 'p3_4', color: 'yellow', value: '4', scoreValue: 4 },
+      { id: 'p3_5', color: 'yellow', value: '5', scoreValue: 5 },
+    ];
+
+    state = playCard(state, 'p0', 'rs_p0', { chosenColor: 'green' });
+    assert.deepEqual(
+      state.players[0].hand.map((c) => c.id),
+      ['p2_wd4', 'p2_b1', 'p2_g2'],
+      'Player 0 must swap with Player 2 (+4 hand) over Player 1 (number cards)'
+    );
+    assert.deepEqual(state.players[2].hand.map((c) => c.id), ['p0_r1']);
+
+    // Subcase B: Pair play of Rival Swap with Wild (40) vs Action +2 (20) tie-breaker
+    let pairState = makeSwapTestGame(3, 1, 0);
+    pairState.players[0].hand = [
+      { id: 'rs_a', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'rs_b', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'p0_y4', color: 'yellow', value: '4', scoreValue: 4 },
+    ];
+    // Player 1: 3 cards with Draw 2 (20 + 5 + 5 = 30)
+    pairState.players[1].hand = [
+      { id: 'p1_d2', color: 'red', value: 'draw2', scoreValue: 20 },
+      { id: 'p1_r5', color: 'red', value: '5', scoreValue: 5 },
+      { id: 'p1_b5', color: 'blue', value: '5', scoreValue: 5 },
+    ];
+    // Player 2: 3 cards with Wild (40 + 0 + 1 = 41)
+    pairState.players[2].hand = [
+      { id: 'p2_w', color: 'wild', value: 'wild', scoreValue: 50 },
+      { id: 'p2_r0', color: 'red', value: '0', scoreValue: 0 },
+      { id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 },
+    ];
+
+    pairState = playPairCards(pairState, 'p0', 'rs_a', 'rs_b', { chosenColor: 'red' });
+    assert.deepEqual(
+      pairState.players[0].hand.map((c) => c.id),
+      ['p2_w', 'p2_r0', 'p2_g1'],
+      'Pair Swap must break tie toward Player 2 holding Wild (41 pts) over Player 1 (30 pts)'
+    );
+    assert.deepEqual(pairState.players[2].hand.map((c) => c.id), ['p0_y4']);
+  });
+
+  test('Tier 3: breaks identical count and strength tie by active turn order (clockwise and reversed)', () => {
+    // 4 players: P2 plays Swap; P0 and P1 tie on 3 cards & score (5 + 4 + 2 = 11), P3 has 5 cards.
+    // Clockwise from P2 (index 2, direction +1): turn order is P3 -> P0 -> P1, so P0 comes first!
+    const clockwiseState = makeSwapTestGame(4, 1, 2);
+    clockwiseState.players[2].hand = [
+      { id: 'rs_p2', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'p2_r9', color: 'red', value: '9', scoreValue: 9 },
+    ];
+    clockwiseState.players[0].hand = [
+      { id: 'p0_r5', color: 'red', value: '5', scoreValue: 5 },
+      { id: 'p0_b4', color: 'blue', value: '4', scoreValue: 4 },
+      { id: 'p0_g2', color: 'green', value: '2', scoreValue: 2 },
+    ];
+    clockwiseState.players[1].hand = [
+      { id: 'p1_y5', color: 'yellow', value: '5', scoreValue: 5 },
+      { id: 'p1_r4', color: 'red', value: '4', scoreValue: 4 },
+      { id: 'p1_b2', color: 'blue', value: '2', scoreValue: 2 },
+    ];
+    clockwiseState.players[3].hand = [
+      { id: 'p3_1', color: 'red', value: '1', scoreValue: 1 },
+      { id: 'p3_2', color: 'red', value: '2', scoreValue: 2 },
+      { id: 'p3_3', color: 'red', value: '3', scoreValue: 3 },
+      { id: 'p3_4', color: 'red', value: '4', scoreValue: 4 },
+      { id: 'p3_5', color: 'red', value: '5', scoreValue: 5 },
+    ];
+
+    assert.equal(selectSwapTargetIndex(clockwiseState.players, 2, 1), 0);
+    const afterClockwise = playCard(clockwiseState, 'p2', 'rs_p2', { chosenColor: 'yellow' });
+    assert.deepEqual(
+      afterClockwise.players[2].hand.map((c) => c.id),
+      ['p0_r5', 'p0_b4', 'p0_g2'],
+      'Clockwise from P2: P0 precedes P1 in turn order (2 -> 3 -> 0 -> 1)'
+    );
+
+    // Reversed from P2 (index 2, direction -1): turn order is P1 -> P0 -> P3, so P1 comes first!
+    const reversedState = makeSwapTestGame(4, -1, 2);
+    reversedState.players[2].hand = [...clockwiseState.players[2].hand];
+    reversedState.players[0].hand = [...clockwiseState.players[0].hand];
+    reversedState.players[1].hand = [...clockwiseState.players[1].hand];
+    reversedState.players[3].hand = [...clockwiseState.players[3].hand];
+
+    assert.equal(selectSwapTargetIndex(reversedState.players, 2, -1), 1);
+    const afterReversed = playCard(reversedState, 'p2', 'rs_p2', { chosenColor: 'yellow' });
+    assert.deepEqual(
+      afterReversed.players[2].hand.map((c) => c.id),
+      ['p1_y5', 'p1_r4', 'p1_b2'],
+      'Reversed from P2: P1 precedes P0 in turn order (2 -> 1 -> 0 -> 3)'
+    );
   });
 });
 

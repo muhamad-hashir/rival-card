@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as NavigationBar from 'expo-navigation-bar';
+import { applyImmersiveNavigationBar, scheduleImmersiveNavigationBar } from '../utils/immersiveMode';
 import { StatusBar } from 'expo-status-bar';
 import { authService, sendEmailOtp, verifyEmailOtp } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
@@ -42,21 +42,8 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
   const [countdown, setCountdown] = useState(0);
 
   const reassertImmersive = async () => {
-    if (Platform.OS === 'android') {
-      try {
-        if (typeof (NavigationBar as any).setHidden === 'function') {
-          (NavigationBar as any).setHidden(true);
-        }
-        if (typeof NavigationBar.setVisibilityAsync === 'function') {
-          await NavigationBar.setVisibilityAsync('hidden');
-        }
-        if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
-          await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
-        }
-      } catch {
-        // ignore
-      }
-    }
+    await applyImmersiveNavigationBar();
+    scheduleImmersiveNavigationBar([150, 450]);
   };
 
   useEffect(() => {
@@ -208,6 +195,7 @@ export const OnboardingAuthModal: React.FC<OnboardingAuthModalProps> = ({
       animationType="fade"
       visible={visible}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <StatusBar hidden={true} />
       <View style={styles.backdrop}>

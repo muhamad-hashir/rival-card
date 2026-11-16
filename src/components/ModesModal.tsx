@@ -101,6 +101,7 @@ export const ModesModal: React.FC<ModesModalProps> = ({
       visible={visible}
       onRequestClose={handleClose}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.cardContainer}>

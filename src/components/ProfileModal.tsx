@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as NavigationBar from 'expo-navigation-bar';
+import { applyImmersiveNavigationBar, scheduleImmersiveNavigationBar } from '../utils/immersiveMode';
 import { StatusBar } from 'expo-status-bar';
 import {
   AVATAR_OPTIONS,
@@ -63,21 +63,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
   // Re-assert sticky-immersive mode helper
   const reassertImmersiveMode = async () => {
-    if (Platform.OS === 'android') {
-      try {
-        if (typeof (NavigationBar as any).setHidden === 'function') {
-          (NavigationBar as any).setHidden(true);
-        }
-        if (typeof NavigationBar.setVisibilityAsync === 'function') {
-          await NavigationBar.setVisibilityAsync('hidden');
-        }
-        if (typeof (NavigationBar as any).setBehaviorAsync === 'function') {
-          await (NavigationBar as any).setBehaviorAsync('overlay-swipe');
-        }
-      } catch {
-        // ignore
-      }
-    }
+    await applyImmersiveNavigationBar();
+    scheduleImmersiveNavigationBar([150, 450]);
   };
 
   // Listen to Supabase auth session changes for real-time connected state
@@ -286,6 +273,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       visible={visible}
       onRequestClose={handleClose}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <StatusBar hidden={true} />
       <View style={styles.backdrop}>

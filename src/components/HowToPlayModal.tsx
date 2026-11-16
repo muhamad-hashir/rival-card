@@ -133,6 +133,7 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({
       visible={visible}
       onRequestClose={handleClose}
       statusBarTranslucent
+      navigationBarTranslucent
     >
       <View style={styles.backdrop}>
         <View style={styles.bookCard}>

@@ -39,7 +39,15 @@
       "expo-audio",
       "@react-native-google-signin/google-signin",
       "expo-splash-screen",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-navigation-bar",
+        {
+          "hidden": true,
+          "style": "light",
+          "enforceContrast": false
+        }
+      ]
     ],
     "extra": {
       "eas": {
