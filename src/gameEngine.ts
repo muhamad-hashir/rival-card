@@ -7,10 +7,13 @@ import type {
   Card,
   CardColor,
   CardValue,
+  DefenseAttackType,
+  DefenseBannerState,
   GameActionType,
   GameEventLog,
   GameMode,
   GameState,
+  PendingDefenseState,
   Player,
   PrivacyMaskState,
   StandardColor,
@@ -33,11 +36,13 @@ export const TURN_DURATION = 15;
  *   - 'skip': 2 per color (8 cards)
  *   - 'reverse': 2 per color (8 cards)
  *   - 'draw2': 2 per color (8 cards)
- * - 8 Wild & Rival Action cards (Black Suit #1E293B):
+ * - 12 Wild & Rival Action cards (Black Suit #1E293B):
  *   - 'wild': 2 cards
  *   - 'wild_draw4': 2 cards
  *   - 'mute': 2 cards
  *   - 'rival_swap': 2 cards
+ *   - 'shield': 2 cards
+ *   - 'mirror': 2 cards
  */
 export function generateDeck(): Card[] {
   const deck: Card[] = [];
@@ -87,12 +92,14 @@ export function generateDeck(): Card[] {
     }
   }
 
-  // 8 Wild & Rival cards (2 of each)
-  const wildTypes: ('wild' | 'wild_draw4' | 'mute' | 'rival_swap')[] = [
+  // 12 Wild & Rival cards (2 of each)
+  const wildTypes: ('wild' | 'wild_draw4' | 'mute' | 'rival_swap' | 'shield' | 'mirror')[] = [
     'wild',
     'wild_draw4',
     'mute',
     'rival_swap',
+    'shield',
+    'mirror',
   ];
 
   for (const wildAction of wildTypes) {
@@ -145,7 +152,9 @@ export function isWildCard(card: Card): boolean {
     card.value === 'wild' ||
     card.value === 'wild_draw4' ||
     card.value === 'mute' ||
-    card.value === 'rival_swap'
+    card.value === 'rival_swap' ||
+    card.value === 'shield' ||
+    card.value === 'mirror'
   );
 }
 
@@ -299,6 +308,8 @@ export function calculateNextPlayerIndex(
 
 const SWAP_CARD_STRENGTH: Partial<Record<CardValue, number>> = {
   wild_draw4: 50,
+  shield: 45,
+  mirror: 45,
   wild: 40,
   rival_swap: 40,
   mute: 40,
@@ -382,25 +393,23 @@ export function selectSwapTargetIndex(
   return bestIndex;
 }
 
-function applyRivalSwap(
+function applyRivalSwapWithTarget(
   players: Player[],
-  currentTurnIndex: number,
-  direction: TurnDirection,
-  currentPlayer: Player,
-  updatedCurrentPlayerHand: readonly Card[],
+  attackerIndex: number,
+  targetPlayerIndex: number,
   logs: GameEventLog[]
 ): Player[] {
-  const targetPlayerIndex = selectSwapTargetIndex(players, currentTurnIndex, direction);
-  if (targetPlayerIndex === -1) {
+  if (targetPlayerIndex === -1 || targetPlayerIndex === attackerIndex) {
     return players;
   }
 
+  const currentPlayer = players[attackerIndex];
   const targetPlayer = players[targetPlayerIndex];
-  const playerHandBeforeSwap = [...updatedCurrentPlayerHand];
+  const playerHandBeforeSwap = [...currentPlayer.hand];
   const targetHandBeforeSwap = [...targetPlayer.hand];
 
   const swappedPlayers = players.map((p, idx) => {
-    if (idx === currentTurnIndex) {
+    if (idx === attackerIndex) {
       return {
         ...p,
         hand: targetHandBeforeSwap,
@@ -431,6 +440,639 @@ function applyRivalSwap(
   );
 
   return swappedPlayers;
+}
+
+function applyRivalSwap(
+  players: Player[],
+  currentTurnIndex: number,
+  direction: TurnDirection,
+  _currentPlayer: Player,
+  updatedCurrentPlayerHand: readonly Card[],
+  logs: GameEventLog[]
+): Player[] {
+  const targetPlayerIndex = selectSwapTargetIndex(players, currentTurnIndex, direction);
+  if (targetPlayerIndex === -1) {
+    return players;
+  }
+  const playersWithUpdatedHand = players.map((p, idx) =>
+    idx === currentTurnIndex ? { ...p, hand: [...updatedCurrentPlayerHand] } : p
+  );
+  return applyRivalSwapWithTarget(playersWithUpdatedHand, currentTurnIndex, targetPlayerIndex, logs);
+}
+
+// ============================================================================
+// 5B. REACTIVE SHIELD & MIRROR DEFENSE HELPERS
+// ============================================================================
+
+export function canDefendWithShield(
+  hand: readonly Card[],
+  attackType: DefenseAttackType,
+  mirrorBounceCount: number = 0
+): boolean {
+  return (
+    mirrorBounceCount === 0 &&
+    (attackType === 'draw2' || attackType === 'wild_draw4') &&
+    hand.some((c) => c.value === 'shield')
+  );
+}
+
+export function canDefendWithMirror(
+  hand: readonly Card[],
+  mirrorBounceCount: number = 0
+): boolean {
+  return mirrorBounceCount < 2 && hand.some((c) => c.value === 'mirror');
+}
+
+export function hasReactiveDefense(
+  hand: readonly Card[],
+  attackType: DefenseAttackType,
+  mirrorBounceCount: number = 0
+): boolean {
+  if (mirrorBounceCount >= 2) return false;
+  if (mirrorBounceCount === 1) {
+    return canDefendWithMirror(hand, mirrorBounceCount);
+  }
+  return (
+    canDefendWithShield(hand, attackType, mirrorBounceCount) ||
+    canDefendWithMirror(hand, mirrorBounceCount)
+  );
+}
+
+function formatAttackLabel(attackType: DefenseAttackType, drawPenalty: number): string {
+  if (drawPenalty > 0) return `+${drawPenalty}`;
+  switch (attackType) {
+    case 'skip':
+      return 'Skip';
+    case 'mute':
+      return 'Mute';
+    case 'rival_swap':
+      return 'Swap';
+    case 'draw2':
+      return '+2';
+    case 'wild_draw4':
+      return '+4';
+  }
+}
+
+interface AttackResolutionParams {
+  attackerIndex: number;
+  targetIndex: number;
+  attackType: DefenseAttackType;
+  drawPenalty: number;
+  pairCount: number;
+  forcePendingDraw?: boolean;
+  allowStacking?: boolean;
+}
+
+function applyIncomingAttackOutcome(
+  baseState: GameState,
+  params: AttackResolutionParams,
+  recipientIndex: number,
+  isReflectedOntoAttacker: boolean
+): GameState {
+  let updatedPlayers = baseState.players;
+  let currentDeck = baseState.deck;
+  let currentDiscard = baseState.discardPile;
+  const newLogs = [...baseState.logs];
+  let nextSteps = 1;
+  let newPendingDrawCount = 0;
+
+  const attacker = updatedPlayers[params.attackerIndex];
+  const recipient = updatedPlayers[recipientIndex];
+  const isPair = params.pairCount === 2;
+
+  switch (params.attackType) {
+    case 'skip': {
+      if (isReflectedOntoAttacker) {
+        nextSteps = 1; // Attacker was skipped by Mirror reflection, so turn advances past attacker
+        newLogs.push(
+          createLogEntry('PLAY_CARD', `🪞 ${recipient.name} was skipped by Mirror reflection!`, {
+            targetPlayerId: recipient.id,
+            targetPlayerName: recipient.name,
+          })
+        );
+      } else if (isPair) {
+        nextSteps = updatedPlayers.length === 2 ? 2 : 3;
+        newLogs.push(
+          createLogEntry('PLAY_CARD', `Double Skip! Next two players lost their turns.`)
+        );
+      } else {
+        nextSteps = 2;
+        const skippedMsg =
+          recipient.name === 'You' ? 'You were skipped!' : `${recipient.name} was skipped!`;
+        newLogs.push(
+          createLogEntry('PLAY_CARD', skippedMsg, {
+            targetPlayerId: recipient.id,
+            targetPlayerName: recipient.name,
+          })
+        );
+      }
+      break;
+    }
+
+    case 'draw2':
+    case 'wild_draw4': {
+      const penalty = params.drawPenalty;
+      const stackValue = params.attackType;
+      const isStackingAllowed = params.allowStacking ?? (baseState.allowStacking ?? false);
+      const canTargetStack =
+        !isReflectedOntoAttacker &&
+        Boolean(
+          params.forcePendingDraw ||
+            (isStackingAllowed && recipient.hand.some((c) => c.value === stackValue))
+        );
+
+      if (canTargetStack) {
+        nextSteps = 1;
+        newPendingDrawCount = penalty;
+        const label = stackValue === 'draw2' ? '+2' : '+4';
+        const prefix =
+          stackValue === 'wild_draw4'
+            ? isPair
+              ? '⚡ DOUBLE WILD STACK ESCALATED!'
+              : '⚡ WILD STACK ESCALATED!'
+            : isPair
+            ? '⚡ DOUBLE STACK ESCALATED!'
+            : '⚡ STACK ESCALATED!';
+        newLogs.push(
+          createLogEntry(
+            'PLAY_CARD',
+            `${prefix} ${attacker.name} stacked ${label} (Total: +${penalty}) onto ${recipient.name}!`,
+            {
+              playerId: attacker.id,
+              playerName: attacker.name,
+              targetPlayerId: recipient.id,
+              targetPlayerName: recipient.name,
+            }
+          )
+        );
+      } else {
+        nextSteps = isReflectedOntoAttacker ? 1 : 2;
+        newPendingDrawCount = 0;
+        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
+        currentDeck = drawResult.remainingDeck;
+        currentDiscard = drawResult.remainingDiscard;
+
+        if (drawResult.didReshuffle) {
+          newLogs.push(
+            createLogEntry(
+              'RESHUFFLE_DECK',
+              `Deck was reshuffled during ${stackValue === 'draw2' ? 'Draw 2' : 'Wild Draw 4'}.`
+            )
+          );
+        }
+
+        updatedPlayers = updatedPlayers.map((p, idx) =>
+          idx === recipientIndex
+            ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false }
+            : p
+        );
+
+        const defaultSingleCount = stackValue === 'draw2' ? 2 : 4;
+        newLogs.push(
+          createLogEntry(
+            'DRAW_CARD',
+            isReflectedOntoAttacker
+              ? `🪞 ${recipient.name} took +${penalty} reflected cards!`
+              : penalty > defaultSingleCount
+              ? `💥 STACK DETONATION! ${recipient.name} could not stack and drew ${penalty} cards!`
+              : `${recipient.name} drew ${penalty} cards and lost their turn!`,
+            {
+              targetPlayerId: recipient.id,
+              targetPlayerName: recipient.name,
+            }
+          )
+        );
+      }
+      break;
+    }
+
+    case 'mute': {
+      const rounds = isPair ? 2 : 1;
+      updatedPlayers = updatedPlayers.map((p, idx) =>
+        idx === recipientIndex ? { ...p, isMuted: true, mutedRoundsRemaining: rounds } : p
+      );
+
+      if (isReflectedOntoAttacker) {
+        nextSteps = 1;
+      } else {
+        const immediateNext = calculateNextPlayerIndex(
+          baseState.currentTurnIndex,
+          baseState.direction,
+          updatedPlayers.length,
+          1
+        );
+        nextSteps = recipientIndex === immediateNext ? 2 : 1;
+      }
+
+      const muteMsg = isReflectedOntoAttacker
+        ? `🪞 ${recipient.name} was MUTED by Mirror reflection for ${rounds} round${rounds > 1 ? 's' : ''}!`
+        : isPair
+        ? `🔇 DOUBLE MUTE! ${recipient.name} is muted for 2 rounds and skipped!`
+        : recipient.name === 'You'
+        ? '🔇 You were MUTED for 1 round! Turn skipped.'
+        : `🔇 ${recipient.name} was MUTED for 1 round! Turn skipped.`;
+
+      newLogs.push(
+        createLogEntry('MUTE_PLAYER', muteMsg, {
+          targetPlayerId: recipient.id,
+          targetPlayerName: recipient.name,
+        })
+      );
+      break;
+    }
+
+    case 'rival_swap': {
+      if (isReflectedOntoAttacker) {
+        newLogs.push(
+          createLogEntry(
+            'MIRROR_REFLECT',
+            `🪞 RIVAL SWAP DEFLECTED! ${recipient.name}'s swap was mirrored back!`,
+            {
+              playerId: recipient.id,
+              playerName: recipient.name,
+            }
+          )
+        );
+      } else {
+        updatedPlayers = applyRivalSwapWithTarget(
+          updatedPlayers,
+          params.attackerIndex,
+          recipientIndex,
+          newLogs
+        );
+      }
+      nextSteps = 1;
+      break;
+    }
+  }
+
+  const intermediateState: GameState = {
+    ...baseState,
+    deck: currentDeck,
+    discardPile: currentDiscard,
+    players: updatedPlayers,
+    pendingDrawCount: newPendingDrawCount,
+    hasDrawnThisTurn: false,
+    drawnCard: null,
+    pendingColorChoice: false,
+    pendingWildCard: null,
+    pendingDefense: null,
+    logs: newLogs,
+  };
+
+  return advanceToNextTurn(intermediateState, nextSteps);
+}
+
+function triggerOrApplyAttack(baseState: GameState, params: AttackResolutionParams): GameState {
+  if (params.targetIndex < 0 || params.targetIndex >= baseState.players.length) {
+    return advanceToNextTurn({ ...baseState, pendingDefense: null }, 1);
+  }
+
+  const targetPlayer = baseState.players[params.targetIndex];
+  if (
+    targetPlayer &&
+    params.targetIndex !== params.attackerIndex &&
+    hasReactiveDefense(targetPlayer.hand, params.attackType, 0)
+  ) {
+    const pendingDefense: PendingDefenseState = {
+      attackerIndex: params.attackerIndex,
+      targetIndex: params.targetIndex,
+      attackType: params.attackType,
+      drawPenalty: params.drawPenalty,
+      mirrorBounceCount: 0,
+      expiresAt: Date.now() + 3000,
+      originalTargetIndex: params.targetIndex,
+      pairCount: params.pairCount,
+      defenseEventId: `def-${Date.now()}-${logCounter++}`,
+    };
+    return {
+      ...baseState,
+      pendingDrawCount: 0,
+      hasDrawnThisTurn: false,
+      drawnCard: null,
+      pendingColorChoice: false,
+      pendingWildCard: null,
+      pendingDefense,
+      lastActionTimestamp: Date.now(),
+    };
+  }
+
+  return applyIncomingAttackOutcome(baseState, params, params.targetIndex, false);
+}
+
+/**
+ * Consumes 1 Shield card from the defending player's hand to block a draw penalty (+2 / +4 / stack).
+ * Keeps the current activeColor intact without opening a color picker.
+ */
+export function resolveDefenseWithShield(state: GameState, playerId: string): GameState {
+  const defense = state.pendingDefense;
+  if (!defense || state.isGameOver) {
+    throw new Error('No active defense window.');
+  }
+  const defender = state.players[defense.targetIndex];
+  if (!defender || defender.id !== playerId) {
+    throw new Error(`It is not ${playerId}'s defense reaction.`);
+  }
+  if (!canDefendWithShield(defender.hand, defense.attackType, defense.mirrorBounceCount)) {
+    throw new Error('Shield cannot block this action or is unavailable.');
+  }
+
+  const shieldIdx = defender.hand.findIndex((c) => c.value === 'shield');
+  const shieldCard = defender.hand[shieldIdx];
+  const newDefenderHand = defender.hand.filter((_, idx) => idx !== shieldIdx);
+  const updatedDiscard = [...state.discardPile, shieldCard];
+  const updatedDefender: Player = {
+    ...defender,
+    hand: newDefenderHand,
+    hasDeclaredRival: newDefenderHand.length === 1 ? defender.hasDeclaredRival : false,
+  };
+  const updatedPlayers = state.players.map((p, idx) =>
+    idx === defense.targetIndex ? updatedDefender : p
+  );
+
+  const bannerMsg = `🛡️ ${defender.name} blocked +${defense.drawPenalty} with Shield!`;
+  const banner: DefenseBannerState = {
+    id: `def-banner-${Date.now()}-${logCounter++}`,
+    type: 'shield',
+    message: bannerMsg,
+    timestamp: Date.now(),
+  };
+
+  const newLogs = [
+    ...state.logs,
+    createLogEntry('SHIELD_BLOCK', bannerMsg, {
+      playerId: defender.id,
+      playerName: defender.name,
+      card: shieldCard,
+    }),
+  ];
+
+  if (newDefenderHand.length === 0) {
+    newLogs.push(
+      createLogEntry('PLAY_CARD', `🎉 ${defender.name} played their last card (Shield) and WON!`, {
+        playerId: defender.id,
+        playerName: defender.name,
+      })
+    );
+    return {
+      ...state,
+      players: updatedPlayers,
+      discardPile: updatedDiscard,
+      pendingDefense: null,
+      pendingDrawCount: 0,
+      lastDefenseBanner: banner,
+      winner: updatedDefender,
+      isGameOver: true,
+      logs: newLogs,
+      lastActionTimestamp: Date.now(),
+    };
+  }
+
+  const intermediateState: GameState = {
+    ...state,
+    players: updatedPlayers,
+    discardPile: updatedDiscard,
+    pendingDefense: null,
+    pendingDrawCount: 0,
+    hasDrawnThisTurn: false,
+    drawnCard: null,
+    lastDefenseBanner: banner,
+    logs: newLogs,
+  };
+
+  return advanceToNextTurn(intermediateState, 1);
+}
+
+/**
+ * Consumes 1 Mirror card from the reacting player's hand to reflect an attack back onto the attacker
+ * (or Counter-Mirror if mirrorBounceCount === 1, cancelling reflection onto originalTargetIndex).
+ * Keeps the current activeColor intact without opening a color picker.
+ */
+export function resolveDefenseWithMirror(state: GameState, playerId: string): GameState {
+  const defense = state.pendingDefense;
+  if (!defense || state.isGameOver) {
+    throw new Error('No active defense window.');
+  }
+  const reactor = state.players[defense.targetIndex];
+  if (!reactor || reactor.id !== playerId) {
+    throw new Error(`It is not ${playerId}'s defense reaction.`);
+  }
+  if (!canDefendWithMirror(reactor.hand, defense.mirrorBounceCount)) {
+    throw new Error('Mirror cannot be used right now.');
+  }
+
+  const mirrorIdx = reactor.hand.findIndex((c) => c.value === 'mirror');
+  const mirrorCard = reactor.hand[mirrorIdx];
+  const newReactorHand = reactor.hand.filter((_, idx) => idx !== mirrorIdx);
+  const updatedDiscard = [...state.discardPile, mirrorCard];
+  const updatedReactor: Player = {
+    ...reactor,
+    hand: newReactorHand,
+    hasDeclaredRival: newReactorHand.length === 1 ? reactor.hasDeclaredRival : false,
+  };
+  const updatedPlayers = state.players.map((p, idx) =>
+    idx === defense.targetIndex ? updatedReactor : p
+  );
+
+  const attackLabel = formatAttackLabel(defense.attackType, defense.drawPenalty);
+
+  // If reactor emptied their hand with Mirror, reactor wins immediately
+  if (newReactorHand.length === 0) {
+    const winBannerMsg = `🪞 ${reactor.name} mirrored ${attackLabel} with their final card!`;
+    const winLogs = [
+      ...state.logs,
+      createLogEntry('MIRROR_REFLECT', winBannerMsg, {
+        playerId: reactor.id,
+        playerName: reactor.name,
+        card: mirrorCard,
+      }),
+      createLogEntry('PLAY_CARD', `🎉 ${reactor.name} played all their cards and WON the game!`, {
+        playerId: reactor.id,
+        playerName: reactor.name,
+      }),
+    ];
+    return {
+      ...state,
+      players: updatedPlayers,
+      discardPile: updatedDiscard,
+      pendingDefense: null,
+      pendingDrawCount: 0,
+      lastDefenseBanner: {
+        id: `def-banner-${Date.now()}-${logCounter++}`,
+        type: defense.mirrorBounceCount === 1 ? 'counter_mirror' : 'mirror',
+        message: winBannerMsg,
+        timestamp: Date.now(),
+      },
+      winner: updatedReactor,
+      isGameOver: true,
+      logs: winLogs,
+      lastActionTimestamp: Date.now(),
+    };
+  }
+
+  const attackParams: AttackResolutionParams = {
+    attackerIndex: defense.attackerIndex,
+    targetIndex: defense.targetIndex,
+    attackType: defense.attackType,
+    drawPenalty: defense.drawPenalty,
+    pairCount: defense.pairCount ?? 1,
+    allowStacking: state.allowStacking,
+  };
+
+  if (defense.mirrorBounceCount === 0) {
+    const originalAttacker = updatedPlayers[defense.attackerIndex];
+    const bannerMsg = `🪞 ${reactor.name} mirrored ${attackLabel} back to ${originalAttacker.name}!`;
+    const banner: DefenseBannerState = {
+      id: `def-banner-${Date.now()}-${logCounter++}`,
+      type: 'mirror',
+      message: bannerMsg,
+      timestamp: Date.now(),
+    };
+    const nextLogs = [
+      ...state.logs,
+      createLogEntry('MIRROR_REFLECT', bannerMsg, {
+        playerId: reactor.id,
+        playerName: reactor.name,
+        targetPlayerId: originalAttacker.id,
+        targetPlayerName: originalAttacker.name,
+        card: mirrorCard,
+      }),
+    ];
+
+    // Check Counter-Mirror: if original attacker also holds a Mirror card, allow 1 Counter-Mirror window
+    if (canDefendWithMirror(originalAttacker.hand, 1)) {
+      return {
+        ...state,
+        players: updatedPlayers,
+        discardPile: updatedDiscard,
+        pendingDefense: {
+          attackerIndex: defense.targetIndex,
+          targetIndex: defense.attackerIndex,
+          attackType: defense.attackType,
+          drawPenalty: defense.drawPenalty,
+          mirrorBounceCount: 1,
+          expiresAt: Date.now() + 3000,
+          originalTargetIndex: defense.originalTargetIndex ?? defense.targetIndex,
+          pairCount: defense.pairCount ?? 1,
+          defenseEventId: `def-${Date.now()}-${logCounter++}`,
+        },
+        lastDefenseBanner: banner,
+        logs: nextLogs,
+        lastActionTimestamp: Date.now(),
+      };
+    }
+
+    // Attacker has no Mirror: resolve reflected attack directly onto original attacker
+    const baseAfterMirror: GameState = {
+      ...state,
+      players: updatedPlayers,
+      discardPile: updatedDiscard,
+      pendingDefense: null,
+      lastDefenseBanner: banner,
+      logs: nextLogs,
+    };
+    return applyIncomingAttackOutcome(baseAfterMirror, attackParams, defense.attackerIndex, true);
+  }
+
+  // Counter-Mirror (mirrorBounceCount === 1): both Mirrors spent, no further bounces allowed!
+  const counterMsg = `🪞 ${reactor.name} Counter-Mirrored!`;
+  const counterBanner: DefenseBannerState = {
+    id: `def-banner-${Date.now()}-${logCounter++}`,
+    type: 'counter_mirror',
+    message: counterMsg,
+    timestamp: Date.now(),
+  };
+  const originalTargetIdx = defense.originalTargetIndex ?? defense.attackerIndex;
+  const originalTargetPlayer = updatedPlayers[originalTargetIdx];
+  const counterLogs = [
+    ...state.logs,
+    createLogEntry('MIRROR_REFLECT', counterMsg, {
+      playerId: reactor.id,
+      playerName: reactor.name,
+      targetPlayerId: originalTargetPlayer?.id,
+      targetPlayerName: originalTargetPlayer?.name,
+      card: mirrorCard,
+    }),
+  ];
+
+  const baseAfterCounter: GameState = {
+    ...state,
+    players: updatedPlayers,
+    discardPile: updatedDiscard,
+    pendingDefense: null,
+    lastDefenseBanner: counterBanner,
+    logs: counterLogs,
+  };
+
+  return applyIncomingAttackOutcome(
+    baseAfterCounter,
+    { ...attackParams, attackerIndex: defense.targetIndex, targetIndex: originalTargetIdx },
+    originalTargetIdx,
+    false
+  );
+}
+
+/**
+ * Applies the pending attack onto the target player when they tap "Take Hit" or the 3s timer expires.
+ * Does NOT consume any Shield or Mirror cards.
+ */
+export function resolveDefenseTakeHit(state: GameState, playerId?: string): GameState {
+  const defense = state.pendingDefense;
+  if (!defense || state.isGameOver) return state;
+
+  const targetPlayer = state.players[defense.targetIndex];
+  if (playerId && targetPlayer && targetPlayer.id !== playerId) {
+    throw new Error(`It is not ${playerId}'s defense reaction.`);
+  }
+
+  const isReflected = defense.mirrorBounceCount === 1;
+  const baseState: GameState = {
+    ...state,
+    pendingDefense: null,
+  };
+
+  return applyIncomingAttackOutcome(
+    baseState,
+    {
+      attackerIndex: isReflected ? defense.attackerIndex : state.currentTurnIndex,
+      targetIndex: defense.targetIndex,
+      attackType: defense.attackType,
+      drawPenalty: defense.drawPenalty,
+      pairCount: defense.pairCount ?? 1,
+      allowStacking: state.allowStacking,
+    },
+    defense.targetIndex,
+    isReflected
+  );
+}
+
+/**
+ * Automated Bot AI decision for an active 3-second reactive defense window.
+ */
+export function resolveBotPendingDefense(state: GameState): GameState {
+  const defense = state.pendingDefense;
+  if (!defense || state.isGameOver) return state;
+
+  const bot = state.players[defense.targetIndex];
+  if (!bot || !bot.isBot) return state;
+
+  if (defense.mirrorBounceCount === 1) {
+    if (canDefendWithMirror(bot.hand, 1)) {
+      return resolveDefenseWithMirror(state, bot.id);
+    }
+    return resolveDefenseTakeHit(state, bot.id);
+  }
+
+  if (defense.drawPenalty > 0 && canDefendWithShield(bot.hand, defense.attackType, 0)) {
+    return resolveDefenseWithShield(state, bot.id);
+  }
+
+  if (canDefendWithMirror(bot.hand, 0)) {
+    return resolveDefenseWithMirror(state, bot.id);
+  }
+
+  return resolveDefenseTakeHit(state, bot.id);
 }
 
 // ============================================================================
@@ -568,6 +1210,8 @@ export function createGame(
     lastActionTimestamp: Date.now(),
     pendingDrawCount: 0,
     allowStacking: options?.allowStacking ?? false,
+    pendingDefense: null,
+    lastDefenseBanner: null,
   };
 }
 
@@ -663,6 +1307,9 @@ export function resolvePendingDraw(state: GameState, playerId: string): GameStat
  */
 export function playerDrawCard(state: GameState, playerId: string): GameState {
   if (state.isGameOver) return state;
+  if (state.pendingDefense) {
+    throw new Error('Cannot draw cards while a defense reaction is active.');
+  }
 
   const currentPlayer = state.players[state.currentTurnIndex];
   if (currentPlayer.id !== playerId) {
@@ -741,6 +1388,9 @@ export function playerDrawCard(state: GameState, playerId: string): GameState {
  */
 export function playerPassTurn(state: GameState, playerId: string): GameState {
   if (state.isGameOver) return state;
+  if (state.pendingDefense) {
+    throw new Error('Cannot pass turn while a defense reaction is active.');
+  }
 
   const currentPlayer = state.players[state.currentTurnIndex];
   if (currentPlayer.id !== playerId) {
@@ -796,6 +1446,9 @@ export function playCard(
   options?: PlayCardOptions
 ): GameState {
   if (state.isGameOver) return state;
+  if (state.pendingDefense) {
+    throw new Error('Cannot play cards while a defense reaction is active.');
+  }
 
   if (options?.pairCardId) {
     return playPairCards(state, playerId, cardId, options.pairCardId, options);
@@ -904,33 +1557,38 @@ export function playCard(
     newActiveColor = cardToPlay.color as StandardColor;
   }
 
-  // 3. Process Card Action Effects
-  let nextSteps = 1;
-  let newDirection = state.direction;
-  let currentDeck = state.deck;
-  let currentDiscard = updatedDiscardPile;
-  let newPendingDrawCount = 0;
+  // 3. Process Card Action Effects (delegating reactive attacks through triggerOrApplyAttack)
+  const basePlayState: GameState = {
+    ...state,
+    discardPile: updatedDiscardPile,
+    players: updatedPlayers,
+    activeColor: newActiveColor,
+    pendingDrawCount: 0,
+    hasDrawnThisTurn: false,
+    drawnCard: null,
+    pendingColorChoice: false,
+    pendingWildCard: null,
+    pendingDefense: null,
+    lastDefenseBanner: null,
+    logs: newLogs,
+  };
 
   switch (cardToPlay.value) {
     case 'skip': {
-      nextSteps = 2; // Skip next player
-      const skippedIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-      const skippedPlayer = updatedPlayers[skippedIndex];
-      const skippedMsg =
-        skippedPlayer.name === 'You' ? 'You were skipped!' : `${skippedPlayer.name} was skipped!`;
-      newLogs.push(
-        createLogEntry('PLAY_CARD', skippedMsg, {
-          targetPlayerId: skippedPlayer.id,
-          targetPlayerName: skippedPlayer.name,
-        })
-      );
-      break;
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      return triggerOrApplyAttack(basePlayState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'skip',
+        drawPenalty: 0,
+        pairCount: 1,
+      });
     }
 
     case 'reverse': {
-      newDirection = (state.direction * -1) as TurnDirection;
+      const newDirection = (state.direction * -1) as TurnDirection;
+      let nextSteps = 1;
       if (updatedPlayers.length === 2) {
-        // Standard 2-player UNO rule: Reverse acts as a Skip while still flipping turn direction visually/logically
         nextSteps = 2;
         const skippedIndex = calculateNextPlayerIndex(state.currentTurnIndex, newDirection, updatedPlayers.length, 1);
         const skippedPlayer = updatedPlayers[skippedIndex];
@@ -945,196 +1603,73 @@ export function playCard(
           })
         );
       } else {
-        nextSteps = 1;
         newLogs.push(
           createLogEntry('PLAY_CARD', `Turn order reversed! Now moving ${newDirection === 1 ? 'clockwise' : 'counter-clockwise'}.`)
         );
       }
-      break;
+      return advanceToNextTurn({ ...basePlayState, direction: newDirection, logs: newLogs }, nextSteps);
     }
 
     case 'draw2': {
-      const penalty = currentPending + 2;
       const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-      const targetPlayer = updatedPlayers[targetIndex];
-      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
-      const canTargetStack = Boolean(
-        options?.forcePendingDraw ||
-        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'draw2'))
-      );
-
-      if (canTargetStack) {
-        nextSteps = 1;
-        newPendingDrawCount = penalty;
-        newLogs.push(
-          createLogEntry(
-            'PLAY_CARD',
-            `⚡ STACK ESCALATED! ${currentPlayer.name} stacked +2 (Total: +${penalty}) onto ${targetPlayer.name}!`,
-            {
-              playerId,
-              playerName: currentPlayer.name,
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      } else {
-        nextSteps = 2;
-        newPendingDrawCount = 0;
-        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
-        currentDeck = drawResult.remainingDeck;
-        currentDiscard = drawResult.remainingDiscard;
-
-        if (drawResult.didReshuffle) {
-          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Draw 2.'));
-        }
-
-        updatedPlayers = updatedPlayers.map((p, idx) =>
-          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-        );
-
-        newLogs.push(
-          createLogEntry(
-            'DRAW_CARD',
-            penalty > 2
-              ? `💥 STACK DETONATION! ${targetPlayer.name} could not stack and drew ${penalty} cards!`
-              : `${targetPlayer.name} drew 2 cards and lost their turn!`,
-            {
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      }
-      break;
+      return triggerOrApplyAttack(basePlayState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'draw2',
+        drawPenalty: currentPending + 2,
+        pairCount: 1,
+        forcePendingDraw: options?.forcePendingDraw,
+        allowStacking: options?.allowStacking,
+      });
     }
 
     case 'wild_draw4': {
-      const penalty = currentPending + 4;
       const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-      const targetPlayer = updatedPlayers[targetIndex];
-      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
-      const canTargetStack = Boolean(
-        options?.forcePendingDraw ||
-        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'wild_draw4'))
-      );
-
-      if (canTargetStack) {
-        nextSteps = 1;
-        newPendingDrawCount = penalty;
-        newLogs.push(
-          createLogEntry(
-            'PLAY_CARD',
-            `⚡ WILD STACK ESCALATED! ${currentPlayer.name} stacked +4 (Total: +${penalty}) onto ${targetPlayer.name}!`,
-            {
-              playerId,
-              playerName: currentPlayer.name,
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      } else {
-        nextSteps = 2;
-        newPendingDrawCount = 0;
-        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
-        currentDeck = drawResult.remainingDeck;
-        currentDiscard = drawResult.remainingDiscard;
-
-        if (drawResult.didReshuffle) {
-          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Wild Draw 4.'));
-        }
-
-        updatedPlayers = updatedPlayers.map((p, idx) =>
-          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-        );
-
-        newLogs.push(
-          createLogEntry(
-            'DRAW_CARD',
-            penalty > 4
-              ? `💥 STACK DETONATION! ${targetPlayer.name} could not stack and drew ${penalty} cards!`
-              : `${targetPlayer.name} drew 4 cards and lost their turn!`,
-            {
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      }
-      break;
+      return triggerOrApplyAttack(basePlayState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'wild_draw4',
+        drawPenalty: currentPending + 4,
+        pairCount: 1,
+        forcePendingDraw: options?.forcePendingDraw,
+        allowStacking: options?.allowStacking,
+      });
     }
 
     case 'mute': {
-      // AGENT.md: "Forces targeted player to skip turn and disables their chat/reactions for 1 round."
       let targetIndex: number;
       if (options?.targetPlayerId) {
         targetIndex = updatedPlayers.findIndex((p) => p.id === options.targetPlayerId);
-        if (targetIndex === -1) targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+        if (targetIndex === -1) {
+          targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+        }
       } else {
         targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
       }
-
-      const targetPlayer = updatedPlayers[targetIndex];
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, isMuted: true, mutedRoundsRemaining: 1 } : p
-      );
-
-      // If targeted player is next player, skip their turn
-      if (targetIndex === calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1)) {
-        nextSteps = 2;
-      } else {
-        nextSteps = 1;
-      }
-
-      const muteMsg =
-        targetPlayer.name === 'You'
-          ? '🔇 You were MUTED for 1 round! Turn skipped.'
-          : `🔇 ${targetPlayer.name} was MUTED for 1 round! Turn skipped.`;
-      newLogs.push(
-        createLogEntry('MUTE_PLAYER', muteMsg, {
-          targetPlayerId: targetPlayer.id,
-          targetPlayerName: targetPlayer.name,
-        })
-      );
-      break;
+      return triggerOrApplyAttack(basePlayState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'mute',
+        drawPenalty: 0,
+        pairCount: 1,
+      });
     }
 
     case 'rival_swap': {
-      updatedPlayers = applyRivalSwap(
-        updatedPlayers,
-        state.currentTurnIndex,
-        state.direction,
-        currentPlayer,
-        updatedCurrentPlayer.hand,
-        newLogs
-      );
-      nextSteps = 1;
-      break;
+      const targetIndex = selectSwapTargetIndex(updatedPlayers, state.currentTurnIndex, state.direction);
+      return triggerOrApplyAttack(basePlayState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'rival_swap',
+        drawPenalty: 0,
+        pairCount: 1,
+      });
     }
 
     default:
-      // Standard number card or regular Wild
-      nextSteps = 1;
-      break;
+      // Standard number card, regular Wild, Shield, or Mirror played actively on own turn
+      return advanceToNextTurn(basePlayState, 1);
   }
-
-  const intermediateState: GameState = {
-    ...state,
-    deck: currentDeck,
-    discardPile: currentDiscard,
-    players: updatedPlayers,
-    direction: newDirection,
-    activeColor: newActiveColor,
-    pendingDrawCount: newPendingDrawCount,
-    hasDrawnThisTurn: false,
-    drawnCard: null,
-    pendingColorChoice: false,
-    pendingWildCard: null,
-    logs: newLogs,
-  };
-
-  return advanceToNextTurn(intermediateState, nextSteps);
 }
 
 /**
@@ -1158,6 +1693,9 @@ export function playPairCards(
   options?: PlayCardOptions
 ): GameState {
   if (state.isGameOver) return state;
+  if (state.pendingDefense) {
+    throw new Error('Cannot play cards while a defense reaction is active.');
+  }
 
   const currentPlayer = state.players[state.currentTurnIndex];
   if (currentPlayer.id !== playerId) {
@@ -1268,191 +1806,96 @@ export function playPairCards(
   }
 
   // Process Stacked Action Effects
-  let nextSteps = 1;
-  let newDirection = state.direction;
-  let currentDeck = state.deck;
-  let currentDiscard = updatedDiscardPile;
-  let newPendingDrawCount = 0;
-
-  switch (card1.value) {
-    case 'skip': {
-      if (updatedPlayers.length === 2) {
-        nextSteps = 2;
-      } else {
-        nextSteps = 3;
-      }
-      newLogs.push(
-        createLogEntry('PLAY_CARD', `Double Skip! Next two players lost their turns.`)
-      );
-      break;
-    }
-
-    case 'reverse': {
-      if (updatedPlayers.length === 2) {
-        nextSteps = 2;
-        newLogs.push(
-          createLogEntry('PLAY_CARD', `Double Reverse skipped opponent!`)
-        );
-      } else {
-        newDirection = state.direction;
-        nextSteps = 1;
-        newLogs.push(
-          createLogEntry('PLAY_CARD', `Double Reverse! Direction flipped twice (net zero).`)
-        );
-      }
-      break;
-    }
-
-    case 'draw2': {
-      const penalty = currentPending + 4;
-      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-      const targetPlayer = updatedPlayers[targetIndex];
-      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
-      const canTargetStack = Boolean(
-        options?.forcePendingDraw ||
-        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'draw2'))
-      );
-
-      if (canTargetStack) {
-        nextSteps = 1;
-        newPendingDrawCount = penalty;
-        newLogs.push(
-          createLogEntry(
-            'PLAY_CARD',
-            `⚡ DOUBLE STACK ESCALATED! ${currentPlayer.name} played pair of Draw 2 (Total: +${penalty}) onto ${targetPlayer.name}!`,
-            {
-              playerId,
-              playerName: currentPlayer.name,
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      } else {
-        nextSteps = 2;
-        newPendingDrawCount = 0;
-        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
-        currentDeck = drawResult.remainingDeck;
-        currentDiscard = drawResult.remainingDiscard;
-
-        if (drawResult.didReshuffle) {
-          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Draw 2.'));
-        }
-
-        updatedPlayers = updatedPlayers.map((p, idx) =>
-          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-        );
-
-        newLogs.push(
-          createLogEntry('DRAW_CARD', `💥 DOUBLE DRAW 2! ${targetPlayer.name} drew ${penalty} cards and lost their turn!`, {
-            targetPlayerId: targetPlayer.id,
-            targetPlayerName: targetPlayer.name,
-          })
-        );
-      }
-      break;
-    }
-
-    case 'wild_draw4': {
-      const penalty = currentPending + 8;
-      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-      const targetPlayer = updatedPlayers[targetIndex];
-      const isStackingAllowed = options?.allowStacking ?? (state.allowStacking ?? false);
-      const canTargetStack = Boolean(
-        options?.forcePendingDraw ||
-        (isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'wild_draw4'))
-      );
-
-      if (canTargetStack) {
-        nextSteps = 1;
-        newPendingDrawCount = penalty;
-        newLogs.push(
-          createLogEntry(
-            'PLAY_CARD',
-            `⚡ DOUBLE WILD STACK ESCALATED! ${currentPlayer.name} played pair of Wild Draw 4 (Total: +${penalty}) onto ${targetPlayer.name}!`,
-            {
-              playerId,
-              playerName: currentPlayer.name,
-              targetPlayerId: targetPlayer.id,
-              targetPlayerName: targetPlayer.name,
-            }
-          )
-        );
-      } else {
-        nextSteps = 2;
-        newPendingDrawCount = 0;
-        const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
-        currentDeck = drawResult.remainingDeck;
-        currentDiscard = drawResult.remainingDiscard;
-
-        if (drawResult.didReshuffle) {
-          newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck was reshuffled during Double Wild Draw 4.'));
-        }
-
-        updatedPlayers = updatedPlayers.map((p, idx) =>
-          idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-        );
-
-        newLogs.push(
-          createLogEntry('DRAW_CARD', `💥 DOUBLE WILD DRAW 4! ${targetPlayer.name} drew ${penalty} cards and lost their turn!`, {
-            targetPlayerId: targetPlayer.id,
-            targetPlayerName: targetPlayer.name,
-          })
-        );
-      }
-      break;
-    }
-
-    case 'mute': {
-      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-      const targetPlayer = updatedPlayers[targetIndex];
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, isMuted: true, mutedRoundsRemaining: 2 } : p
-      );
-      nextSteps = 2;
-      newLogs.push(
-        createLogEntry('MUTE_PLAYER', `🔇 DOUBLE MUTE! ${targetPlayer.name} is muted for 2 rounds and skipped!`, {
-          targetPlayerId: targetPlayer.id,
-          targetPlayerName: targetPlayer.name,
-        })
-      );
-      break;
-    }
-
-    case 'rival_swap': {
-      updatedPlayers = applyRivalSwap(
-        updatedPlayers,
-        state.currentTurnIndex,
-        state.direction,
-        currentPlayer,
-        updatedCurrentPlayer.hand,
-        newLogs
-      );
-      nextSteps = 1;
-      break;
-    }
-
-    default:
-      nextSteps = 1;
-      break;
-  }
-
-  const intermediateState: GameState = {
+  const basePairState: GameState = {
     ...state,
-    deck: currentDeck,
-    discardPile: currentDiscard,
+    discardPile: updatedDiscardPile,
     players: updatedPlayers,
-    direction: newDirection,
     activeColor: newActiveColor,
-    pendingDrawCount: newPendingDrawCount,
+    pendingDrawCount: 0,
     hasDrawnThisTurn: false,
     drawnCard: null,
     pendingColorChoice: false,
     pendingWildCard: null,
+    pendingDefense: null,
+    lastDefenseBanner: null,
     logs: newLogs,
   };
 
-  return advanceToNextTurn(intermediateState, nextSteps);
+  switch (card1.value) {
+    case 'skip': {
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      return triggerOrApplyAttack(basePairState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'skip',
+        drawPenalty: 0,
+        pairCount: 2,
+      });
+    }
+
+    case 'reverse': {
+      let nextSteps = 1;
+      if (updatedPlayers.length === 2) {
+        nextSteps = 2;
+        newLogs.push(createLogEntry('PLAY_CARD', `Double Reverse skipped opponent!`));
+      } else {
+        nextSteps = 1;
+        newLogs.push(createLogEntry('PLAY_CARD', `Double Reverse! Direction flipped twice (net zero).`));
+      }
+      return advanceToNextTurn({ ...basePairState, logs: newLogs }, nextSteps);
+    }
+
+    case 'draw2': {
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      return triggerOrApplyAttack(basePairState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'draw2',
+        drawPenalty: currentPending + 4,
+        pairCount: 2,
+        forcePendingDraw: options?.forcePendingDraw,
+        allowStacking: options?.allowStacking,
+      });
+    }
+
+    case 'wild_draw4': {
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      return triggerOrApplyAttack(basePairState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'wild_draw4',
+        drawPenalty: currentPending + 8,
+        pairCount: 2,
+        forcePendingDraw: options?.forcePendingDraw,
+        allowStacking: options?.allowStacking,
+      });
+    }
+
+    case 'mute': {
+      const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
+      return triggerOrApplyAttack(basePairState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'mute',
+        drawPenalty: 0,
+        pairCount: 2,
+      });
+    }
+
+    case 'rival_swap': {
+      const targetIndex = selectSwapTargetIndex(updatedPlayers, state.currentTurnIndex, state.direction);
+      return triggerOrApplyAttack(basePairState, {
+        attackerIndex: state.currentTurnIndex,
+        targetIndex,
+        attackType: 'rival_swap',
+        drawPenalty: 0,
+        pairCount: 2,
+      });
+    }
+
+    default:
+      return advanceToNextTurn(basePairState, 1);
+  }
 }
 
 // ============================================================================
@@ -1477,10 +1920,6 @@ export function chooseWildColor(
   }
 
   const wildCard = state.pendingWildCard;
-  let nextSteps = 1;
-  let currentDeck = state.deck;
-  let currentDiscard = state.discardPile;
-  let updatedPlayers = state.players;
   const newLogs = [
     ...state.logs,
     createLogEntry('CHOOSE_COLOR', `${currentPlayer.name} selected ${chosenColor.toUpperCase()} as active color.`, {
@@ -1490,74 +1929,49 @@ export function chooseWildColor(
     }),
   ];
 
-  let newPendingDrawCount = 0;
-  if (wildCard.value === 'wild_draw4') {
-    const penalty = (state.pendingDrawCount || 0) + 4;
-    const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, updatedPlayers.length, 1);
-    const targetPlayer = updatedPlayers[targetIndex];
-    const isStackingAllowed = state.allowStacking ?? false;
-    const canTargetStack = Boolean(
-      isStackingAllowed && targetPlayer.hand.some((c) => c.value === 'wild_draw4')
-    );
-
-    if (canTargetStack) {
-      nextSteps = 1;
-      newPendingDrawCount = penalty;
-      newLogs.push(
-        createLogEntry(
-          'PLAY_CARD',
-          `⚡ WILD STACK ESCALATED! ${currentPlayer.name} stacked +4 (Total: +${penalty}) onto ${targetPlayer.name}!`,
-          {
-            playerId,
-            playerName: currentPlayer.name,
-            targetPlayerId: targetPlayer.id,
-            targetPlayerName: targetPlayer.name,
-          }
-        )
-      );
-    } else {
-      nextSteps = 2;
-      newPendingDrawCount = 0;
-      const drawResult = drawFromDeck(currentDeck, currentDiscard, penalty);
-      currentDeck = drawResult.remainingDeck;
-      currentDiscard = drawResult.remainingDiscard;
-
-      if (drawResult.didReshuffle) {
-        newLogs.push(createLogEntry('RESHUFFLE_DECK', 'Deck reshuffled during Wild Draw 4.'));
-      }
-
-      updatedPlayers = updatedPlayers.map((p, idx) =>
-        idx === targetIndex ? { ...p, hand: [...p.hand, ...drawResult.drawnCards], hasDeclaredRival: false } : p
-      );
-
-      newLogs.push(
-        createLogEntry(
-          'DRAW_CARD',
-          penalty > 4
-            ? `💥 STACK DETONATION! ${targetPlayer.name} could not stack and drew ${penalty} cards!`
-            : `${targetPlayer.name} drew 4 cards and lost their turn!`,
-          {
-            targetPlayerId: targetPlayer.id,
-            targetPlayerName: targetPlayer.name,
-          }
-        )
-      );
-    }
-  }
-
-  const intermediateState: GameState = {
+  const baseWildState: GameState = {
     ...state,
-    deck: currentDeck,
-    discardPile: currentDiscard,
-    players: updatedPlayers,
     activeColor: chosenColor,
     pendingColorChoice: false,
     pendingWildCard: null,
-    pendingDrawCount: newPendingDrawCount,
+    pendingDrawCount: 0,
+    pendingDefense: null,
+    lastDefenseBanner: null,
     logs: newLogs,
   };
 
-  return advanceToNextTurn(intermediateState, nextSteps);
+  if (wildCard.value === 'wild_draw4') {
+    const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, state.players.length, 1);
+    return triggerOrApplyAttack(baseWildState, {
+      attackerIndex: state.currentTurnIndex,
+      targetIndex,
+      attackType: 'wild_draw4',
+      drawPenalty: (state.pendingDrawCount || 0) + 4,
+      pairCount: 1,
+    });
+  }
+  if (wildCard.value === 'mute') {
+    const targetIndex = calculateNextPlayerIndex(state.currentTurnIndex, state.direction, state.players.length, 1);
+    return triggerOrApplyAttack(baseWildState, {
+      attackerIndex: state.currentTurnIndex,
+      targetIndex,
+      attackType: 'mute',
+      drawPenalty: 0,
+      pairCount: 1,
+    });
+  }
+  if (wildCard.value === 'rival_swap') {
+    const targetIndex = selectSwapTargetIndex(state.players, state.currentTurnIndex, state.direction);
+    return triggerOrApplyAttack(baseWildState, {
+      attackerIndex: state.currentTurnIndex,
+      targetIndex,
+      attackType: 'rival_swap',
+      drawPenalty: 0,
+      pairCount: 1,
+    });
+  }
+
+  return advanceToNextTurn(baseWildState, 1);
 }
 
 // ============================================================================
@@ -1773,6 +2187,14 @@ export function getDominantColor(hand: readonly Card[]): StandardColor {
 export function makeBotMove(state: GameState): GameState {
   if (state.isGameOver) return state;
 
+  if (state.pendingDefense) {
+    const defenseTarget = state.players[state.pendingDefense.targetIndex];
+    if (defenseTarget?.isBot) {
+      return resolveBotPendingDefense(state);
+    }
+    return state;
+  }
+
   const botPlayer = state.players[state.currentTurnIndex];
   if (!botPlayer.isBot) {
     throw new Error(`Current player ${botPlayer.name} is not a bot.`);
@@ -1926,6 +2348,14 @@ export function pickBestBotCard(
     return regularWild;
   }
 
-  // 7. Fallback: return first available playable card
+  // 7. Save Shield & Mirror for reactive defense unless bot has <= 2 cards or no other card is playable
+  if (botPlayer.hand.length > 2) {
+    const nonReactive = playableCards.find((c) => c.value !== 'shield' && c.value !== 'mirror');
+    if (nonReactive) {
+      return nonReactive;
+    }
+  }
+
+  // 8. Fallback: return first available playable card
   return playableCards[0];
 }

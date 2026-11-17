@@ -55,6 +55,8 @@ describe('Audio & Music Engine (BGM & SFX)', () => {
       () => audioService.playSwapSfx(),
       () => audioService.playMuteSfx(),
       () => audioService.playMuteSfx(true),
+      () => audioService.playShieldBlockSfx(),
+      () => audioService.playMirrorReflectSfx(),
     ];
 
     // 1. When sfxEnabled is true

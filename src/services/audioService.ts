@@ -142,6 +142,24 @@ function getMuteAsset(): any {
   }
 }
 
+function getShieldAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/shield.mp3');
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load shield asset:', err);
+    return null;
+  }
+}
+
+function getMirrorAsset(): any {
+  try {
+    return require('../../assets/sounds/game-sounds/mirror.mp3');
+  } catch (err) {
+    safeWarn('[AudioService] Failed to load mirror asset:', err);
+    return null;
+  }
+}
+
 export class AudioService {
   private currentBgmType: BgmTrackType = 'none';
   private currentBgmPlayer: any | null = null;
@@ -257,6 +275,8 @@ export class AudioService {
         ['reverse', getReverseAsset],
         ['swap', getSwapAsset],
         ['mute', getMuteAsset],
+        ['shield', getShieldAsset],
+        ['mirror', getMirrorAsset],
       ];
 
       for (const [key, getter] of sfxAssets) {
@@ -626,6 +646,20 @@ export class AudioService {
    */
   public async playMuteSfx(force: boolean = false): Promise<void> {
     await this.playSfx('mute', getMuteAsset, 1.0, force);
+  }
+
+  /**
+   * SFX: Custom Shield voice line played when a reactive Shield block resolves.
+   */
+  public async playShieldBlockSfx(): Promise<void> {
+    await this.playSfx('shield', getShieldAsset, 1.0);
+  }
+
+  /**
+   * SFX: Custom Mirror voice line played when a reactive Mirror or Counter-Mirror resolves.
+   */
+  public async playMirrorReflectSfx(): Promise<void> {
+    await this.playSfx('mirror', getMirrorAsset, 1.0);
   }
 
   /**

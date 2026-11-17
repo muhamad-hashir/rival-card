@@ -5,7 +5,7 @@ export type CardColor = StandardColor | 'wild';
 
 export type NumberCardValue = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
 export type StandardActionValue = 'skip' | 'reverse' | 'draw2';
-export type WildActionValue = 'wild' | 'wild_draw4' | 'mute' | 'rival_swap';
+export type WildActionValue = 'wild' | 'wild_draw4' | 'mute' | 'rival_swap' | 'shield' | 'mirror';
 export type CardValue = NumberCardValue | StandardActionValue | WildActionValue;
 
 export const STANDARD_COLORS: readonly StandardColor[] = ['red', 'blue', 'green', 'yellow'] as const;
@@ -64,6 +64,8 @@ export type GameActionType =
   | 'CATCH_RIVAL'
   | 'SWAP_HANDS'
   | 'MUTE_PLAYER'
+  | 'SHIELD_BLOCK'
+  | 'MIRROR_REFLECT'
   | 'RESHUFFLE_DECK'
   | 'DISMISS_PRIVACY_MASK';
 
@@ -114,6 +116,27 @@ export interface SeriesState {
   endedReason?: string;
 }
 
+export type DefenseAttackType = 'draw2' | 'wild_draw4' | 'skip' | 'mute' | 'rival_swap';
+
+export interface PendingDefenseState {
+  attackerIndex: number;
+  targetIndex: number;
+  attackType: DefenseAttackType;
+  drawPenalty: number; // e.g. 2, 4, or stacked total like 6/8
+  mirrorBounceCount: number; // 0 = initial attack, 1 = reflected once (allows 1 Counter-Mirror)
+  expiresAt: number; // Date.now() + 3000
+  originalTargetIndex?: number;
+  pairCount?: number;
+  defenseEventId?: string;
+}
+
+export interface DefenseBannerState {
+  id: string;
+  type: 'shield' | 'mirror' | 'counter_mirror';
+  message: string;
+  timestamp: number;
+}
+
 export interface GameState {
   deck: Card[];
   discardPile: Card[];
@@ -134,6 +157,8 @@ export interface GameState {
   lastActionTimestamp?: number;
   pendingDrawCount?: number;
   allowStacking?: boolean;
+  pendingDefense?: PendingDefenseState | null;
+  lastDefenseBanner?: DefenseBannerState | null;
   lastRivalCalledBy?: string;
   lastRivalCalledName?: string;
   lastRivalCallTimestamp?: number;

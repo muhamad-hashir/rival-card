@@ -134,7 +134,13 @@ describe('Multiplayer Private Room Capacity & Perspective Sync', () => {
     assert.strictEqual(state.players.length, 4);
     assert.ok(state.players.every((p) => p.isBot === false));
 
-    // Seed controlled hands + top card for deterministic 4P rotation check
+    // Seed controlled deck, hands, and top card for deterministic 4P rotation check
+    state.deck = Array.from({ length: 12 }, (_, idx) => ({
+      id: `det_deck_${idx}`,
+      color: (['red', 'blue', 'green', 'yellow'] as const)[idx % 4],
+      value: String((idx % 9) + 1) as any,
+      scoreValue: (idx % 9) + 1,
+    }));
     state.discardPile = [{ id: 'start_5', color: 'red', value: '5', scoreValue: 5 }];
     state.activeColor = 'red';
     state.currentTurnIndex = 0;

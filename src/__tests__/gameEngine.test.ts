@@ -23,13 +23,17 @@ import {
   getDominantColor,
   getCardSwapStrength,
   selectSwapTargetIndex,
+  resolveDefenseWithShield,
+  resolveDefenseWithMirror,
+  resolveDefenseTakeHit,
+  resolveBotPendingDefense,
 } from '../gameEngine';
 import type { Card, GameState, Player } from '../types';
 
-describe('Deck Architecture & 108 Cards Distribution', () => {
-  test('Deck contains exactly 108 cards', () => {
+describe('Deck Architecture & 112 Cards Distribution', () => {
+  test('Deck contains exactly 112 cards', () => {
     const deck = generateDeck();
-    assert.equal(deck.length, 108, `Expected 108 cards, got ${deck.length}`);
+    assert.equal(deck.length, 112, `Expected 112 cards, got ${deck.length}`);
   });
 
   test('Deck has 76 number cards (4 zeros, 72 1-9 cards)', () => {
@@ -57,24 +61,28 @@ describe('Deck Architecture & 108 Cards Distribution', () => {
     assert.equal(draw2s.length, 8, 'Expected 8 Draw2 cards (2 per color)');
   });
 
-  test('Deck has 8 Wild & Rival cards (2 Wild, 2 WildDraw4, 2 Mute, 2 RivalSwap)', () => {
+  test('Deck has 12 Wild & Rival cards (2 Wild, 2 WildDraw4, 2 Mute, 2 RivalSwap, 2 Shield, 2 Mirror)', () => {
     const deck = generateDeck();
     const wilds = deck.filter((c) => c.value === 'wild');
     const wildDraw4s = deck.filter((c) => c.value === 'wild_draw4');
     const mutes = deck.filter((c) => c.value === 'mute');
     const rivalSwaps = deck.filter((c) => c.value === 'rival_swap');
+    const shields = deck.filter((c) => c.value === 'shield');
+    const mirrors = deck.filter((c) => c.value === 'mirror');
 
     assert.equal(wilds.length, 2, 'Expected 2 Wild cards');
     assert.equal(wildDraw4s.length, 2, 'Expected 2 WildDraw4 cards');
     assert.equal(mutes.length, 2, 'Expected 2 Mute cards');
     assert.equal(rivalSwaps.length, 2, 'Expected 2 RivalSwap cards');
+    assert.equal(shields.length, 2, 'Expected 2 Shield cards');
+    assert.equal(mirrors.length, 2, 'Expected 2 Mirror cards');
 
     // All wild suit cards must have color: 'wild'
     const wildSuit = deck.filter((c) => c.color === 'wild');
-    assert.equal(wildSuit.length, 8, 'Expected 8 total cards with color wild');
+    assert.equal(wildSuit.length, 12, 'Expected 12 total cards with color wild');
   });
 
-  test('Color breakdown: 25 Red, 25 Blue, 25 Green, 25 Yellow, 8 Wild', () => {
+  test('Color breakdown: 25 Red, 25 Blue, 25 Green, 25 Yellow, 12 Wild', () => {
     const deck = generateDeck();
     const red = deck.filter((c) => c.color === 'red');
     const blue = deck.filter((c) => c.color === 'blue');
@@ -86,8 +94,8 @@ describe('Deck Architecture & 108 Cards Distribution', () => {
     assert.equal(blue.length, 25);
     assert.equal(green.length, 25);
     assert.equal(yellow.length, 25);
-    assert.equal(wild.length, 8);
-    assert.equal(red.length + blue.length + green.length + yellow.length + wild.length, 108);
+    assert.equal(wild.length, 12);
+    assert.equal(red.length + blue.length + green.length + yellow.length + wild.length, 112);
   });
 });
 
@@ -101,8 +109,8 @@ describe('Fisher-Yates Shuffle Algorithm', () => {
 
     const originalIds = new Set(original.map((c) => c.id));
     const shuffledIds = new Set(shuffled.map((c) => c.id));
-    assert.equal(originalIds.size, 108);
-    assert.equal(shuffledIds.size, 108);
+    assert.equal(originalIds.size, 112);
+    assert.equal(shuffledIds.size, 112);
 
     // With 108 cards, probability of identical ordering is virtually zero
     const sameOrder = shuffled.every((c, i) => c.id === original[i].id);
@@ -185,9 +193,9 @@ describe('Game Initialization & Hand Dealing', () => {
     assert.equal(game.isGameOver, false);
     assert.equal(game.winner, null);
 
-    // Total cards accounted for: sum of all player hands + discard pile + deck = 108
+    // Total cards accounted for: sum of all player hands + discard pile + deck = 112
     const totalPlayerCards = game.players.reduce((sum, p) => sum + p.hand.length, 0);
-    assert.equal(totalPlayerCards + game.discardPile.length + game.deck.length, 108,
+    assert.equal(totalPlayerCards + game.discardPile.length + game.deck.length, 112,
       `Total card conservation: ${totalPlayerCards} in hands + ${game.discardPile.length} discard + ${game.deck.length} deck = ${totalPlayerCards + game.discardPile.length + game.deck.length}`
     );
   });
@@ -464,6 +472,308 @@ describe('RIVAL! Declaration and Catch Mechanics', () => {
   });
 });
 
+describe('Shield & Mirror Wild + Reactive Defense Mechanics', () => {
+  function makeDefenseTestGame(playersCount = 3): GameState {
+    const players: Player[] = [];
+    for (let i = 0; i < playersCount; i++) {
+      players.push({
+        id: `p${i}`,
+        name: `Player ${i}`,
+        isBot: false,
+        hand: [],
+        isMuted: false,
+        mutedRoundsRemaining: 0,
+        hasDeclaredRival: false,
+      });
+    }
+
+    return {
+      deck: [
+        { id: 'dk1', color: 'red', value: '1', scoreValue: 1 },
+        { id: 'dk2', color: 'blue', value: '2', scoreValue: 2 },
+        { id: 'dk3', color: 'green', value: '3', scoreValue: 3 },
+        { id: 'dk4', color: 'yellow', value: '4', scoreValue: 4 },
+        { id: 'dk5', color: 'red', value: '5', scoreValue: 5 },
+        { id: 'dk6', color: 'blue', value: '6', scoreValue: 6 },
+        { id: 'dk7', color: 'green', value: '7', scoreValue: 7 },
+        { id: 'dk8', color: 'yellow', value: '8', scoreValue: 8 },
+      ],
+      discardPile: [{ id: 'top0', color: 'red', value: '9', scoreValue: 9 }],
+      players,
+      currentTurnIndex: 0,
+      direction: 1,
+      activeColor: 'red',
+      winner: null,
+      isGameOver: false,
+      gameMode: 'multiplayer',
+      hasDrawnThisTurn: false,
+      drawnCard: null,
+      pendingColorChoice: false,
+      pendingWildCard: null,
+      privacyMask: {
+        isActive: false,
+        targetPlayerId: 'p0',
+        targetPlayerName: 'Player 0',
+        promptText: '',
+      },
+      logs: [],
+      lastActionTimestamp: Date.now(),
+      pendingDrawCount: 0,
+      allowStacking: true,
+      pendingDefense: null,
+      lastDefenseBanner: null,
+      turnCount: 1,
+    };
+  }
+
+  test('1. Active Play: Shield and Mirror work as Wild color-changers on your own turn (including winning)', () => {
+    const shieldCard: Card = { id: 'sh1', color: 'wild', value: 'shield', scoreValue: 50 };
+    const mirrorCard: Card = { id: 'mi1', color: 'wild', value: 'mirror', scoreValue: 50 };
+
+    assert.equal(isWildCard(shieldCard), true);
+    assert.equal(isWildCard(mirrorCard), true);
+    assert.equal(getCardSwapStrength(shieldCard), 45);
+    assert.equal(getCardSwapStrength(mirrorCard), 45);
+
+    let state = makeDefenseTestGame(2);
+    state.players[0].hand = [
+      shieldCard,
+      { id: 'p0_r2', color: 'red', value: '2', scoreValue: 2 },
+    ];
+    state.players[1].hand = [
+      mirrorCard,
+      { id: 'p1_y3', color: 'yellow', value: '3', scoreValue: 3 },
+    ];
+
+    // P0 plays Shield as Wild and picks Blue
+    state = playCard(state, 'p0', 'sh1', { chosenColor: 'blue' });
+    assert.equal(state.activeColor, 'blue');
+    assert.equal(state.currentTurnIndex, 1);
+    assert.equal(state.pendingDefense, null);
+
+    // P1 plays Mirror as Wild and picks Green
+    state = playCard(state, 'p1', 'mi1', { chosenColor: 'green' });
+    assert.equal(state.activeColor, 'green');
+    assert.equal(state.currentTurnIndex, 0);
+
+    // P0 plays final Shield card to win immediately
+    let winState = makeDefenseTestGame(2);
+    winState.players[0].hand = [{ id: 'sh_last', color: 'wild', value: 'shield', scoreValue: 50 }];
+    winState.players[1].hand = [{ id: 'p1_r1', color: 'red', value: '1', scoreValue: 1 }];
+    winState = playCard(winState, 'p0', 'sh_last');
+    assert.equal(winState.isGameOver, true);
+    assert.equal(winState.winner?.id, 'p0');
+  });
+
+  test('2. Reactive Shield blocks +2 and stacked +4 penalties completely while preserving activeColor', () => {
+    // Subcase A: Shield blocks +2
+    let state = makeDefenseTestGame(3);
+    state.players[0].hand = [
+      { id: 'p0_d2', color: 'red', value: 'draw2', scoreValue: 20 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    state.players[1].hand = [
+      { id: 'p1_sh', color: 'wild', value: 'shield', scoreValue: 50 },
+      { id: 'p1_b5', color: 'blue', value: '5', scoreValue: 5 },
+    ];
+    state.players[2].hand = [{ id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 }];
+
+    state = playCard(state, 'p0', 'p0_d2');
+    assert.ok(state.pendingDefense, 'pendingDefense must open for P1 holding Shield');
+    assert.equal(state.pendingDefense?.attackType, 'draw2');
+    assert.equal(state.pendingDefense?.drawPenalty, 2);
+
+    state = resolveDefenseWithShield(state, 'p1');
+    assert.equal(state.pendingDefense, null);
+    assert.equal(state.pendingDrawCount, 0);
+    assert.equal(state.activeColor, 'red', 'Active color must stay intact after Shield block');
+    assert.equal(state.players[1].hand.length, 1, 'Shield consumed, 0 penalty cards drawn');
+    assert.equal(state.currentTurnIndex, 1, 'Turn advances cleanly to P1');
+    assert.ok(state.lastDefenseBanner?.message.includes('blocked +2 with Shield'));
+
+    // Subcase B: Shield blocks stacked +6 (or +4) completely
+    let stackState = makeDefenseTestGame(3);
+    stackState.pendingDrawCount = 4;
+    stackState.discardPile = [{ id: 'top_d2', color: 'red', value: 'draw2', scoreValue: 20 }];
+    stackState.activeColor = 'yellow';
+    stackState.players[0].hand = [
+      { id: 'p0_d2_stack', color: 'yellow', value: 'draw2', scoreValue: 20 },
+      { id: 'p0_y2', color: 'yellow', value: '2', scoreValue: 2 },
+    ];
+    stackState.players[1].hand = [
+      { id: 'p1_sh', color: 'wild', value: 'shield', scoreValue: 50 },
+      { id: 'p1_g3', color: 'green', value: '3', scoreValue: 3 },
+    ];
+    stackState.players[2].hand = [{ id: 'p2_b1', color: 'blue', value: '1', scoreValue: 1 }];
+
+    stackState = playCard(stackState, 'p0', 'p0_d2_stack');
+    assert.equal(stackState.pendingDefense?.drawPenalty, 6);
+
+    stackState = resolveDefenseWithShield(stackState, 'p1');
+    assert.equal(stackState.pendingDefense, null);
+    assert.equal(stackState.pendingDrawCount, 0);
+    assert.equal(stackState.activeColor, 'yellow');
+    assert.equal(stackState.players[1].hand.length, 1);
+    assert.ok(stackState.lastDefenseBanner?.message.includes('blocked +6 with Shield'));
+  });
+
+  test('3. Reactive Mirror reflects +4, Skip, Mute, and Rival Swap back onto the attacker', () => {
+    // A: Mirror reflects +4
+    let wd4State = makeDefenseTestGame(3);
+    wd4State.players[0].hand = [
+      { id: 'p0_wd4', color: 'wild', value: 'wild_draw4', scoreValue: 50 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    wd4State.players[1].hand = [
+      { id: 'p1_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+      { id: 'p1_b2', color: 'blue', value: '2', scoreValue: 2 },
+    ];
+    wd4State.players[2].hand = [{ id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 }];
+
+    wd4State = playCard(wd4State, 'p0', 'p0_wd4', { chosenColor: 'green' });
+    assert.equal(wd4State.pendingDefense?.attackType, 'wild_draw4');
+    wd4State = resolveDefenseWithMirror(wd4State, 'p1');
+    assert.equal(wd4State.pendingDefense, null);
+    assert.equal(wd4State.activeColor, 'green', 'Active color stays Green without new color picker');
+    assert.equal(wd4State.players[0].hand.length, 5, 'Attacker P0 drew 4 reflected cards (1 + 4)');
+    assert.equal(wd4State.players[1].hand.length, 1, 'Defender P1 spent Mirror and drew 0 cards');
+
+    // B: Mirror reflects Skip back onto attacker (so Defender P1 gets to play instead of being skipped)
+    let skipState = makeDefenseTestGame(3);
+    skipState.players[0].hand = [
+      { id: 'p0_sk', color: 'red', value: 'skip', scoreValue: 20 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    skipState.players[1].hand = [
+      { id: 'p1_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+      { id: 'p1_b2', color: 'blue', value: '2', scoreValue: 2 },
+    ];
+    skipState.players[2].hand = [{ id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 }];
+
+    skipState = playCard(skipState, 'p0', 'p0_sk');
+    skipState = resolveDefenseWithMirror(skipState, 'p1');
+    assert.equal(skipState.currentTurnIndex, 1, 'P0 skip reflected, so turn moves to P1');
+
+    // C: Mirror reflects Mute back onto attacker
+    let muteState = makeDefenseTestGame(3);
+    muteState.players[0].hand = [
+      { id: 'p0_mu', color: 'wild', value: 'mute', scoreValue: 50 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    muteState.players[1].hand = [
+      { id: 'p1_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+      { id: 'p1_b2', color: 'blue', value: '2', scoreValue: 2 },
+    ];
+    muteState.players[2].hand = [{ id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 }];
+
+    muteState = playCard(muteState, 'p0', 'p0_mu', { chosenColor: 'blue' });
+    muteState = resolveDefenseWithMirror(muteState, 'p1');
+    assert.equal(muteState.players[0].isMuted, true, 'Attacker P0 is muted by Mirror reflection');
+    assert.equal(muteState.players[1].isMuted, false, 'Defender P1 is not muted');
+
+    // D: Mirror reflects Rival Swap back onto attacker (blocks swap so Defender keeps their small hand)
+    let swapState = makeDefenseTestGame(3);
+    swapState.players[0].hand = [
+      { id: 'p0_rs', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+      { id: 'p0_r2', color: 'red', value: '2', scoreValue: 2 },
+      { id: 'p0_r3', color: 'red', value: '3', scoreValue: 3 },
+    ];
+    swapState.players[1].hand = [
+      { id: 'p1_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+      { id: 'p1_g7', color: 'green', value: '7', scoreValue: 7 },
+    ];
+    swapState.players[2].hand = [
+      { id: 'p2_1', color: 'blue', value: '1', scoreValue: 1 },
+      { id: 'p2_2', color: 'blue', value: '2', scoreValue: 2 },
+      { id: 'p2_3', color: 'blue', value: '3', scoreValue: 3 },
+    ];
+
+    swapState = playCard(swapState, 'p0', 'p0_rs', { chosenColor: 'yellow' });
+    assert.equal(swapState.pendingDefense?.attackType, 'rival_swap');
+    assert.equal(swapState.pendingDefense?.targetIndex, 1);
+    swapState = resolveDefenseWithMirror(swapState, 'p1');
+    assert.deepEqual(swapState.players[1].hand.map((c) => c.id), ['p1_g7']);
+    assert.deepEqual(swapState.players[0].hand.map((c) => c.id), ['p0_r1', 'p0_r2', 'p0_r3']);
+  });
+
+  test('4. Counter-Mirror bounce: +4 -> Mirror -> Counter-Mirror resolves +4 onto defender and spends both Mirrors', () => {
+    let state = makeDefenseTestGame(3);
+    state.players[0].hand = [
+      { id: 'p0_wd4', color: 'wild', value: 'wild_draw4', scoreValue: 50 },
+      { id: 'p0_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    state.players[1].hand = [
+      { id: 'p1_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+      { id: 'p1_b2', color: 'blue', value: '2', scoreValue: 2 },
+    ];
+    state.players[2].hand = [{ id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 }];
+
+    // Attacker P0 plays +4 -> Defense window opens for P1
+    state = playCard(state, 'p0', 'p0_wd4', { chosenColor: 'blue' });
+    assert.equal(state.pendingDefense?.targetIndex, 1);
+    assert.equal(state.pendingDefense?.mirrorBounceCount, 0);
+
+    // Defender P1 uses Mirror -> Counter-Mirror window (mirrorBounceCount: 1) opens for P0
+    state = resolveDefenseWithMirror(state, 'p1');
+    assert.ok(state.pendingDefense, 'Counter-Mirror window must open for Attacker P0 holding Mirror');
+    assert.equal(state.pendingDefense?.targetIndex, 0);
+    assert.equal(state.pendingDefense?.mirrorBounceCount, 1);
+    assert.equal(state.players[1].hand.some((c) => c.value === 'mirror'), false, 'P1 Mirror consumed');
+
+    // Attacker P0 uses Counter-Mirror -> no further bounce allowed, P1 draws 4 cards
+    state = resolveDefenseWithMirror(state, 'p0');
+    assert.equal(state.pendingDefense, null, 'No further bounce allowed after Counter-Mirror');
+    assert.equal(state.players[0].hand.some((c) => c.value === 'mirror'), false, 'P0 Mirror consumed');
+    assert.equal(state.players[0].hand.length, 1, 'P0 keeps only p0_r1');
+    assert.equal(state.players[1].hand.length, 5, 'Original defender P1 draws 4 cards (1 + 4)');
+    assert.equal(state.currentTurnIndex, 2, 'P1 skipped by +4, turn moves to P2');
+    assert.ok(state.lastDefenseBanner?.message.includes('Counter-Mirrored'));
+  });
+
+  test('5. Letting 3s defense timer expire (Take Hit) applies penalty normally while keeping Shield/Mirror in hand', () => {
+    let state = makeDefenseTestGame(3);
+    state.players[0].hand = [
+      { id: 'p0_wd4', color: 'wild', value: 'wild_draw4', scoreValue: 50 },
+      { id: 'p0_r1', color: 'red', value: '1', scoreValue: 1 },
+    ];
+    state.players[1].hand = [
+      { id: 'p1_sh', color: 'wild', value: 'shield', scoreValue: 50 },
+      { id: 'p1_mi', color: 'wild', value: 'mirror', scoreValue: 50 },
+    ];
+    state.players[2].hand = [{ id: 'p2_g1', color: 'green', value: '1', scoreValue: 1 }];
+
+    state = playCard(state, 'p0', 'p0_wd4', { chosenColor: 'red' });
+    assert.ok(state.pendingDefense);
+
+    // Timeout / Take Hit
+    state = resolveDefenseTakeHit(state, 'p1');
+    assert.equal(state.pendingDefense, null);
+    assert.equal(state.players[1].hand.length, 6, 'P1 takes +4 cards on Take Hit / expiry (2 + 4)');
+    assert.equal(state.players[1].hand.some((c) => c.value === 'shield'), true, 'Shield remains in hand');
+    assert.equal(state.players[1].hand.some((c) => c.value === 'mirror'), true, 'Mirror remains in hand');
+    assert.equal(state.currentTurnIndex, 2, 'P1 skipped, turn advances to P2');
+
+    // Bot AI auto-defense test: bot blocks +2 with Shield cleanly
+    let botState = makeDefenseTestGame(2);
+    botState.players[1].isBot = true;
+    botState.players[0].hand = [
+      { id: 'p0_d2', color: 'red', value: 'draw2', scoreValue: 20 },
+      { id: 'p0_r5', color: 'red', value: '5', scoreValue: 5 },
+    ];
+    botState.players[1].hand = [
+      { id: 'bot_sh', color: 'wild', value: 'shield', scoreValue: 50 },
+      { id: 'bot_b1', color: 'blue', value: '1', scoreValue: 1 },
+    ];
+    botState = playCard(botState, 'p0', 'p0_d2');
+    assert.ok(botState.pendingDefense);
+    botState = resolveBotPendingDefense(botState);
+    assert.equal(botState.pendingDefense, null);
+    assert.equal(botState.players[1].hand.length, 1, 'Bot spent Shield and took 0 cards');
+  });
+});
+
 describe('Bot AI Engine (makeBotMove)', () => {
   test('Bot plays a valid card from hand', () => {
     const botHand: Card[] = [
@@ -611,6 +921,10 @@ describe('1v1 Action Cards & Consecutive Turn Transitions', () => {
     );
 
     state.currentTurnIndex = 1;
+    state.players[0].hand = [
+      { id: 'h1', color: 'red', value: '1', scoreValue: 1 },
+      { id: 'h2', color: 'green', value: '4', scoreValue: 4 },
+    ];
     const initialHumanCards = state.players[0].hand.length;
     const initialTurnCount = state.turnCount;
 

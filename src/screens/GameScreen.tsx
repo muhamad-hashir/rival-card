@@ -21,6 +21,8 @@ import {
 import * as ScreenOrientation from 'expo-screen-orientation';
 import {
   calculateNextPlayerIndex,
+  canDefendWithMirror,
+  canDefendWithShield,
   canPlayerCallRival,
   catchRival,
   chooseWildColor,
@@ -29,6 +31,7 @@ import {
   dismissPrivacyMask,
   getDominantColor,
   hasIdenticalPair,
+  hasReactiveDefense,
   hasStackableCard,
   isValidMove,
   isWildCard,
@@ -38,10 +41,15 @@ import {
   playPairCards,
   playerDrawCard,
   playerPassTurn,
+  resolveBotPendingDefense,
+  resolveDefenseTakeHit,
+  resolveDefenseWithMirror,
+  resolveDefenseWithShield,
   resolvePendingDraw,
   TURN_DURATION,
 } from '../gameEngine';
 import { CardView } from '../components/CardView';
+import { DefenseReactionModal } from '../components/DefenseReactionModal';
 import { DraggableCard } from '../components/DraggableCard';
 import { ColorPickerModal } from '../components/ColorPickerModal';
 import { PrivacyMaskModal } from '../components/PrivacyMaskModal';
@@ -218,6 +226,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     gameState.discardPile[gameState.discardPile.length - 1]?.id ?? null
   );
   const lastPendingColorChoiceRef = useRef<boolean>(Boolean(gameState.pendingColorChoice));
+  const lastHandledDefenseBannerIdRef = useRef<string | null>(gameState.lastDefenseBanner?.id ?? null);
 
   // Multiplayer Online & Modes states
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
@@ -537,7 +546,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     ? isOnlineLocalPlayerTurn(gameState, resolvedOnlineUserId)
     : currentPlayer.id === myPlayer.id;
   const isHumanTurn =
-    isMyTurn && !gameState.privacyMask.isActive && !gameState.isGameOver && !isReconnecting;
+    isMyTurn &&
+    !gameState.privacyMask.isActive &&
+    !gameState.isGameOver &&
+    !isReconnecting &&
+    !gameState.pendingDefense;
 
   // Play audible Rival callout SFX when any opponent (remote player or AI bot) calls RIVAL!, deduplicated cleanly
   const playOpponentRivalCue = useCallback(
@@ -813,6 +826,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     isDealing ||
     isColorPickerOpen ||
     gameState.pendingColorChoice ||
+    Boolean(gameState.pendingDefense) ||
     gameState.privacyMask.isActive ||
     isLeaveModalOpen ||
     isModesModalOpen ||
@@ -1366,10 +1380,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           } else if (isNewCardPlayed && topCard) {
             soundService.playCardSnap();
             hapticsService.cardSnap();
-            triggerCardActionSfx(
-              topCard.value,
-              !normalizedRemote.pendingColorChoice && isWildCard(topCard)
+            const isReactiveDefenseSpend = Boolean(
+              normalizedRemote.lastDefenseBanner &&
+                normalizedRemote.lastDefenseBanner.id !== lastHandledDefenseBannerIdRef.current &&
+                (topCard.value === 'shield' || topCard.value === 'mirror')
             );
+            if (!isReactiveDefenseSpend) {
+              triggerCardActionSfx(
+                topCard.value,
+                !normalizedRemote.pendingColorChoice && isWildCard(topCard)
+              );
+            }
           } else if (didFinishColorChoice) {
             audioService.playColorChangeSfx();
           } else if (normalizedRemote.hasDrawnThisTurn) {
@@ -1402,6 +1423,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         lastTopDiscardIdRef.current =
           syncedState.discardPile[syncedState.discardPile.length - 1]?.id ?? null;
         lastPendingColorChoiceRef.current = Boolean(syncedState.pendingColorChoice);
+        lastHandledDefenseBannerIdRef.current = syncedState.lastDefenseBanner?.id ?? null;
         setGameState(syncedState);
         setIsReconnecting(false);
         showQuickBanner('Match state synchronized!');
@@ -1525,6 +1547,114 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     };
   }, [myPlayer.hand.length, myPlayer.hasDeclaredRival, isHumanTurn, rivalCountdown]);
 
+  // Trigger Shield / Mirror sound effects & action banner strictly once per defense event
+  useEffect(() => {
+    const banner = gameState.lastDefenseBanner;
+    if (!banner || banner.id === lastHandledDefenseBannerIdRef.current) return;
+    lastHandledDefenseBannerIdRef.current = banner.id;
+
+    if (banner.type === 'shield') {
+      audioService.playShieldBlockSfx();
+      hapticsService.validPlay();
+    } else {
+      audioService.playMirrorReflectSfx();
+      hapticsService.rivalCallout();
+    }
+    showQuickBanner(banner.message, 3200);
+  }, [gameState.lastDefenseBanner, showQuickBanner]);
+
+  // 3-Second Reactive Shield & Mirror Defense Timer / Bot Decision Driver
+  useEffect(() => {
+    const defense = gameState.pendingDefense;
+    if (!defense || gameState.isGameOver || isDealing) return;
+
+    const defenseTarget = gameState.players[defense.targetIndex];
+    const defenseAttacker = gameState.players[defense.attackerIndex];
+    if (!defenseTarget) return;
+
+    // Offline Bot Defense: resolve cleanly after a natural 650ms reaction beat
+    if (!isOnlineMode && defenseTarget.isBot) {
+      const botDefenseTimer = setTimeout(() => {
+        try {
+          const nextState = resolveBotPendingDefense(gameState);
+          commitGameState(nextState, `${defenseTarget.name} reacted to ${defense.attackType}`);
+        } catch (err) {
+          console.error('Error during bot defense reaction:', err);
+        }
+      }, settings.fastBots ? 350 : 650);
+      return () => clearTimeout(botDefenseTimer);
+    }
+
+    const isLocalTarget = !isOnlineMode || defenseTarget.id === myPlayer.id;
+    if (isLocalTarget) {
+      const remainingMs = Math.max(50, defense.expiresAt - Date.now());
+      const expiryTimer = setTimeout(() => {
+        try {
+          const nextState = resolveDefenseTakeHit(gameState, defenseTarget.id);
+          commitGameState(nextState, `${defenseTarget.name} took hit`);
+        } catch (err) {
+          console.error('Error expiring defense window:', err);
+        }
+      }, remainingMs);
+      return () => clearTimeout(expiryTimer);
+    }
+
+    // Online remote target fallback: if target client disconnects mid-3s, attacker resolves after +1500ms grace
+    if (isOnlineMode && defenseAttacker?.id === myPlayer.id) {
+      const graceDelayMs = Math.max(1500, defense.expiresAt - Date.now() + 1500);
+      const fallbackTimer = setTimeout(() => {
+        try {
+          const nextState = resolveDefenseTakeHit(gameState, defenseTarget.id);
+          commitGameState(nextState, `${defenseTarget.name} defense timed out`);
+        } catch (err) {
+          console.error('Error in remote defense fallback:', err);
+        }
+      }, graceDelayMs);
+      return () => clearTimeout(fallbackTimer);
+    }
+  }, [
+    gameState,
+    isOnlineMode,
+    isDealing,
+    myPlayer.id,
+    settings.fastBots,
+  ]);
+
+  const handleDefenseUseShield = () => {
+    if (!gameState.pendingDefense) return;
+    try {
+      const nextState = resolveDefenseWithShield(gameState, myPlayer.id);
+      commitGameState(nextState, `${myPlayer.name} blocked with Shield`);
+    } catch (err: any) {
+      hapticsService.invalidMove();
+      soundService.playError();
+      Alert.alert('Defense Error', err?.message || 'Unable to use Shield');
+    }
+  };
+
+  const handleDefenseUseMirror = () => {
+    if (!gameState.pendingDefense) return;
+    try {
+      const nextState = resolveDefenseWithMirror(gameState, myPlayer.id);
+      commitGameState(nextState, `${myPlayer.name} reflected with Mirror`);
+    } catch (err: any) {
+      hapticsService.invalidMove();
+      soundService.playError();
+      Alert.alert('Defense Error', err?.message || 'Unable to use Mirror');
+    }
+  };
+
+  const handleDefenseTakeHit = () => {
+    if (!gameState.pendingDefense) return;
+    try {
+      const nextState = resolveDefenseTakeHit(gameState, myPlayer.id);
+      soundService.playPenalty();
+      commitGameState(nextState, `${myPlayer.name} took hit`);
+    } catch (err: any) {
+      console.error('Error taking hit:', err);
+    }
+  };
+
   // Automated Bot Turn Handling with organic, casual pacing
   useEffect(() => {
     if (
@@ -1532,6 +1662,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       !currentPlayer.isBot ||
       gameState.isGameOver ||
       gameState.privacyMask.isActive ||
+      Boolean(gameState.pendingDefense) ||
       isDealing ||
       isBotProcessing
     ) {
@@ -1719,9 +1850,16 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           const victim = stateForBot.players[targetIndex];
           const isDrawAction = chosenCard.value === 'draw2' || chosenCard.value === 'wild_draw4';
           const canVictimStack = victim && victim.hand.some((c) => c.value === chosenCard.value);
+          const canVictimDefend =
+            victim &&
+            hasReactiveDefense(
+              victim.hand,
+              chosenCard.value === 'draw2' ? 'draw2' : 'wild_draw4',
+              0
+            );
 
-          // Deliver flying cards immediately ONLY if victim cannot stack
-          if (isDrawAction && victim && !canVictimStack) {
+          // Deliver flying cards immediately ONLY if victim cannot stack and cannot Shield/Mirror
+          if (isDrawAction && victim && !canVictimStack && !canVictimDefend) {
             let penaltyCards = 0;
             if (chosenCard.value === 'draw2') {
               penaltyCards = playAsPair ? 4 : 2;
@@ -1820,8 +1958,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         const isEscalation = (gameState.pendingDrawCount || 0) > 0;
         const totalPenalty = (gameState.pendingDrawCount || 0) + 2;
         const canVictimStack = victim && victim.hand.some((c) => c.value === 'draw2');
+        const canVictimDefend = victim && hasReactiveDefense(victim.hand, 'draw2', 0);
 
-        if (victim && !canVictimStack) {
+        if (victim && !canVictimStack && !canVictimDefend) {
           setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalPenalty }));
           for (let i = 0; i < totalPenalty; i++) {
             setTimeout(() => {
@@ -1899,8 +2038,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         const isEscalation = (gameState.pendingDrawCount || 0) > 0;
         const totalPenalty = (gameState.pendingDrawCount || 0) + 4;
         const canVictimStack = victim && victim.hand.some((c) => c.value === 'draw2');
+        const canVictimDefend = victim && hasReactiveDefense(victim.hand, 'draw2', 0);
 
-        if (victim && !canVictimStack) {
+        if (victim && !canVictimStack && !canVictimDefend) {
           setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalPenalty }));
           for (let i = 0; i < totalPenalty; i++) {
             setTimeout(() => {
@@ -2091,8 +2231,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           const isEscalation = (gameState.pendingDrawCount || 0) > 0;
           const totalPenalty = (gameState.pendingDrawCount || 0) + 4;
           const canVictimStack = victim && victim.hand.some((c) => c.value === 'wild_draw4');
+          const canVictimDefend = victim && hasReactiveDefense(victim.hand, 'wild_draw4', 0);
 
-          if (victim && !canVictimStack) {
+          if (victim && !canVictimStack && !canVictimDefend) {
             setPendingPenaltyCount((prev) => ({ ...prev, [victim.id]: totalPenalty }));
             for (let i = 0; i < totalPenalty; i++) {
               setTimeout(() => {
@@ -2665,6 +2806,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                       emoji,
                       senderId: myPlayer.id,
                       senderName: myPlayer.name,
+                      senderAvatarId: myPlayer.avatarId,
                       timestamp: Date.now(),
                     });
                   }}
@@ -2698,7 +2840,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             </View>
 
         {/* Board-Level Auto-Sizing Active Taunt Banner (cleanly below header, never clips usernames) */}
-        <TauntToastBanner activeTaunt={activeTaunt} />
+        <TauntToastBanner activeTaunt={activeTaunt} players={gameState.players} />
 
         {/* ================================================================= */}
         {/* 2. TOP OPPONENT (12 O'CLOCK POSITION) */}
@@ -3241,6 +3383,53 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           onClose={() => setIsSettingsOpen(false)}
         />
 
+        {/* Reactive 3-Second Defense Modal (shown only to defending human player) */}
+        {(() => {
+          const defense = gameState.pendingDefense;
+          if (!defense || gameState.isGameOver || isDealing) return null;
+          const defenseTarget = gameState.players[defense.targetIndex];
+          const defenseAttacker = gameState.players[defense.attackerIndex];
+          const isMyDefense =
+            defenseTarget &&
+            defenseTarget.id === myPlayer.id &&
+            !defenseTarget.isBot &&
+            !gameState.privacyMask.isActive;
+
+          if (isMyDefense) {
+            return (
+              <DefenseReactionModal
+                visible={true}
+                pendingDefense={defense}
+                attackerName={defenseAttacker?.name || 'Opponent'}
+                canUseShield={canDefendWithShield(
+                  myPlayer.hand,
+                  defense.attackType,
+                  defense.mirrorBounceCount
+                )}
+                canUseMirror={canDefendWithMirror(myPlayer.hand, defense.mirrorBounceCount)}
+                onUseShield={handleDefenseUseShield}
+                onUseMirror={handleDefenseUseMirror}
+                onTakeHit={handleDefenseTakeHit}
+              />
+            );
+          }
+
+          if (defenseTarget) {
+            return (
+              <View style={styles.defenseWaitOverlay} pointerEvents="none">
+                <View style={styles.defenseWaitPill}>
+                  <Text style={styles.defenseWaitText}>
+                    {defense.mirrorBounceCount === 1 ? '🪞' : '🛡️'} Waiting for{' '}
+                    {defenseTarget.name} to react...
+                  </Text>
+                </View>
+              </View>
+            );
+          }
+
+          return null;
+        })()}
+
         {/* Network Reconnecting Amber Banner */}
         {isReconnecting && isOnlineMode && (
           <View style={styles.reconnectingBannerOverlay} pointerEvents="none">
@@ -3303,15 +3492,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 5,
-    backgroundColor: 'rgba(15, 23, 42, 0.45)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
     zIndex: 60,
     overflow: 'visible',
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
   leaveHeaderBtn: {
     flexDirection: 'row',
@@ -3323,7 +3512,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.18)',
     gap: 4,
-    marginRight: 10,
   },
   leaveHeaderIcon: {
     fontSize: 13,
@@ -3398,6 +3586,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     letterSpacing: 0.4,
   },
+  defenseWaitOverlay: {
+    position: 'absolute',
+    top: 48,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 910,
+  },
+  defenseWaitPill: {
+    backgroundColor: 'rgba(15, 23, 42, 0.86)',
+    borderWidth: 1.5,
+    borderColor: '#F59E0B',
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  defenseWaitText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#FEF3C7',
+    letterSpacing: 0.3,
+  },
   homeIconBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     width: 30,
@@ -3411,8 +3626,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   headerLogo: {
-    width: 110,
-    height: 32,
+    width: 92,
+    height: 28,
   },
   onlineRoomBadge: {
     flexDirection: 'row',
@@ -3421,7 +3636,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 8,
-    marginLeft: 8,
     borderWidth: 1,
     borderColor: '#34D399',
   },
@@ -3444,7 +3658,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 2,
     borderRadius: 9,
-    marginLeft: 6,
     borderWidth: 1.5,
     borderBottomWidth: 2.5,
     borderColor: '#E2D9C8',
@@ -3458,14 +3671,17 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
     zIndex: 60,
     overflow: 'visible',
   },
   iconBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    width: 30,
-    height: 30,
-    borderRadius: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
   },

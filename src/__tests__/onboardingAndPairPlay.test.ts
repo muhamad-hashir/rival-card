@@ -110,7 +110,7 @@ describe('Identical Card Combo Play (Pair Stacking)', () => {
       discardPile: [topCard],
       players: [
         { ...state.players[0], hand: [c1, c2, makeCard('other', 'green', '1', 1)] },
-        state.players[1],
+        { ...state.players[1], hand: [makeCard('p2_safe', 'red', '4', 4)] },
         state.players[2],
         state.players[3],
       ],
@@ -135,8 +135,6 @@ describe('Identical Card Combo Play (Pair Stacking)', () => {
     const c2 = makeCard('d2_2', 'yellow', 'draw2', 20);
     const topCard = makeCard('top_y', 'yellow', '5', 5);
 
-    const initialP2HandCount = state.players[1].hand.length;
-
     state = {
       ...state,
       currentTurnIndex: 0,
@@ -145,11 +143,12 @@ describe('Identical Card Combo Play (Pair Stacking)', () => {
       discardPile: [topCard],
       players: [
         { ...state.players[0], hand: [c1, c2, makeCard('leftover', 'red', '1', 1)] },
-        state.players[1],
+        { ...state.players[1], hand: [makeCard('p2_safe_1', 'red', '4', 4), makeCard('p2_safe_2', 'blue', '6', 6)] },
         state.players[2],
       ],
     };
 
+    const initialP2HandCount = state.players[1].hand.length;
     const nextState = playPairCards(state, 'p1', c1.id, c2.id);
 
     // Victim (P2) draws 4 cards
@@ -171,8 +170,6 @@ describe('Identical Card Combo Play (Pair Stacking)', () => {
     const c2 = makeCard('wd4_2', 'wild', 'wild_draw4', 50);
     const topCard = makeCard('top_card', 'blue', '3', 3);
 
-    const initialP2Count = state.players[1].hand.length;
-
     state = {
       ...state,
       currentTurnIndex: 0,
@@ -181,10 +178,11 @@ describe('Identical Card Combo Play (Pair Stacking)', () => {
       discardPile: [topCard],
       players: [
         { ...state.players[0], hand: [c1, c2, makeCard('remain', 'blue', '1', 1)] },
-        state.players[1],
+        { ...state.players[1], hand: [makeCard('p2_safe_1', 'green', '4', 4), makeCard('p2_safe_2', 'red', '6', 6)] },
       ],
     };
 
+    const initialP2Count = state.players[1].hand.length;
     const nextState = playPairCards(state, 'p1', c1.id, c2.id, { chosenColor: 'yellow' });
 
     // P2 draws 8 cards
@@ -215,7 +213,7 @@ describe('Identical Card Combo Play (Pair Stacking)', () => {
       discardPile: [topCard],
       players: [
         { ...state.players[0], hand: [c1, c2, makeCard('x', 'red', '1', 1)] },
-        state.players[1],
+        { ...state.players[1], hand: [makeCard('p2_safe', 'blue', '4', 4)] },
         state.players[2],
       ],
     };

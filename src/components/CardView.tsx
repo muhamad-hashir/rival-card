@@ -96,13 +96,24 @@ export const CardView: React.FC<CardViewProps> = ({
   }
 
   const isWild = card.color === 'wild';
+  const isShield = card.value === 'shield';
+  const isMirror = card.value === 'mirror';
   const activeHex =
     activeColor &&
     (COLOR_HEX[activeColor as keyof typeof COLOR_HEX] ||
       (activeColor.startsWith('#') ? activeColor : undefined));
 
   // If wild and an active color is chosen (e.g. on discard pile), tint card face and borders to active color
-  const bgColor = isWild && activeHex ? activeHex : COLOR_HEX[card.color];
+  const customCardBg = isShield ? '#0F2B46' : isMirror ? '#3B1D6E' : COLOR_HEX[card.color];
+  const bgColor = isWild && activeHex ? activeHex : customCardBg;
+  const customBorderColor =
+    isWild && activeHex
+      ? '#FFFFFF'
+      : isShield
+      ? '#FBBF24'
+      : isMirror
+      ? '#DDD6FE'
+      : '#FFFFFF';
   const label = getCardDisplayLabel(card.value);
   const cornerLabel = getCornerDisplayLabel(card.value);
   const actionIcon = ACTION_ICONS[card.value];
@@ -118,7 +129,7 @@ export const CardView: React.FC<CardViewProps> = ({
         {
           backgroundColor: bgColor,
           borderWidth: size === 'small' ? 1.5 : 2,
-          borderColor: isWild && activeHex ? '#FFFFFF' : '#FFFFFF',
+          borderColor: customBorderColor,
         },
         isPlayable && !disabled && styles.playableCard,
         (!isPlayable || disabled) && styles.unplayableCard,
@@ -126,6 +137,10 @@ export const CardView: React.FC<CardViewProps> = ({
         style,
       ]}
     >
+      {/* Subtle Cosmic / Arcane Corner Accent */}
+      {isShield && !activeHex && <View style={styles.shieldCosmicHalo} pointerEvents="none" />}
+      {isMirror && !activeHex && <View style={styles.mirrorArcaneHalo} pointerEvents="none" />}
+
       {/* Outer Inner Container */}
       <View
         style={[
@@ -145,12 +160,22 @@ export const CardView: React.FC<CardViewProps> = ({
           style={[
             styles.centerOval,
             dimensions.centerOval,
+            isShield && !activeHex ? styles.shieldCenterOval : null,
+            isMirror && !activeHex ? styles.mirrorCenterOval : null,
             isWild && activeHex ? { borderWidth: 2.5, borderColor: activeHex } : null,
           ]}
         >
           {card.value === 'reverse' ? (
             <View style={styles.actionIconContainer}>
               <ReverseArrowsMotif size={size} color={bgColor} />
+            </View>
+          ) : isShield ? (
+            <View style={styles.actionIconContainer}>
+              <ShieldEmblemMotif size={size} />
+            </View>
+          ) : isMirror ? (
+            <View style={styles.actionIconContainer}>
+              <MirrorEmblemMotif size={size} />
             </View>
           ) : actionIcon && !imageError ? (
             <View style={styles.actionIconContainer}>
@@ -245,6 +270,10 @@ function getCardDisplayLabel(value: string): string {
       return 'MUTE';
     case 'rival_swap':
       return 'SWAP';
+    case 'shield':
+      return 'SHIELD';
+    case 'mirror':
+      return 'MIRROR';
     default:
       return value;
   }
@@ -266,6 +295,10 @@ function getCornerDisplayLabel(value: string): string {
       return '🔇';
     case 'rival_swap':
       return '🔄';
+    case 'shield':
+      return '🛡️';
+    case 'mirror':
+      return '🪞';
     default:
       return value;
   }
@@ -342,6 +375,94 @@ const ReverseArrowsMotif: React.FC<{ size: 'small' | 'medium' | 'large'; color: 
           ]}
         />
       </View>
+    </View>
+  );
+};
+
+// Golden Sun-Crest Shield emblem for Shield card
+const ShieldEmblemMotif: React.FC<{ size: 'small' | 'medium' | 'large' }> = ({ size }) => {
+  const isSmall = size === 'small';
+  const isLarge = size === 'large';
+  const shieldW = isSmall ? 14 : isLarge ? 30 : 23;
+  const shieldH = isSmall ? 16 : isLarge ? 34 : 26;
+  const labelSize = isSmall ? 4.5 : isLarge ? 8 : 6.5;
+
+  return (
+    <View style={styles.customEmblemStack}>
+      <View
+        style={[
+          styles.shieldCrestOuter,
+          {
+            width: shieldW,
+            height: shieldH,
+            borderRadius: shieldW * 0.25,
+            borderBottomLeftRadius: shieldW * 0.55,
+            borderBottomRightRadius: shieldW * 0.55,
+            borderWidth: isSmall ? 1.5 : 2.5,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.shieldCrestInnerSun,
+            {
+              width: shieldW * 0.45,
+              height: shieldW * 0.45,
+              borderRadius: shieldW * 0.25,
+            },
+          ]}
+        />
+      </View>
+      {!isSmall && (
+        <Text style={[styles.shieldBadgeLabel, { fontSize: labelSize }]} numberOfLines={1}>
+          SHIELD
+        </Text>
+      )}
+    </View>
+  );
+};
+
+// Ornate Golden Hand-Mirror & Arcane Swirl emblem for Mirror card
+const MirrorEmblemMotif: React.FC<{ size: 'small' | 'medium' | 'large' }> = ({ size }) => {
+  const isSmall = size === 'small';
+  const isLarge = size === 'large';
+  const glassW = isSmall ? 13 : isLarge ? 26 : 20;
+  const glassH = isSmall ? 15 : isLarge ? 30 : 23;
+  const handleW = isSmall ? 3 : isLarge ? 5.5 : 4.5;
+  const handleH = isSmall ? 4 : isLarge ? 9 : 7;
+  const labelSize = isSmall ? 4.5 : isLarge ? 8 : 6.5;
+
+  return (
+    <View style={styles.customEmblemStack}>
+      <View
+        style={[
+          styles.mirrorFrameOuter,
+          {
+            width: glassW,
+            height: glassH,
+            borderRadius: glassW * 0.5,
+            borderWidth: isSmall ? 1.5 : 2.5,
+          },
+        ]}
+      >
+        <View style={styles.mirrorGlassSheen} />
+      </View>
+      <View
+        style={[
+          styles.mirrorHandle,
+          {
+            width: handleW,
+            height: handleH,
+            borderBottomLeftRadius: handleW * 0.5,
+            borderBottomRightRadius: handleW * 0.5,
+          },
+        ]}
+      />
+      {!isSmall && (
+        <Text style={[styles.mirrorBadgeLabel, { fontSize: labelSize }]} numberOfLines={1}>
+          MIRROR
+        </Text>
+      )}
     </View>
   );
 };
@@ -518,5 +639,85 @@ const styles = StyleSheet.create({
   faceDownCard: {
     backgroundColor: '#0F172A',
     borderColor: '#334155',
+  },
+  shieldCosmicHalo: {
+    position: 'absolute',
+    top: -12,
+    right: -12,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(20, 184, 166, 0.28)',
+  },
+  mirrorArcaneHalo: {
+    position: 'absolute',
+    bottom: -12,
+    left: -12,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(196, 181, 253, 0.25)',
+  },
+  shieldCenterOval: {
+    backgroundColor: '#FEF9C3',
+    borderWidth: 2,
+    borderColor: '#F59E0B',
+  },
+  mirrorCenterOval: {
+    backgroundColor: '#F5F3FF',
+    borderWidth: 2,
+    borderColor: '#A78BFA',
+  },
+  customEmblemStack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shieldCrestOuter: {
+    backgroundColor: '#0F766E',
+    borderColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.45,
+    shadowRadius: 3,
+  },
+  shieldCrestInnerSun: {
+    backgroundColor: '#FDE047',
+    borderWidth: 1.5,
+    borderColor: '#FEF9C3',
+  },
+  shieldBadgeLabel: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#0F2B46',
+    marginTop: 2,
+    letterSpacing: 0.3,
+  },
+  mirrorFrameOuter: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  mirrorGlassSheen: {
+    width: '45%',
+    height: '85%',
+    backgroundColor: '#FFFFFF',
+    opacity: 0.75,
+    transform: [{ rotate: '22deg' }],
+    borderRadius: 4,
+  },
+  mirrorHandle: {
+    backgroundColor: '#D97706',
+    borderWidth: 1,
+    borderColor: '#FBBF24',
+    marginTop: -1,
+  },
+  mirrorBadgeLabel: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#4C1D95',
+    marginTop: 1,
+    letterSpacing: 0.3,
   },
 });

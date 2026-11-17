@@ -2,7 +2,7 @@
   "expo": {
     "name": "Rival Card",
     "slug": "rival-card",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "scheme": "rivalcard",
     "orientation": "default",
     "icon": "./assets/icon.png",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.hashir.rivalcard",
-      "versionCode": 3,
+      "versionCode": 4,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#1E1B4B"

@@ -40,7 +40,7 @@ function getAppVersion(): string {
   } catch {
     // Fallback if expo-constants is unavailable in test runner
   }
-  return '1.1.0';
+  return '1.1.1';
 }
 
 export interface SettingsModalProps {

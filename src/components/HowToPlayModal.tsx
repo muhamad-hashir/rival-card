@@ -452,6 +452,32 @@ const PageThreeWildCards: React.FC = () => {
           </View>
         </View>
       </View>
+
+      {/* Defensive Wilds: Shield & Mirror */}
+      <View style={styles.ruleCard}>
+        <Text style={[styles.ruleTitle, { fontSize: 13, marginBottom: 6 }]}>
+          🛡️ Reactive Defense Wilds (3s Window)
+        </Text>
+        <View style={styles.specialCardRow}>
+          <View style={[styles.specialCardItem, { backgroundColor: '#EEF2FF', borderRadius: 10, padding: 6 }]}>
+            <Text style={{ fontSize: 20 }}>🛡️</Text>
+            <Text style={styles.specialCardLabel}>
+              <Text style={styles.textHighlightDark}>Shield:</Text> Play as Wild OR react in 3s to block +2/+4 penalties!
+            </Text>
+          </View>
+          <View style={[styles.specialCardItem, { backgroundColor: '#F5F3FF', borderRadius: 10, padding: 6 }]}>
+            <Text style={{ fontSize: 20 }}>🪞</Text>
+            <Text style={styles.specialCardLabel}>
+              <Text style={styles.textHighlightDark}>Mirror:</Text> Play as Wild OR reflect +2/+4/Skip/Mute/Swap back!
+            </Text>
+          </View>
+        </View>
+        <View style={[styles.proTipBadge, { marginTop: 6, backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }]}>
+          <Text style={[styles.proTipText, { color: '#5B21B6' }]}>
+            🪞 Counter-Mirror: If the attacker also holds a Mirror, they can cancel your reflection so the original penalty hits you instead (both Mirrors are spent, with no further bounces).
+          </Text>
+        </View>
+      </View>
     </View>
   );
 };

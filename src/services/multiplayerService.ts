@@ -113,6 +113,7 @@ export interface TauntMessage {
   emoji: string;
   senderId: string;
   senderName: string;
+  senderAvatarId?: string;
   timestamp: number;
 }
 
@@ -606,6 +607,7 @@ export class MultiplayerService {
       emoji,
       senderId: this.myPlayer.id,
       senderName: this.myPlayer.name,
+      senderAvatarId: this.myPlayer.avatarId,
       timestamp: Date.now(),
     };
 

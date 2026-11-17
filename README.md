@@ -11,24 +11,27 @@
 
 ## 🎮 Core Gameplay Mechanics
 
-### 1. The 108-Card Engine
+### 1. The 112-Card Engine
 - **Number Cards (0–9)**: Four vibrant colors (**Ruby Red**, **Electric Blue**, **Emerald Green**, **Golden Yellow**).
 - **Standard Action Cards**:
   - 🚫 **Skip**: Silences the next player's turn.
   - 🔁 **Reverse**: Inverts turn order (acts as a Skip in 1v1 duels).
-  - ➕ **Draw 2**: Forces the victim to draw 2 cards and forfeits their turn.
+  - ➕ **Draw 2**: Forces the victim to draw 2 cards and forfeits their turn (supports **+2 Stacking**).
 - **Wild Cards**:
   - 🌈 **Wild**: Freely change the active table color.
-  - 💥 **Wild Draw 4**: Force a 4-card draw, change table color, and skip the next player.
-- **Special Rival Cards**:
+  - 💥 **Wild Draw 4**: Force a 4-card draw, change table color, and skip the next player (supports **+4 Stacking**).
+- **Special & Reactive Rival Cards**:
   - 🔇 **Mute**: Silences a targeted player for 1 round, preventing taunts and skipping their turn.
-  - 🔄 **RivalSwap**: Swaps your current hand with whichever opponent currently holds the fewest cards.
+  - 🔄 **RivalSwap**: Swaps your hand using a smart 3-tier selector (fewest cards → highest hand strength → earliest in active turn order).
+  - 🛡️ **Shield**: Play as a Wild color-changer on your turn, OR react within a **3-second Defense Window** to block any incoming `+2` / `+4` / stacked draw penalty completely while preserving active color!
+  - 🪞 **Mirror**: Play as a Wild color-changer on your turn, OR react within **3 seconds** to reflect `+2`, `+4`, `Skip`, `Mute`, or `RivalSwap` back onto the attacker! Includes the **Counter-Mirror** rule (attacker holding Mirror gets one 3s bounce-cancel window; max 1 bounce).
 
-### 2. Multi-Card Identical Combos
-Have two or more identical cards in your hand (same color AND same value)? Play them simultaneously in one swift combo move! Dump your hand faster and swing the game momentum in your favor.
+### 2. Multi-Card Identical Combos & Draw Stacking
+- Have two or more identical cards in your hand (same color AND same value)? Play them simultaneously in one swift combo move! Dump your hand faster and swing the game momentum in your favor.
+- Chain `+2 → +4 → +6 → +8` or `+4 → +8` when Draw Card Stacking is active—or tap **Take Cards** / **Use Shield** / **Use Mirror** to survive the blast!
 
 ### 3. The 2.5s "CATCH RIVAL!" Penalty Window
-- When a player plays down to their **last remaining card**, they must declare **RIVAL!**.
+- When holding **2 cards** on your turn, tap **RIVAL!** before playing down to **1 card** (re-armed every time your hand returns to 2 cards).
 - Forgot to call it? All other opponents have an active **2.5-second vulnerability window** to tap **CATCH!** and slap a **+2 card penalty** onto the careless player.
 - Reactive bots will catch careless players with heuristic reaction delays (1.2s to 2.2s).
 
@@ -38,24 +41,25 @@ Have two or more identical cards in your hand (same color AND same value)? Play 
 
 | Mode | Connectivity | Description |
 | :--- | :--- | :--- |
-| 🤖 **Play VS Bot** | **100% Offline** | Instant offline battle against smart heuristic AI bots (1v1 duel or 4-player brawl). Adjustable bot speeds! |
+| 🤖 **Play VS Bot** | **100% Offline** | Instant offline battle against smart heuristic AI bots (1v1 duel, 3-player, or 4-player brawl) with Shield/Mirror AI defense! |
 | 👥 **Pass & Play** | **100% Offline** | Couch multiplayer on a single physical device with an automatic privacy veil between player turns. |
-| ⚡ **Quick Match** | **Online** | Instant matchmaking queue with 12s automatic fallback to RivalBot if no humans are in queue. |
-| 🌐 **Custom Rooms** | **Online** | Host or join private multiplayer lobbies with 4-digit room codes powered by Supabase WebSockets. |
+| ⚡ **Quick Match** | **Online** | Instant public matchmaking queue with 12s automatic fallback to RivalBot; human-vs-human matches record Career Statistics. |
+| 🌐 **Custom Rooms (5-Match Series)** | **Online** | Host or join private 4-digit room lobbies featuring a 5-match cumulative series scorecard, live taunts, and per-round leave/rematch flow. |
 
 ---
 
 ## 🔊 Dynamic Audio & Sound Effects Engine
 
-The game features an arcade sound system managed by `audioService`:
-- **Adaptive Background Music**: Seamlessly cross-fades between the upbeat Menu BGM (`background.mp3`) and suspenseful Match BGM (`match-background.mp3`).
-- **Dedicated Action SFX**:
-  - 📣 `rival_shout.mp3` — Heart-pumping shout upon declaring RIVAL!
+The game features a dual-channel arcade audio system powered by `expo-audio` (`audioService` & `soundService`):
+- **Adaptive Background Music**: Seamlessly cross-fades between upbeat Menu BGM (`background.mp3`) and Match BGM (`match-background.mp3`).
+- **Dedicated Action SFX (Deduplicated Per-Play)**:
+  - 📣 `rival_shout.mp3` — Broadcasted "RIVAL!" shout heard by opponents as well as the caller.
   - 🎨 `color-change.mp3` — High-pitch tinting when choosing a Wild color.
   - 💥 `plus-four.mp3` & `plus-two.mp3` — Punchy impact on penalty draws.
   - 🚫 `skip.mp3` & 🔁 `reverse.mp3` — Snappy card action cues.
   - 🔄 `swap.mp3` — Swift whoosh during RivalSwap hand transfers.
   - 🔇 `mute.mp3` — Action modifier cue when silencing rivals.
+  - 🛡️ **Shield Block & 🪞 Mirror Reflect**: Synthesized metallic cosmic shield chime and crystalline arcane deflection chime triggered cleanly once per defense event.
 
 ---
 
@@ -100,7 +104,7 @@ To prevent automated grinding while rewarding competitive multiplayer skill, Riv
 
 ## 📱 Immersive Mobile Experience & UX Polish
 
-- **Sticky-Immersive Fullscreen Mode**: Android system bars and navigation bars are hidden on boot (`overlay-swipe` behavior) with settle-delay retries (300ms, 1000ms) on AppState transitions, ensuring system bars stay hidden even when returning from external intents or email links.
+- **Sticky-Immersive Fullscreen Mode**: Android system bars and navigation bars are hidden via the `expo-navigation-bar` config plugin and runtime visibility listeners (including Huawei EMUI/Android 9–10 focus, orientation, and translucent modal safeguards), keeping fullscreen mode intact across screen switches and external intents.
 - **Profanity-Filtered Username Editor**:
   - Independent typing buffer allows clearing and editing names freely.
   - Enforces minimum 3 characters and maximum 16 characters.
@@ -121,26 +125,28 @@ rival-card/
 │   └── card_back.png          # Rendered card back design
 ├── src/
 │   ├── components/            # Reusable UI components & modals
-│   │   ├── CardView.tsx       # 2D card presentation with 3D gloss highlights
+│   │   ├── CardView.tsx       # 2D card presentation with custom Shield/Mirror & 3D gloss highlights
+│   │   ├── DefenseReactionModal.tsx # 3-second reactive Shield/Mirror defense overlay
 │   │   ├── DraggableCard.tsx  # Smooth flick & play gesture handler
 │   │   ├── ErrorBoundary.tsx  # Global crash interceptor & recovery UI
 │   │   ├── ErrorToast.tsx     # Cartoon toast alert banners
 │   │   ├── GameOverModal.tsx  # Winner celebration modal with confetti
+│   │   ├── PrivateSeriesModal.tsx # 5-Match Series scorecard & between-round hub
 │   │   ├── SettingsModal.tsx  # Sound, music, haptics, and account controls
 │   │   └── ...
 │   ├── screens/
 │   │   ├── HomeScreen.tsx     # Main hub, profile banner, modes & cosmetics
-│   │   ├── GameScreen.tsx     # Main table arena, turn timer, opponent docks
+│   │   ├── GameScreen.tsx     # Main table arena, turn timer, floating HUD & opponent docks
 │   │   └── LoadingScreen.tsx  # Comic sunburst animated launch screen
 │   ├── services/
-│   │   ├── audioService.ts    # Dual-channel BGM and action SFX engine
+│   │   ├── audioService.ts    # Dual-channel BGM and action/synthesized SFX engine
 │   │   ├── networkService.ts  # Cross-platform ping connectivity checker
 │   │   ├── supabase.ts        # Supabase Realtime & Auth client
 │   │   ├── settingsService.ts # Local preferences persistence (AsyncStorage)
 │   │   └── ...
-│   ├── gameEngine.ts          # Pure functional game rules & AI heuristics
+│   ├── gameEngine.ts          # Pure functional game rules, defense engine & AI heuristics
 │   ├── types.ts               # Universal TypeScript types & interfaces
-│   └── __tests__/             # Comprehensive unit test suite (150+ tests)
+│   └── __tests__/             # Comprehensive unit test suite (220+ tests)
 ├── eas.json                   # EAS Build profiles (Universal Multi-ABI APK)
 ├── app.json                   # Expo application manifest
 └── package.json               # Dependencies and build scripts
@@ -218,7 +224,7 @@ npx eas build -p android --profile preview
 - **Languages & Typing**: TypeScript 6.0
 - **Animations & Physics**: React Native Reanimated 4, React Native Gesture Handler 3
 - **Multiplayer & Storage**: Supabase Realtime WebSocket Channels & PostgreSQL Auth
-- **Audio & Media**: Expo AV, Web Audio API
+- **Audio & Media**: Expo Audio (`expo-audio`), Web Audio API
 - **Testing**: Node.js Test Runner (`node:test`) & `tsx`
 
 ---

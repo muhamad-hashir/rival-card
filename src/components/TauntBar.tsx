@@ -10,9 +10,11 @@ import {
   View,
 } from 'react-native';
 import { multiplayerService, TauntMessage } from '../services/supabase';
+import { getAvatarConfig } from '../services/playerProfileService';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
+import type { Player } from '../types';
 
 const TAUNT_EMOJIS = ['🔥', '⚡', '😂', '😭', '😱', '👑', '🃏', '💥', '🛡️', '😈', '👋'];
 
@@ -21,15 +23,17 @@ export const TAUNT_TOAST_TOP_OFFSET = 36;
 interface TauntToastBannerProps {
   activeTaunt: TauntMessage | null;
   inline?: boolean;
+  players?: readonly Pick<Player, 'id' | 'avatarId'>[];
 }
 
 /**
  * Dynamically sized active taunt popup banner matching the Rival Card game board HUD.
- * Auto-sizes to fit the full sender username and emoji without fixed narrow clipping.
+ * Displays the sender's avatar in the circular badge and the taunt emoji once beside their name.
  */
 export const TauntToastBanner: React.FC<TauntToastBannerProps> = ({
   activeTaunt,
   inline = false,
+  players,
 }) => {
   const [slideAnim] = useState(() => new Animated.Value(-8));
   const [opacityAnim] = useState(() => new Animated.Value(0));
@@ -74,6 +78,9 @@ export const TauntToastBanner: React.FC<TauntToastBannerProps> = ({
 
   if (!activeTaunt) return null;
 
+  const matchedPlayer = players?.find((p) => p.id === activeTaunt.senderId);
+  const avatarConfig = getAvatarConfig(activeTaunt.senderAvatarId || matchedPlayer?.avatarId);
+
   return (
     <View
       style={inline ? styles.inlineToastAnchor : styles.boardToastOverlay}
@@ -88,8 +95,13 @@ export const TauntToastBanner: React.FC<TauntToastBannerProps> = ({
           },
         ]}
       >
-        <View style={styles.toastEmojiBubble}>
-          <Text style={styles.toastEmoji}>{activeTaunt.emoji}</Text>
+        <View
+          style={[
+            styles.toastEmojiBubble,
+            { backgroundColor: avatarConfig.bgColor },
+          ]}
+        >
+          <Text style={styles.toastEmoji}>{avatarConfig.emoji}</Text>
         </View>
         <Text style={styles.toastText}>
           <Text style={styles.toastSender}>{activeTaunt.senderName}</Text>

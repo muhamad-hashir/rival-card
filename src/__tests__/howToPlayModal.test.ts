@@ -60,7 +60,7 @@ describe('Interactive Book-Style Rulebook Modal Specifications', () => {
     assert.ok(ch2.topics.some((t) => t.includes('1v1 Draw Two')));
   });
 
-  test('Chapter 3 covers Wild Cards, 4 Colors, Wild Draw 4, Mute, and Rival Swap', () => {
+  test('Chapter 3 covers Wild Cards, 4 Colors, Wild Draw 4, Mute, Rival Swap, Shield, and Mirror', () => {
     const ch3 = RULEBOOK_CHAPTERS.find((c) => c.page === 3);
     assert.ok(ch3, 'Chapter 3 must exist');
     assert.ok(ch3.topics.some((t) => t.includes('Wild Card')));
@@ -68,6 +68,9 @@ describe('Interactive Book-Style Rulebook Modal Specifications', () => {
     assert.ok(ch3.topics.some((t) => t.includes('Red, Blue, Green, Yellow')));
     assert.ok(ch3.topics.some((t) => t.includes('Mute')));
     assert.ok(ch3.topics.some((t) => t.includes('Rival Swap')));
+    assert.ok(ch3.topics.some((t) => t.includes('Shield')));
+    assert.ok(ch3.topics.some((t) => t.includes('Mirror')));
+    assert.ok(ch3.topics.some((t) => t.includes('Counter-Mirror: If the attacker also holds a Mirror')));
   });
 
   test('Chapter 4 covers RIVAL! Shout, 2.5s Catch Window, +2 Penalty, and Economy Rewards', () => {

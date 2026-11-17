@@ -32,6 +32,7 @@ describe('Pass & Play 1v1 Turn Hand-off Optimization', () => {
       scoreValue: 20,
     };
     game.players[0].hand = [skipCard, DUMMY_EXTRA_CARD];
+    game.players[1].hand = [{ id: 'p2_num', color: 'yellow', value: '3', scoreValue: 3 }];
 
     const nextState = playCard(game, 'p1', 'test_skip');
 
@@ -90,6 +91,7 @@ describe('Pass & Play 1v1 Turn Hand-off Optimization', () => {
       scoreValue: 20,
     };
     game.players[0].hand = [draw2Card, DUMMY_EXTRA_CARD];
+    game.players[1].hand = [{ id: 'p2_num', color: 'yellow', value: '3', scoreValue: 3 }];
     const p2InitialHandCount = game.players[1].hand.length;
 
     const nextState = playCard(game, 'p1', 'test_draw2');

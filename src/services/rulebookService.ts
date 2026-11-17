@@ -54,13 +54,16 @@ export const RULEBOOK_CHAPTERS: readonly RulebookChapter[] = [
     page: 3,
     badge: '🌈 CHAPTER 3',
     title: 'Wilds & Specials',
-    subtitle: 'Wild Card, Wild Draw 4, Mute & Rival Swap',
+    subtitle: 'Wild, +4, Mute, Swap, Shield & Mirror',
     topics: [
       'Wild Card: Playable on any turn; choose the active color',
       '4 Colors: Red, Blue, Green, Yellow',
       'Wild Draw 4 (+4): Choose color + force next player to draw 4 and skip',
       'Mute: Silences an opponent, skipping their turn',
       'Rival Swap: Swaps your hand with the player holding the fewest cards',
+      'Shield: Play as a Wild OR react in 3s to block +2/+4 draw penalties!',
+      'Mirror: Play as a Wild OR react in 3s to reflect +2/+4/Skip/Mute/Swap back.',
+      'Counter-Mirror: If the attacker also holds a Mirror, they can cancel your reflection so the original penalty hits you instead (both Mirrors are spent, with no further bounces).',
     ],
   },
   {
