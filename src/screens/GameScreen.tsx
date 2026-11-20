@@ -598,6 +598,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     if (gameState.isGameOver && !hasRecordedResultRef.current) {
       hasRecordedResultRef.current = true;
       clearActiveMatchSession().catch(() => {});
+      if (isOnlineMode && !gameState.seriesState?.isPrivateSeries) {
+        multiplayerService.cleanupFinishedRoom().catch(() => {});
+      }
       const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
       const turns = gameState.turnCount;
 

@@ -131,6 +131,24 @@ export const DAILY_BOT_STORAGE_KEY = '@rivalcard:daily_bot_earnings';
 export const RECORDED_MATCHES_STORAGE_KEY = '@rivalcard:recorded_career_matches';
 export const DAILY_BOT_COIN_CAP = 100;
 
+export const CLOUD_REFRESH_TTL_MS = 45_000;
+export const LEADERBOARD_TTL_MS = 45_000;
+
+export const PROFILE_STATS_SELECT_COLUMNS = 'id,games_played,wins,win_streak';
+export const PROFILE_LINK_SELECT_COLUMNS =
+  'id,email,nickname,avatar_id,level,current_xp,xp_to_next_level,coins,gems,games_played,wins,win_streak';
+export const LEADERBOARD_SELECT_COLUMNS = 'id,nickname,avatar_id,level,coins,wins,win_streak';
+
+export interface LeaderboardEntry {
+  id: string;
+  nickname: string;
+  avatarId: string;
+  level: number;
+  coins: number;
+  wins: number;
+  winStreak: number;
+}
+
 export interface DailyBotEarnings {
   date: string; // YYYY-MM-DD
   coinsEarned: number;
@@ -236,6 +254,10 @@ function getShopService(): any {
 class PlayerProfileService {
   private cachedProfile: PlayerProfile | null = null;
   private listeners: Set<(profile: PlayerProfile) => void> = new Set();
+  private lastCloudRefreshAt: number = 0;
+  private cloudRefreshInFlight: Promise<PlayerProfile> | null = null;
+  private leaderboardCache: Map<string, { entries: LeaderboardEntry[]; fetchedAt: number }> =
+    new Map();
 
   /**
    * Subscribe to profile updates. Returns an unsubscribe function.
@@ -455,74 +477,168 @@ class PlayerProfileService {
 
   /**
    * Refresh Career Statistics and progression from Supabase for authenticated sessions.
+   * Uses a 45s TTL cache & in-flight deduplication to minimize egress on repeated opens.
    * Merges monotonically so offline local increments are preserved and never reset to 0.
    */
-  public async refreshFromCloudIfAuthenticated(): Promise<PlayerProfile> {
+  public async refreshFromCloudIfAuthenticated(
+    forceRefresh: boolean = false
+  ): Promise<PlayerProfile> {
     const local = await this.getProfile(true);
+    if (local.isGuest) {
+      return local;
+    }
+
+    const now = Date.now();
+    if (!forceRefresh && this.lastCloudRefreshAt > 0 && now - this.lastCloudRefreshAt < CLOUD_REFRESH_TTL_MS) {
+      return local;
+    }
+
+    if (this.cloudRefreshInFlight) {
+      return this.cloudRefreshInFlight;
+    }
+
+    const runRefresh = async (): Promise<PlayerProfile> => {
+      let sessionTimer: ReturnType<typeof setTimeout> | undefined;
+      let fetchTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const { data: sessionData } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<any>((_, reject) => {
+            sessionTimer = setTimeout(() => reject(new Error('session timeout')), 2000);
+          }),
+        ]).finally(() => {
+          if (sessionTimer) clearTimeout(sessionTimer);
+        });
+
+        const userId = sessionData?.session?.user?.id;
+        if (!userId) return local;
+
+        const { data: remoteProfile } = await Promise.race([
+          supabase
+            .from('profiles')
+            .select(PROFILE_STATS_SELECT_COLUMNS)
+            .eq('id', userId)
+            .maybeSingle(),
+          new Promise<any>((_, reject) => {
+            fetchTimer = setTimeout(() => reject(new Error('profile fetch timeout')), 2500);
+          }),
+        ]).finally(() => {
+          if (fetchTimer) clearTimeout(fetchTimer);
+        });
+
+        this.lastCloudRefreshAt = Date.now();
+        if (!remoteProfile) return local;
+
+        const remoteGamesPlayed =
+          typeof (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed) === 'number'
+            ? (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed)
+            : 0;
+        const remoteWins =
+          typeof (remoteProfile.wins ?? remoteProfile.stats?.wins) === 'number'
+            ? (remoteProfile.wins ?? remoteProfile.stats?.wins)
+            : 0;
+        const remoteWinStreak =
+          typeof (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak) === 'number'
+            ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
+            : 0;
+
+        const gamesPlayed = Math.max(local.stats.gamesPlayed, remoteGamesPlayed);
+        const wins = Math.max(local.stats.wins, remoteWins);
+        const losses = Math.max(
+          local.stats.losses ?? 0,
+          Math.max(0, gamesPlayed - wins)
+        );
+        const winStreak =
+          remoteGamesPlayed > local.stats.gamesPlayed ? remoteWinStreak : local.stats.winStreak;
+        const bestStreak = Math.max(
+          local.stats.bestStreak ?? 0,
+          remoteWinStreak,
+          winStreak
+        );
+
+        const merged: PlayerProfile = {
+          ...local,
+          stats: normalizePlayerStats({
+            gamesPlayed,
+            wins,
+            losses,
+            winStreak,
+            bestStreak,
+            rivalCalls: local.stats.rivalCalls ?? 0,
+          }),
+        };
+
+        this.cachedProfile = merged;
+        await persistProfile(merged);
+        this.notify();
+
+        if (local.stats.gamesPlayed > remoteGamesPlayed) {
+          await this.syncProfileToCloud(merged);
+        }
+
+        return merged;
+      } catch {
+        return local;
+      } finally {
+        this.cloudRefreshInFlight = null;
+      }
+    };
+
+    this.cloudRefreshInFlight = runRefresh();
+    return this.cloudRefreshInFlight;
+  }
+
+  /**
+   * Fetch indexed leaderboard entries using explicit column projection and a 45s TTL cache.
+   */
+  public async fetchLeaderboardTopPlayers(
+    sortBy: 'coins' | 'wins' = 'coins',
+    limit: number = 25,
+    forceRefresh: boolean = false
+  ): Promise<LeaderboardEntry[]> {
+    const safeLimit = Math.max(1, Math.min(50, limit));
+    const cacheKey = `${sortBy}:${safeLimit}`;
+    const cached = this.leaderboardCache.get(cacheKey);
+    const now = Date.now();
+
+    if (!forceRefresh && cached && now - cached.fetchedAt < LEADERBOARD_TTL_MS) {
+      return cached.entries;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const { data: sessionData } = await Promise.race([
-        supabase.auth.getSession(),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('session timeout')), 2000)),
-      ]);
-      const userId = sessionData?.session?.user?.id;
-      if (!userId) return local;
-
-      const { data: remoteProfile } = await Promise.race([
-        supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('profile fetch timeout')), 2500)),
-      ]);
-      if (!remoteProfile) return local;
-
-      const remoteGamesPlayed =
-        typeof (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed) === 'number'
-          ? (remoteProfile.games_played ?? remoteProfile.stats?.gamesPlayed)
-          : 0;
-      const remoteWins =
-        typeof (remoteProfile.wins ?? remoteProfile.stats?.wins) === 'number'
-          ? (remoteProfile.wins ?? remoteProfile.stats?.wins)
-          : 0;
-      const remoteWinStreak =
-        typeof (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak) === 'number'
-          ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
-          : 0;
-
-      const gamesPlayed = Math.max(local.stats.gamesPlayed, remoteGamesPlayed);
-      const wins = Math.max(local.stats.wins, remoteWins);
-      const losses = Math.max(
-        local.stats.losses ?? 0,
-        Math.max(0, gamesPlayed - wins)
-      );
-      const winStreak =
-        remoteGamesPlayed > local.stats.gamesPlayed ? remoteWinStreak : local.stats.winStreak;
-      const bestStreak = Math.max(
-        local.stats.bestStreak ?? 0,
-        remoteWinStreak,
-        winStreak
-      );
-
-      const merged: PlayerProfile = {
-        ...local,
-        stats: normalizePlayerStats({
-          gamesPlayed,
-          wins,
-          losses,
-          winStreak,
-          bestStreak,
-          rivalCalls: local.stats.rivalCalls ?? 0,
+      const { data, error } = await Promise.race([
+        supabase
+          .from('profiles')
+          .select(LEADERBOARD_SELECT_COLUMNS)
+          .eq('is_guest', false)
+          .order(sortBy, { ascending: false })
+          .limit(safeLimit),
+        new Promise<any>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('leaderboard timeout')), 2500);
         }),
-      };
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
 
-      this.cachedProfile = merged;
-      await persistProfile(merged);
-      this.notify();
-
-      if (local.stats.gamesPlayed > remoteGamesPlayed) {
-        await this.syncProfileToCloud(merged);
+      if (error || !Array.isArray(data)) {
+        return cached?.entries ?? [];
       }
 
-      return merged;
+      const entries: LeaderboardEntry[] = data.map((row: any) => ({
+        id: String(row.id || ''),
+        nickname: String(row.nickname || 'Player'),
+        avatarId: String(row.avatar_id || 'avatar_1'),
+        level: typeof row.level === 'number' ? row.level : 1,
+        coins: typeof row.coins === 'number' ? row.coins : 0,
+        wins: typeof row.wins === 'number' ? row.wins : 0,
+        winStreak: typeof row.win_streak === 'number' ? row.win_streak : 0,
+      }));
+
+      this.leaderboardCache.set(cacheKey, { entries, fetchedAt: Date.now() });
+      return entries;
     } catch {
-      return local;
+      return cached?.entries ?? [];
     }
   }
 
@@ -764,6 +880,9 @@ class PlayerProfileService {
     await storageRemove(DAILY_BOT_STORAGE_KEY);
     await storageRemove(RECORDED_MATCHES_STORAGE_KEY);
     this.cachedProfile = null;
+    this.lastCloudRefreshAt = 0;
+    this.cloudRefreshInFlight = null;
+    this.leaderboardCache.clear();
     return this.getProfile(true);
   }
 
@@ -849,7 +968,7 @@ class PlayerProfileService {
         const { data, error } = await Promise.race([
           supabase
             .from('profiles')
-            .select('*')
+            .select(PROFILE_LINK_SELECT_COLUMNS)
             .eq('id', authUser.id)
             .maybeSingle(),
           new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
@@ -1095,6 +1214,8 @@ class PlayerProfileService {
 
     // 3. Write merged profile back to local AsyncStorage and notify all active player state stores / contexts
     this.cachedProfile = merged;
+    this.lastCloudRefreshAt = 0;
+    this.leaderboardCache.clear();
     await persistProfile(merged);
     this.notify();
 
@@ -1149,6 +1270,9 @@ class PlayerProfileService {
       isGuest: true,
     };
     this.cachedProfile = cleanGuest;
+    this.lastCloudRefreshAt = 0;
+    this.cloudRefreshInFlight = null;
+    this.leaderboardCache.clear();
     await persistProfile(cleanGuest);
     await storageRemove('@rivalcard:active_online_match');
     await storageRemove(RECORDED_MATCHES_STORAGE_KEY);
@@ -1191,6 +1315,9 @@ class PlayerProfileService {
       isGuest: true,
     };
     this.cachedProfile = freshGuest;
+    this.lastCloudRefreshAt = 0;
+    this.cloudRefreshInFlight = null;
+    this.leaderboardCache.clear();
     await persistProfile(freshGuest);
     this.notify();
     return freshGuest;

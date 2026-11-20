@@ -32,6 +32,112 @@ export function stampOnlineMatchTimer(state: GameState, nowMs: number = Date.now
 export const ACTIVE_MATCH_STORAGE_KEY = '@rivalcard:active_online_match';
 export const MIN_ROOM_PLAYERS = 2;
 export const MAX_ROOM_PLAYERS = 4;
+export const STALE_ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+export const STALE_ROOM_CLEANUP_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_BROADCAST_LOGS = 3;
+const DEFENSE_BANNER_TTL_MS = 10_000;
+
+let lastStaleRoomSweepAt = 0;
+
+export function resetStaleRoomCleanupCooldown(): void {
+  lastStaleRoomSweepAt = 0;
+}
+
+/**
+ * Compacts a GameState snapshot prior to Supabase Realtime broadcast:
+ * - Caps `logs` to the 3 most recent entries and drops nested `card` objects to avoid O(turns^2) egress bloat.
+ * - Clears inactive transient fields (`drawnCard`, `pendingWildCard`, expired defense banners, non-gameover standings).
+ * - Preserves deck, discardPile, player hands, timers, defense, and series state losslessly.
+ */
+export function compactGameStateForBroadcast(
+  state: GameState,
+  nowMs: number = Date.now()
+): GameState {
+  const compactLogs = Array.isArray(state.logs)
+    ? state.logs.slice(-MAX_BROADCAST_LOGS).map(({ card: _card, ...entry }) => entry)
+    : [];
+
+  const compactPrivacyMask = state.privacyMask?.isActive
+    ? state.privacyMask
+    : {
+        isActive: false,
+        targetPlayerId: '',
+        targetPlayerName: '',
+        promptText: '',
+      };
+
+  const activeDefenseBanner =
+    state.lastDefenseBanner && nowMs - state.lastDefenseBanner.timestamp < DEFENSE_BANNER_TTL_MS
+      ? state.lastDefenseBanner
+      : undefined;
+
+  return {
+    ...state,
+    logs: compactLogs,
+    drawnCard: state.hasDrawnThisTurn ? state.drawnCard : null,
+    pendingWildCard: state.pendingColorChoice ? state.pendingWildCard : null,
+    privacyMask: compactPrivacyMask,
+    lastDefenseBanner: activeDefenseBanner,
+    timeoutStandings: state.isGameOver ? state.timeoutStandings : undefined,
+  };
+}
+
+async function runWithRoomTimeout<T>(promise: PromiseLike<T>, timeoutMs: number = 1500): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Deletes a room row from Supabase `rooms` table cleanly (used when finished or empty).
+ * Safe no-op when offline or when `rooms` table is absent.
+ */
+export async function deleteRoomRecord(roomCode: string): Promise<void> {
+  const cleanCode = roomCode?.trim();
+  if (!cleanCode) return;
+  await runWithRoomTimeout(supabase.from('rooms').delete().eq('code', cleanCode));
+}
+
+/**
+ * Marks/removes a completed room immediately so finished matches never bloat database storage.
+ */
+export async function markRoomFinished(roomCode: string): Promise<void> {
+  await deleteRoomRecord(roomCode);
+}
+
+/**
+ * Sweeps finished, empty, or abandoned (> 2 hours old) rooms from Supabase `rooms`.
+ * Throttled by STALE_ROOM_CLEANUP_COOLDOWN_MS unless `force = true`.
+ */
+export async function cleanupStaleRooms(
+  maxAgeMs: number = STALE_ROOM_MAX_AGE_MS,
+  force: boolean = false
+): Promise<boolean> {
+  const now = Date.now();
+  if (!force && lastStaleRoomSweepAt > 0 && now - lastStaleRoomSweepAt < STALE_ROOM_CLEANUP_COOLDOWN_MS) {
+    return false;
+  }
+  lastStaleRoomSweepAt = now;
+  const cutoffIso = new Date(now - maxAgeMs).toISOString();
+
+  await runWithRoomTimeout(
+    supabase
+      .from('rooms')
+      .delete()
+      .or(`status.eq.finished,player_count.lte.0,created_at.lt.${cutoffIso}`)
+  );
+  return true;
+}
 
 /**
  * Pure helper to add or update a player in a private room while enforcing MAX_ROOM_PLAYERS.
@@ -246,6 +352,9 @@ export class MultiplayerService {
 
     // Cache active session
     await saveActiveMatchSession(code, playerInfo.id);
+
+    // Opportunistic throttled sweep of stale/finished rooms (>2h old) without blocking lobby start
+    cleanupStaleRooms().catch(() => {});
 
     this.setStatus('connecting');
     this.setupChannel(code, true);
@@ -552,7 +661,7 @@ export class MultiplayerService {
         type: 'broadcast',
         event: 'state_snapshot',
         payload: {
-          state,
+          state: compactGameStateForBroadcast(state),
           targetId: targetPlayerId,
           senderId: this.myPlayer?.id,
         },
@@ -585,7 +694,7 @@ export class MultiplayerService {
   public async startGame(initialState: GameState): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'connected') return;
 
-    const syncedState = stampOnlineMatchTimer(initialState);
+    const syncedState = compactGameStateForBroadcast(stampOnlineMatchTimer(initialState));
     try {
       await this.channel.send({
         type: 'broadcast',
@@ -606,12 +715,16 @@ export class MultiplayerService {
   ): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'connected') return;
 
+    if (state.isGameOver && !state.seriesState?.isPrivateSeries && this.currentRoomCode) {
+      markRoomFinished(this.currentRoomCode).catch(() => {});
+    }
+
     try {
       await this.channel.send({
         type: 'broadcast',
         event: 'game_state_action',
         payload: {
-          state,
+          state: compactGameStateForBroadcast(state),
           senderId: this.myPlayer?.id || '',
           actionDescription,
         },
@@ -681,7 +794,7 @@ export class MultiplayerService {
   ): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'connected') return;
 
-    const syncedState = stampOnlineMatchTimer(nextState);
+    const syncedState = compactGameStateForBroadcast(stampOnlineMatchTimer(nextState));
     try {
       await this.channel.send({
         type: 'broadcast',
@@ -694,6 +807,14 @@ export class MultiplayerService {
     } catch (err: any) {
       console.warn('Failed to broadcast series_next_match:', err?.message || err);
     }
+  }
+
+  /**
+   * Cleans up the current room record once a match concludes.
+   */
+  public async cleanupFinishedRoom(): Promise<void> {
+    if (!this.currentRoomCode) return;
+    await markRoomFinished(this.currentRoomCode);
   }
 
   /**
@@ -711,6 +832,10 @@ export class MultiplayerService {
 
     const activeChannel = this.channel;
     const departingPlayer = this.myPlayer;
+    const leavingRoomCode = this.currentRoomCode;
+    const remainingCountAfterLeave = this.roomPlayers.filter(
+      (p) => p.id !== departingPlayer?.id
+    ).length;
 
     this.channel = null;
     this.currentRoomCode = null;
@@ -718,6 +843,10 @@ export class MultiplayerService {
     this.roomPlayers = [];
 
     clearActiveMatchSession().catch(() => {});
+
+    if (leavingRoomCode && (remainingCountAfterLeave === 0 || departingPlayer?.isHost)) {
+      deleteRoomRecord(leavingRoomCode).catch(() => {});
+    }
 
     if (activeChannel) {
       if (departingPlayer) {

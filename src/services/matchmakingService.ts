@@ -1,6 +1,6 @@
 // src/services/matchmakingService.ts - Quick Match 1v1 Auto-Matchmaking Service using Supabase Realtime & Presence
 import { supabase, generateRoomCode, multiplayerService } from './supabase';
-import { stampOnlineMatchTimer } from './multiplayerService';
+import { compactGameStateForBroadcast, stampOnlineMatchTimer } from './multiplayerService';
 import { createGame } from '../gameEngine';
 import type { GameState } from '../types';
 
@@ -235,6 +235,7 @@ export class MatchmakingService {
           'multiplayer'
         )
       );
+      const compactInitialState = compactGameStateForBroadcast(initialState);
 
       try {
         await this.channel.send({
@@ -244,7 +245,7 @@ export class MatchmakingService {
             coordinator: player,
             targetId: opponent.id,
             roomCode,
-            initialState,
+            initialState: compactInitialState,
           },
         });
       } catch (err: any) {
