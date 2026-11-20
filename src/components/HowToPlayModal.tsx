@@ -38,8 +38,6 @@ const ICON_REVERSE = require('../../assets/icons/icon_reverse.png');
 const ICON_DRAW2 = require('../../assets/icons/icon_draw2.png');
 const ICON_WILD = require('../../assets/icons/icon_wild_color_change.png');
 const ICON_WILD_4 = require('../../assets/icons/icon_wild_4.png');
-const ICON_MUTE = require('../../assets/icons/icon_mute.png');
-const ICON_SWAP = require('../../assets/icons/icon_swap.png');
 
 export interface HowToPlayModalProps {
   visible: boolean;
@@ -185,8 +183,8 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({
             >
               {currentPage === 1 && <PageOneBasics />}
               {currentPage === 2 && <PageTwoActionCards />}
-              {currentPage === 3 && <PageThreeWildCards />}
-              {currentPage === 4 && <PageFourRivalShout />}
+              {currentPage === 3 && <PageThreeWildsAndRival />}
+              {currentPage === 4 && <PageFourMatchTimer />}
             </ScrollView>
           </Animated.View>
 
@@ -212,7 +210,7 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({
 
             {/* Dot Pagination Indicators */}
             <View style={styles.dotsContainer}>
-              {[1, 2, 3, 4].map((page) => {
+              {Array.from({ length: RULEBOOK_TOTAL_PAGES }, (_, idx) => idx + 1).map((page) => {
                 const isActive = page === currentPage;
                 return (
                   <TouchableOpacity
@@ -292,26 +290,14 @@ const PageOneBasics: React.FC = () => {
         </View>
       </View>
 
-      {/* Rule 3: Draw Rule */}
+      {/* Rule 3: Draw & Pair Combos */}
       <View style={styles.ruleCard}>
         <View style={styles.ruleHeader}>
           <Text style={styles.ruleIconEmoji}>🃏</Text>
-          <Text style={styles.ruleTitle}>Draw & Pass</Text>
+          <Text style={styles.ruleTitle}>Draw & Pair Combos</Text>
         </View>
         <Text style={styles.ruleBody}>
-          No match in hand? Tap the draw pile to draw <Text style={styles.textHighlightDark}>1 card</Text>.
-          If the drawn card matches, you may play it immediately!
-        </Text>
-      </View>
-
-      {/* Rule 4: 3-Minute Match Clock */}
-      <View style={styles.ruleCard}>
-        <View style={styles.ruleHeader}>
-          <Text style={styles.ruleIconEmoji}>⏱️</Text>
-          <Text style={styles.ruleTitle}>3-Minute Match Timer</Text>
-        </View>
-        <Text style={styles.ruleBody}>
-          Every match runs on a <Text style={styles.textHighlightDark}>3:00 clock</Text>. If time expires before anyone empties their hand, the player with the <Text style={styles.textHighlightGreen}>fewest cards remaining</Text> wins!
+          No match? Tap the deck to draw <Text style={styles.textHighlightDark}>1 card</Text> (playable immediately if valid), or play <Text style={styles.textHighlightGreen}>2 identical cards</Text> together!
         </Text>
       </View>
     </View>
@@ -389,199 +375,102 @@ const PageTwoActionCards: React.FC = () => {
   );
 };
 
-// --- PAGE 3: Wild Cards & Color Picking ---
-const PageThreeWildCards: React.FC = () => {
+// --- PAGE 3: Wilds & RIVAL! Rules ---
+const PageThreeWildsAndRival: React.FC = () => {
   return (
     <View style={styles.pageContainer}>
-      {/* Chapter Subtitle Badge */}
       <View style={[styles.chapterBadge, { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF' }]}>
         <Text style={[styles.chapterBadgeText, { color: '#7E22CE' }]}>
-          🌈 CHAPTER 3 • WILDS & SPECIALS
+          🌈 CHAPTER 3 • WILDS & RIVAL! RULES
         </Text>
       </View>
 
-      {/* Wild 1: Wild Card */}
+      {/* Wild & Wild Draw 4 */}
       <View style={styles.ruleCard}>
         <View style={styles.actionCardRow}>
           <View style={[styles.cardIconBox, { backgroundColor: '#1E293B' }]}>
             <Image source={ICON_WILD} style={styles.actionIconImage} resizeMode="contain" />
           </View>
           <View style={styles.actionInfoCol}>
-            <Text style={styles.actionTitle}>Wild Card</Text>
+            <Text style={styles.actionTitle}>Wild & Wild Draw 4 (+4)</Text>
             <Text style={styles.ruleBodySmall}>
-              Can be played on <Text style={styles.textHighlightDark}>any card</Text>. Pick the active
-              color for the next turn:
+              Play anytime to change the active color. <Text style={styles.textHighlightRed}>+4</Text> forces the next player to draw 4 (or stack another +4!).
             </Text>
-            <View style={styles.colorPillRow}>
-              <View style={[styles.colorDot, { backgroundColor: '#EF4444' }]} />
-              <View style={[styles.colorDot, { backgroundColor: '#3B82F6' }]} />
-              <View style={[styles.colorDot, { backgroundColor: '#22C55E' }]} />
-              <View style={[styles.colorDot, { backgroundColor: '#FACC15' }]} />
-            </View>
           </View>
-        </View>
-      </View>
-
-      {/* Wild 2: Wild Draw 4 */}
-      <View style={styles.ruleCard}>
-        <View style={styles.actionCardRow}>
           <View style={[styles.cardIconBox, { backgroundColor: '#0F172A' }]}>
             <Image source={ICON_WILD_4} style={styles.actionIconImage} resizeMode="contain" />
           </View>
-          <View style={styles.actionInfoCol}>
-            <Text style={styles.actionTitle}>Wild Draw 4 (+4)</Text>
-            <Text style={styles.ruleBodySmall}>
-              Ultimate strike! Changes the active color AND forces the next player to draw 4 cards!
-            </Text>
-            <View style={[styles.stackingTipBadge, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
-              <Text style={[styles.stackingTipTitle, { color: '#DC2626' }]}>💥 +4 STACKING RULE</Text>
-              <Text style={styles.stackingTipBody}>
-                Stack another +4 to pass the penalty (4 → 8)! Or tap 'TAKE CARDS' to defuse voluntarily.
-              </Text>
-            </View>
-          </View>
         </View>
       </View>
 
-      {/* Special Rival Cards: Mute & Swap */}
+      {/* RIVAL! Shout & Catch Window */}
       <View style={styles.ruleCard}>
-        <Text style={[styles.ruleTitle, { fontSize: 13, marginBottom: 6 }]}>
-          ✨ Rival Special Cards
-        </Text>
-        <View style={styles.specialCardRow}>
-          <View style={styles.specialCardItem}>
-            <Image source={ICON_MUTE} style={styles.specialIconImage} resizeMode="contain" />
-            <Text style={styles.specialCardLabel}>
-              <Text style={styles.textHighlightDark}>Mute:</Text> Silences an opponent, skipping their turn.
-            </Text>
-          </View>
-          <View style={styles.specialCardItem}>
-            <Image source={ICON_SWAP} style={styles.specialIconImage} resizeMode="contain" />
-            <Text style={styles.specialCardLabel}>
-              <Text style={styles.textHighlightDark}>Swap:</Text> Trades hand with player having fewest cards!
-            </Text>
-          </View>
+        <View style={styles.ruleHeader}>
+          <Text style={styles.ruleIconEmoji}>📣</Text>
+          <Text style={styles.ruleTitle}>The 'RIVAL!' Call & +2 Catch</Text>
         </View>
+        <Text style={styles.ruleBodySmall}>
+          Tap <Text style={styles.textHighlightGreen}>'RIVAL!'</Text> when playing down to 1 card! If you forget, opponents have <Text style={styles.textHighlightDark}>2.5s</Text> to catch you for <Text style={styles.textHighlightRed}>+2 cards</Text>.
+        </Text>
       </View>
 
-      {/* Defensive Wilds: Shield & Mirror */}
-      <View style={styles.ruleCard}>
-        <Text style={[styles.ruleTitle, { fontSize: 13, marginBottom: 6 }]}>
-          🛡️ Reactive Defense Wilds (3s Window)
+      {/* Special Cards Pointer */}
+      <View style={[styles.ruleCard, { backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }]}>
+        <View style={styles.ruleHeader}>
+          <Text style={styles.ruleIconEmoji}>✨</Text>
+          <Text style={[styles.ruleTitle, { color: '#5B21B6' }]}>Special Cards Catalogue</Text>
+        </View>
+        <Text style={[styles.ruleBodySmall, { color: '#4C1D95' }]}>
+          Open <Text style={styles.textHighlightDark}>Special Cards</Text> on the Home Screen for an interactive showcase of <Text style={styles.textHighlightDark}>Rival Swap, Mute, Shield & Mirror</Text>!
         </Text>
-        <View style={styles.specialCardRow}>
-          <View style={[styles.specialCardItem, { backgroundColor: '#EEF2FF', borderRadius: 10, padding: 6 }]}>
-            <Text style={{ fontSize: 20 }}>🛡️</Text>
-            <Text style={styles.specialCardLabel}>
-              <Text style={styles.textHighlightDark}>Shield:</Text> Play as Wild OR react in 3s to block +2/+4 penalties!
-            </Text>
-          </View>
-          <View style={[styles.specialCardItem, { backgroundColor: '#F5F3FF', borderRadius: 10, padding: 6 }]}>
-            <Text style={{ fontSize: 20 }}>🪞</Text>
-            <Text style={styles.specialCardLabel}>
-              <Text style={styles.textHighlightDark}>Mirror:</Text> Play as Wild OR reflect +2/+4/Skip/Mute/Swap back!
-            </Text>
-          </View>
-        </View>
-        <View style={[styles.proTipBadge, { marginTop: 6, backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }]}>
-          <Text style={[styles.proTipText, { color: '#5B21B6' }]}>
-            🪞 Counter-Mirror: If the attacker also holds a Mirror, they can cancel your reflection so the original penalty hits you instead (both Mirrors are spent, with no further bounces).
-          </Text>
-        </View>
       </View>
     </View>
   );
 };
 
-// --- PAGE 4: The "RIVAL!" Shout & Penalties ---
-const PageFourRivalShout: React.FC = () => {
+// --- PAGE 4: 3-Minute Match Clock & Tie-Breaker ---
+const PageFourMatchTimer: React.FC = () => {
   return (
     <View style={styles.pageContainer}>
-      {/* Chapter Subtitle Badge */}
-      <View style={[styles.chapterBadge, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
-        <Text style={[styles.chapterBadgeText, { color: '#DC2626' }]}>
-          📣 CHAPTER 4 • RIVAL! CALL & REWARDS
+      <View style={[styles.chapterBadge, { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }]}>
+        <Text style={[styles.chapterBadgeText, { color: '#B45309' }]}>
+          ⏱️ CHAPTER 4 • 3-MINUTE CLOCK & TIE-BREAKER
         </Text>
       </View>
 
-      {/* Shout 1: Call Rival */}
       <View style={styles.ruleCard}>
         <View style={styles.ruleHeader}>
-          <Text style={styles.ruleIconEmoji}>📣</Text>
-          <Text style={styles.ruleTitle}>The 'RIVAL!' Call</Text>
+          <Text style={styles.ruleIconEmoji}>⏳</Text>
+          <Text style={styles.ruleTitle}>3-Minute Match Timer</Text>
         </View>
-        <Text style={styles.ruleBody}>
-          When you play down to <Text style={styles.textHighlightDark}>exactly 1 card</Text>, you MUST
-          tap the <Text style={styles.textHighlightGreen}>'RIVAL!'</Text> shout button to alert all
-          opponents!
+        <Text style={styles.ruleBodySmall}>
+          Every match runs on a <Text style={styles.textHighlightDark}>3:00 clock</Text>. When time expires, the player with the <Text style={styles.textHighlightGreen}>fewest cards remaining</Text> wins immediately!
         </Text>
       </View>
 
-      {/* Shout 2: Catch Penalty */}
-      <View style={styles.ruleCard}>
-        <View style={styles.ruleHeader}>
-          <Text style={styles.ruleIconEmoji}>🚨</Text>
-          <Text style={styles.ruleTitle}>'CATCH RIVAL!' Penalty</Text>
-        </View>
-        <Text style={styles.ruleBody}>
-          Forgot to call Rival? Opponents have a <Text style={styles.textHighlightDark}>2.5-second</Text> high-stakes window to tap <Text style={styles.textHighlightRed}>'CATCH RIVAL!'</Text> and force you to draw <Text style={styles.textHighlightRed}>+2 penalty cards</Text>!
-        </Text>
-      </View>
-
-      {/* Penalty Breakdown Visual Table */}
       <View style={styles.penaltyTableCard}>
-        <Text style={styles.penaltyTableTitle}>⚡ PENALTY RULES CHEAT SHEET</Text>
+        <Text style={styles.penaltyTableTitle}>⚖️ TIED CARD COUNT PRIORITY</Text>
+        <Text style={[styles.ruleBodySmall, { marginBottom: 4 }]}>
+          If players tie for the fewest cards at <Text style={styles.textHighlightRed}>00:00</Text>, stronger cards left in hand decide the winner:
+        </Text>
         <View style={styles.penaltyTableRow}>
-          <Text style={styles.penaltyTableEvent}>Missed RIVAL Shout</Text>
-          <View style={styles.penaltyPillRed}>
-            <Text style={styles.penaltyPillText}>+2 CARDS</Text>
+          <Text style={styles.penaltyTableEvent}>Specials & Wilds (Swap, Mute, Shield, Mirror, +4, Wild)</Text>
+          <View style={[styles.penaltyPillOrange, { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' }]}>
+            <Text style={[styles.penaltyPillText, { color: '#92400E' }]}>TOP (10 PTS)</Text>
           </View>
         </View>
         <View style={styles.penaltyTableRow}>
-          <Text style={styles.penaltyTableEvent}>Uncountered +2 / +4 Stack</Text>
-          <View style={styles.penaltyPillOrange}>
-            <Text style={styles.penaltyPillText}>FULL STACK</Text>
+          <Text style={styles.penaltyTableEvent}>Action Cards (Skip, Reverse, +2)</Text>
+          <View style={[styles.penaltyPillGray, { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }]}>
+            <Text style={[styles.penaltyPillText, { color: '#1D4ED8' }]}>MID (5 PTS)</Text>
           </View>
         </View>
         <View style={styles.penaltyTableRow}>
-          <Text style={styles.penaltyTableEvent}>15s Turn Countdown Expired</Text>
+          <Text style={styles.penaltyTableEvent}>Number Cards (0–9)</Text>
           <View style={styles.penaltyPillGray}>
-            <Text style={styles.penaltyPillText}>AUTO-PASS</Text>
+            <Text style={styles.penaltyPillText}>BASE (1 PT)</Text>
           </View>
         </View>
-        <View style={styles.penaltyTableRow}>
-          <Text style={styles.penaltyTableEvent}>3:00 Match Clock Expired</Text>
-          <View style={styles.penaltyPillOrange}>
-            <Text style={styles.penaltyPillText}>FEWEST CARDS</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Timeout Tie-Breaker Card Priority */}
-      <View style={styles.ruleCard}>
-        <View style={styles.ruleHeader}>
-          <Text style={styles.ruleIconEmoji}>⚖️</Text>
-          <Text style={styles.ruleTitle}>Timeout Tie-Breaker Priority</Text>
-        </View>
-        <Text style={styles.ruleBody}>
-          If players tie for the fewest cards at <Text style={styles.textHighlightRed}>00:00</Text>, remaining hand priority decides the winner:
-        </Text>
-        <Text style={[styles.ruleBodySmall, { marginTop: 4 }]}>
-          <Text style={styles.textHighlightGold}>10 pts</Text> — Specials & Wilds (Swap, Mute, Shield, Mirror, +4, Color Change){'\n'}
-          <Text style={styles.textHighlightDark}>5 pts</Text> — Action Cards (Skip, Reverse, +2){'\n'}
-          <Text style={styles.textHighlightGreen}>1 pt</Text> — Number Cards (0–9)
-        </Text>
-      </View>
-
-      {/* Shout 3: XP & Economy */}
-      <View style={styles.ruleCard}>
-        <View style={styles.ruleHeader}>
-          <Text style={styles.ruleIconEmoji}>🏆</Text>
-          <Text style={styles.ruleTitle}>Progression & Economy</Text>
-        </View>
-        <Text style={styles.ruleBody}>
-          Complete matches to earn <Text style={styles.textHighlightGreen}>XP & Coins</Text> (+120 XP & +60 Coins on victory!). Level up to earn <Text style={styles.textHighlightGold}>+100 Coins & +5 Gems</Text>!
-        </Text>
       </View>
     </View>
   );
@@ -845,16 +734,26 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   specialCardRow: {
-    gap: 6,
+    gap: 8,
   },
   specialCardItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+  },
+  miniIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emblemIconEmoji: {
+    fontSize: 22,
   },
   specialIconImage: {
-    width: 20,
-    height: 20,
+    width: 22,
+    height: 22,
   },
   specialCardLabel: {
     ...FONT_CARTOON_REGULAR,

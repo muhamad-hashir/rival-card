@@ -252,6 +252,10 @@ function MainAppContent() {
               require('./assets/home/sparkle-4pt.png'),
               require('./assets/home/star-5pt.png'),
               require('./assets/logo.png'),
+              require('./card-previews/card-swap.png'),
+              require('./card-previews/card-mute.png'),
+              require('./card-previews/card-shield.png'),
+              require('./card-previews/card-mirror.png'),
               require('./assets/card_back.png'),
               require('./assets/icons/icon_skip.png'),
               require('./assets/icons/icon_reverse.png'),
@@ -282,7 +286,7 @@ function MainAppContent() {
             new Promise<any>((res) => setTimeout(() => res({ data: { session: null }, error: null }), 1500)),
           ]);
           if (authRes?.data?.session?.user) {
-            await authService.syncAuthSessionToProfile();
+            await authService.syncAuthSessionToProfile(authRes.data.session.user);
           }
         } catch (supabaseErr) {
           console.warn('[RivalCard Boot] Supabase client warning:', supabaseErr);

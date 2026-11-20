@@ -663,5 +663,25 @@ describe('Auth Service & Deep Link Parsing', () => {
         (supabase.auth as any).signInWithIdToken = originalSignInWithIdToken;
       }
     });
+
+    it('syncAuthSessionToProfile heals cached guest profile when passed an active Google session user', async () => {
+      await playerProfileService.initGuestProfile();
+      await playerProfileService.awardMatchRewards(true, 10, 'bot');
+
+      const synced = await authService.syncAuthSessionToProfile({
+        id: 'google_session_uid_999',
+        email: 'connected.gmail@gmail.com',
+        user_metadata: { full_name: 'Connected Hero' },
+      });
+
+      assert.strictEqual(synced.isGuest, false);
+      assert.strictEqual(synced.id, 'google_session_uid_999');
+      assert.strictEqual(synced.email, 'connected.gmail@gmail.com');
+
+      const stored = await playerProfileService.getProfile();
+      assert.strictEqual(stored.isGuest, false);
+      assert.strictEqual(stored.id, 'google_session_uid_999');
+      assert.strictEqual(stored.email, 'connected.gmail@gmail.com');
+    });
   });
 });

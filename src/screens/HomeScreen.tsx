@@ -19,6 +19,7 @@ import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { ProfileModal } from '../components/ProfileModal';
 import { ResumeMatchModal } from '../components/ResumeMatchModal';
 import { HowToPlayModal } from '../components/HowToPlayModal';
+import { SpecialCardsModal } from '../components/SpecialCardsModal';
 import { ShopModal } from '../components/ShopModal';
 import { SettingsModal } from '../components/SettingsModal';
 import { OnboardingAuthModal } from '../components/OnboardingAuthModal';
@@ -134,6 +135,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isHowToPlayOpen, setIsHowToPlayOpen] = useState(false);
+  const [isSpecialCardsOpen, setIsSpecialCardsOpen] = useState(false);
   const [isShopOpen, setIsShopOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
@@ -322,6 +324,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setIsHowToPlayOpen(true);
   };
 
+  const handlePressSpecialCards = () => {
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    setIsSpecialCardsOpen(true);
+  };
+
   const handlePressShop = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
@@ -462,94 +470,112 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <View
         style={[
           styles.topHeaderContainer,
-          { paddingTop: Math.max(insets.top + 8, 16) },
+          { paddingTop: Math.max(insets.top, 16) },
         ]}
         pointerEvents="box-none"
       >
-        {/* Row 1: Roomy Profile Pill (clears top-right corner cards) */}
-        <View style={styles.headerTopRow} pointerEvents="box-none">
-          <Pressable
-            pointerEvents="auto"
-            hitSlop={6}
-            onPress={handlePressProfile}
-            style={({ pressed }) => [
-              styles.profilePill,
-              pressed && styles.headerPillPressed,
-            ]}
-          >
-            <View style={[styles.avatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
-              <Text style={styles.avatarEmoji}>{activeAvatar.emoji}</Text>
-            </View>
-            <Text style={styles.profileNickname} numberOfLines={1}>
-              {profile?.nickname || 'Player'}
-            </Text>
-          </Pressable>
-        </View>
+        <View style={styles.headerColumnsRow} pointerEvents="box-none">
+          {/* Left Column: Profile Pill + Level/XP Bar */}
+          <View style={styles.headerLeftCol} pointerEvents="box-none">
+            <Pressable
+              pointerEvents="auto"
+              hitSlop={6}
+              onPress={handlePressProfile}
+              style={({ pressed }) => [
+                styles.profilePill,
+                pressed && styles.headerPillPressed,
+              ]}
+            >
+              <View style={[styles.avatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
+                <Text style={styles.avatarEmoji}>{activeAvatar.emoji}</Text>
+              </View>
+              <Text style={styles.profileNickname} numberOfLines={1}>
+                {profile?.nickname || 'Player'}
+              </Text>
+            </Pressable>
 
-        {/* Row 2: Level + XP Bar on Left, Coins & Gems on Right */}
-        <View style={styles.headerBottomRow} pointerEvents="box-none">
-          <Pressable
-            pointerEvents="auto"
-            hitSlop={6}
-            onPress={handlePressProfile}
-            style={({ pressed }) => [
-              styles.levelPill,
-              pressed && styles.headerPillPressed,
-            ]}
-          >
-            <Text style={styles.levelText}>Lv. {profile?.level ?? 1}</Text>
-            <View style={styles.levelTrack}>
-              <View
-                style={[
-                  styles.levelFill,
-                  {
-                    width: `${Math.min(
-                      100,
-                      Math.max(
-                        0,
-                        Math.round(
-                          ((profile?.currentXp ?? 0) / (profile?.xpToNextLevel || 100)) * 100
+            <Pressable
+              pointerEvents="auto"
+              hitSlop={6}
+              onPress={handlePressProfile}
+              style={({ pressed }) => [
+                styles.levelPill,
+                pressed && styles.headerPillPressed,
+              ]}
+            >
+              <Text style={styles.levelText}>Lv. {profile?.level ?? 1}</Text>
+              <View style={styles.levelTrack}>
+                <View
+                  style={[
+                    styles.levelFill,
+                    {
+                      width: `${Math.min(
+                        100,
+                        Math.max(
+                          0,
+                          Math.round(
+                            ((profile?.currentXp ?? 0) / (profile?.xpToNextLevel || 100)) * 100
+                          )
                         )
-                      )
-                    )}%`,
-                  },
+                      )}%`,
+                    },
+                  ]}
+                />
+              </View>
+            </Pressable>
+          </View>
+
+          {/* Right Column: Special Cards Pill aligned edge-to-edge above Coins & Gems */}
+          <View style={styles.headerRightCol} pointerEvents="box-none">
+            <Pressable
+              pointerEvents="auto"
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Special Cards"
+              testID="special-cards-trigger"
+              onPress={handlePressSpecialCards}
+              style={({ pressed }) => [
+                styles.specialCardsPill,
+                pressed && styles.headerPillPressed,
+              ]}
+            >
+              <Text style={styles.specialCardsIcon}>✨</Text>
+              <Text style={styles.specialCardsText}>Special Cards</Text>
+            </Pressable>
+
+            <View style={styles.headerCurrencyGroup} pointerEvents="box-none">
+              <Pressable
+                pointerEvents="auto"
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Coins Shop"
+                testID="coins-shop-trigger"
+                onPress={handlePressShop}
+                style={({ pressed }) => [
+                  styles.coinPill,
+                  pressed && styles.headerPillPressed,
                 ]}
-              />
+              >
+                <Text style={styles.coinIcon}>🪙</Text>
+                <Text style={styles.coinText}>{profile?.coins ?? 250}</Text>
+              </Pressable>
+
+              <Pressable
+                pointerEvents="auto"
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Gems Shop"
+                testID="gems-shop-trigger"
+                onPress={handlePressShop}
+                style={({ pressed }) => [
+                  styles.gemPill,
+                  pressed && styles.headerPillPressed,
+                ]}
+              >
+                <Text style={styles.gemIcon}>💎</Text>
+                <Text style={styles.gemText}>{profile?.gems ?? 10}</Text>
+              </Pressable>
             </View>
-          </Pressable>
-
-          <View style={styles.headerCurrencyGroup} pointerEvents="box-none">
-            <Pressable
-              pointerEvents="auto"
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="Coins Shop"
-              testID="coins-shop-trigger"
-              onPress={handlePressShop}
-              style={({ pressed }) => [
-                styles.coinPill,
-                pressed && styles.headerPillPressed,
-              ]}
-            >
-              <Text style={styles.coinIcon}>🪙</Text>
-              <Text style={styles.coinText}>{profile?.coins ?? 250}</Text>
-            </Pressable>
-
-            <Pressable
-              pointerEvents="auto"
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="Gems Shop"
-              testID="gems-shop-trigger"
-              onPress={handlePressShop}
-              style={({ pressed }) => [
-                styles.gemPill,
-                pressed && styles.headerPillPressed,
-              ]}
-            >
-              <Text style={styles.gemIcon}>💎</Text>
-              <Text style={styles.gemText}>{profile?.gems ?? 10}</Text>
-            </Pressable>
           </View>
         </View>
       </View>
@@ -726,6 +752,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         onClose={() => setIsHowToPlayOpen(false)}
       />
 
+      {/* Interactive 4-Portion Special Cards Catalogue Modal */}
+      <SpecialCardsModal
+        visible={isSpecialCardsOpen}
+        onClose={() => setIsSpecialCardsOpen(false)}
+      />
+
       {/* Interactive Cosmetics & Currency Shop Modal */}
       <ShopModal
         visible={isShopOpen}
@@ -804,10 +836,10 @@ const styles = StyleSheet.create({
   },
   cornerTR: {
     position: 'absolute',
-    top: -14,
-    right: -14,
-    width: 78,
-    height: 78,
+    top: -20,
+    right: -18,
+    width: 60,
+    height: 60,
   },
   cornerBL: {
     position: 'absolute',
@@ -879,22 +911,51 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     zIndex: 10,
   },
-  headerTopRow: {
+  headerColumnsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingRight: 64,
-  },
-  headerBottomRow: {
-    marginTop: 7,
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 10,
+  },
+  headerLeftCol: {
+    alignItems: 'flex-start',
+    gap: 7,
+    flexShrink: 1,
+  },
+  headerRightCol: {
+    alignItems: 'stretch',
+    gap: 7,
+  },
+  specialCardsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EDE9FE',
+    borderWidth: 2.5,
+    borderColor: OUTLINE_NAVY,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    shadowColor: '#8B6D52',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.22,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  specialCardsIcon: {
+    fontSize: 13.5,
+    marginRight: 5,
+  },
+  specialCardsText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12.5,
+    color: '#4C1D95',
+    letterSpacing: 0.2,
   },
   headerCurrencyGroup: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
   },
   headerPillPressed: {
@@ -910,7 +971,8 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 10,
-    maxWidth: 235,
+    maxWidth: 165,
+    flexShrink: 1,
     shadowColor: '#8B6D52',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.22,
@@ -972,8 +1034,10 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   coinPill: {
+    flexGrow: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#FEF3C7',
     borderWidth: 2.5,
     borderColor: OUTLINE_NAVY,
@@ -996,8 +1060,10 @@ const styles = StyleSheet.create({
     color: '#78350F',
   },
   gemPill: {
+    flexGrow: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#E0F2FE',
     borderWidth: 2.5,
     borderColor: OUTLINE_NAVY,

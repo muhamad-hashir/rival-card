@@ -48,6 +48,7 @@ AGENTS.md
 .gemini/
 .impeccable/
 card-previews/
+card-preview/
 *.aab
 *.apk
 *.keystore

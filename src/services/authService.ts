@@ -277,8 +277,12 @@ class AuthService {
    * Syncs active Supabase auth session (user data/email) to player profile,
    * preserving all guest progression and merging with cloud account.
    */
-  public async syncAuthSessionToProfile(): Promise<PlayerProfile> {
+  public async syncAuthSessionToProfile(sessionUser?: any): Promise<PlayerProfile> {
     try {
+      if (sessionUser?.id) {
+        await this.completeOnboarding();
+        return await playerProfileService.migrateAndLinkGuestAccount(sessionUser);
+      }
       const { data, error } = await supabase.auth.getUser();
       if (!error && data?.user) {
         await this.completeOnboarding();

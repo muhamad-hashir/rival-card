@@ -29,6 +29,8 @@ import {
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { audioService } from '../services/audioService';
+import { supabase } from '../services/supabase';
+import { signOutNativeGoogle } from '../services/authService';
 
 function getAppVersion(): string {
   try {
@@ -56,6 +58,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
+  const [sessionUser, setSessionUser] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<'sign_out' | 'delete_account' | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -66,10 +69,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     if (visible) {
       settingsService.getSettings().then(setSettings);
-      playerProfileService.getProfile().then(setProfile);
       setPendingConfirmation(null);
+
+      Promise.all([
+        playerProfileService.getProfile(),
+        supabase.auth.getSession().catch(() => ({ data: { session: null } })),
+      ]).then(async ([loadedProfile, sessionRes]) => {
+        const activeUser = sessionRes?.data?.session?.user ?? null;
+        setSessionUser(activeUser);
+        if (activeUser && (loadedProfile.isGuest || loadedProfile.id !== activeUser.id)) {
+          try {
+            const linked = await playerProfileService.migrateAndLinkGuestAccount(activeUser);
+            setProfile(linked);
+            return;
+          } catch {
+            // fallback to loaded profile below
+          }
+        }
+        setProfile(loadedProfile);
+      });
     }
   }, [visible]);
+
+  const isConnected = Boolean(sessionUser) || (profile ? !profile.isGuest : false);
+  const connectedEmail = sessionUser?.email || profile?.email;
+  const displayAccountId = sessionUser?.id || profile?.id;
 
   useEffect(() => {
     const unsubSettings = settingsService.subscribe((s) => setSettings(s));
@@ -162,13 +186,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleCopyId = () => {
-    if (!profile) return;
+    if (!displayAccountId) return;
     hapticsService.cardSelection();
     soundService.playCardSnap();
 
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(profile.id);
+        navigator.clipboard.writeText(displayAccountId);
       }
     } catch {
       // ignore
@@ -184,7 +208,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     soundService.playCardSnap();
 
     try {
-      const freshGuest = await playerProfileService.signOut();
+      const freshGuest = await signOutNativeGoogle();
+      setSessionUser(null);
       setProfile(freshGuest);
       setPendingConfirmation(null);
       showToast('Signed out. Local session reset to Guest.');
@@ -205,8 +230,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     soundService.playCardSnap();
 
     try {
+      await signOutNativeGoogle().catch(() => {});
       const freshGuest = await playerProfileService.deleteAccount();
       await settingsService.resetSettings();
+      setSessionUser(null);
       setProfile(freshGuest);
       setPendingConfirmation(null);
       showToast('Account deleted. Clean guest state created.');
@@ -418,10 +445,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <View style={styles.accountInfoCol}>
                   <Text style={styles.accountName}>
                     {profile?.nickname || 'Player'}
-                    <Text style={styles.guestBadgeText}> (Guest Account)</Text>
+                    {isConnected ? (
+                      <Text style={styles.connectedBadgeText}>
+                        {' '}
+                        • {connectedEmail || 'Cloud Account'}
+                      </Text>
+                    ) : (
+                      <Text style={styles.guestBadgeText}> (Guest Account)</Text>
+                    )}
                   </Text>
                   <Text style={styles.accountIdText} numberOfLines={1}>
-                    ID: {profile?.id || '—'}
+                    ID: {displayAccountId || '—'}
                   </Text>
                 </View>
 
@@ -810,6 +844,11 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_REGULAR,
     fontSize: 10,
     color: '#64748B',
+  },
+  connectedBadgeText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10.5,
+    color: '#059669',
   },
   accountIdText: {
     ...FONT_CARTOON_REGULAR,
