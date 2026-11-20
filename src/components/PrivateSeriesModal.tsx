@@ -26,6 +26,8 @@ export interface PrivateSeriesModalProps {
   roundWinner: Player | null;
   localPlayerId: string;
   nextMatchCountdown: number | null;
+  endedByTimeout?: boolean;
+  timeoutUsedTieBreaker?: boolean;
   onNextMatch: () => void;
   onPlayNewSeries: () => void;
   onLeaveRoom: () => void;
@@ -44,6 +46,8 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
   roundWinner,
   localPlayerId,
   nextMatchCountdown,
+  endedByTimeout = false,
+  timeoutUsedTieBreaker = false,
   onNextMatch,
   onPlayNewSeries,
   onLeaveRoom,
@@ -88,6 +92,8 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
     ? seriesState.seriesEndedEarly
       ? `SERIES ENDED • ${seriesState.roundResults.length}/${seriesState.totalMatches} PLAYED`
       : `SERIES COMPLETE • ${seriesState.totalMatches}/${seriesState.totalMatches}`
+    : endedByTimeout
+    ? `⏱️ TIME'S UP! • MATCH ${seriesState.currentMatchNumber} OF ${seriesState.totalMatches}`
     : `MATCH ${seriesState.currentMatchNumber} OF ${seriesState.totalMatches}`;
 
   const headline = isFinalMatch
@@ -106,6 +112,10 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
       : isLocalChampion
       ? 'You topped the 5-match private room leaderboard!'
       : `Final rankings after all ${seriesState.totalMatches} matches.`
+    : endedByTimeout
+    ? timeoutUsedTieBreaker
+      ? `Time expired! ${roundWinner?.name || 'Winner'} took Match ${seriesState.currentMatchNumber} via card-priority tie-breaker.`
+      : `Time expired! ${roundWinner?.name || 'Winner'} held the fewest cards in Match ${seriesState.currentMatchNumber}.`
     : `Standings after Match ${seriesState.currentMatchNumber} of ${seriesState.totalMatches}. Next round resets hands and deck.`;
 
   return (

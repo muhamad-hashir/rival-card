@@ -8,7 +8,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { GameMode, Player } from '../types';
+import type { GameMode, Player, TimeoutStandingBreakdown } from '../types';
+import { getTimeoutTieBreakerNote } from '../gameEngine';
 import type { SetupPreset } from '../screens/HomeScreen';
 import {
   FONT_CARTOON_BOLD,
@@ -31,6 +32,9 @@ export interface GameOverModalProps {
   gameMode?: GameMode;
   isOnlineMode?: boolean;
   matchRewards?: AwardRewardsResult | null;
+  endedByTimeout?: boolean;
+  timeoutUsedTieBreaker?: boolean;
+  timeoutStandings?: TimeoutStandingBreakdown[];
   onPlayAgain: () => void;
   onQuitRoom?: () => void;
   onPlayWithMoreBots?: () => void;
@@ -57,6 +61,9 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   gameMode,
   isOnlineMode: _isOnlineMode = false,
   matchRewards = null,
+  endedByTimeout = false,
+  timeoutUsedTieBreaker = false,
+  timeoutStandings,
   onPlayAgain,
   onQuitRoom,
   onPlayWithMoreBots,
@@ -87,12 +94,30 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     ? winner.id === localPlayerId
     : players[0]?.id === winner.id;
 
-  // Sort players: winner first (1st), then by fewest cards remaining
+  // Sort players: by timeout standings order when endedByTimeout, otherwise winner first -> cards left
   const sortedPlayers = [...players].sort((a, b) => {
+    if (endedByTimeout && timeoutStandings && timeoutStandings.length > 0) {
+      const idxA = timeoutStandings.findIndex((s) => s.playerId === a.id);
+      const idxB = timeoutStandings.findIndex((s) => s.playerId === b.id);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    }
     if (a.id === winner.id) return -1;
     if (b.id === winner.id) return 1;
     return a.hand.length - b.hand.length;
   });
+
+  const winnerCardLabel = winner.hand.length === 1 ? 'card' : 'cards';
+  const step1Subtitle = endedByTimeout
+    ? timeoutUsedTieBreaker
+      ? `Time expired! ${
+          isLocalWinner ? 'You won' : `${winner.name} won`
+        } the card-priority tie-breaker with ${winner.hand.length} ${winnerCardLabel} left.`
+      : `Time expired! ${
+          isLocalWinner ? 'You finished' : `${winner.name} finished`
+        } with the fewest cards (${winner.hand.length} ${winnerCardLabel} left).`
+    : isLocalWinner
+    ? 'You emptied your hand and won the match!'
+    : `${winner.name} emptied their hand and won the match.`;
 
   // Rewards calculation with sensible defaults
   const earnedXp = matchRewards?.earnedXp ?? (isLocalWinner ? 120 : 50);
@@ -159,20 +184,32 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                   </View>
                 </View>
 
-                {/* Banner Tag: VICTORY! vs DEFEAT */}
+                {/* Banner Tag: TIME'S UP! or VICTORY! / DEFEAT */}
                 <View
                   style={[
                     styles.bannerTagContainer,
-                    isLocalWinner ? styles.bannerTagVictory : styles.bannerTagDefeat,
+                    endedByTimeout
+                      ? styles.bannerTagTimeout
+                      : isLocalWinner
+                      ? styles.bannerTagVictory
+                      : styles.bannerTagDefeat,
                   ]}
                 >
                   <Text
                     style={[
                       styles.bannerTagText,
-                      isLocalWinner ? styles.bannerTagTextVictory : styles.bannerTagTextDefeat,
+                      endedByTimeout
+                        ? styles.bannerTagTextTimeout
+                        : isLocalWinner
+                        ? styles.bannerTagTextVictory
+                        : styles.bannerTagTextDefeat,
                     ]}
                   >
-                    {isLocalWinner ? 'VICTORY!' : 'DEFEAT'}
+                    {endedByTimeout
+                      ? `⏱️ TIME'S UP! • ${isLocalWinner ? 'VICTORY' : 'DEFEAT'}`
+                      : isLocalWinner
+                      ? 'VICTORY!'
+                      : 'DEFEAT'}
                   </Text>
                 </View>
 
@@ -181,19 +218,17 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                   {isLocalWinner ? 'You Won!' : `${winner.name} Won!`}
                 </Text>
 
-                {/* Cleaned-up Subtitle without turn counts */}
-                <Text style={styles.subtitle}>
-                  {isLocalWinner
-                    ? 'You emptied your hand and won the match!'
-                    : `${winner.name} emptied their hand and won the match.`}
-                </Text>
+                {/* Outcome Subtitle */}
+                <Text style={styles.subtitle}>{step1Subtitle}</Text>
 
                 {/* Final Standings / Leaderboard Card with Confetti Constrained to Card Bounds */}
                 <View style={styles.statsContainer}>
                   {isHumanWinner && (
                     <ModalConfettiBurst active={visible && isHumanWinner && step === 1} />
                   )}
-                  <Text style={styles.statsHeader}>FINAL STANDINGS</Text>
+                  <Text style={styles.statsHeader}>
+                    {endedByTimeout ? "TIME'S UP STANDINGS" : 'FINAL STANDINGS'}
+                  </Text>
                   {sortedPlayers.map((p, index) => {
                     const isWinner = p.id === winner.id;
                     const isLocalPlayer = localPlayerId ? p.id === localPlayerId : p.id === 'p1';
@@ -203,6 +238,10 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                       : isLocalPlayer
                       ? `${p.name} (You)`
                       : p.name;
+                    const tieBreakerNote = endedByTimeout
+                      ? getTimeoutTieBreakerNote(p.id, timeoutStandings)
+                      : null;
+                    const pCardLabel = p.hand.length === 1 ? 'card' : 'cards';
 
                     return (
                       <View
@@ -239,16 +278,23 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                           </Text>
                         </View>
 
-                        {/* Column 3: Remaining Cards / Winner Badge */}
+                        {/* Column 3: Remaining Cards / Tie-Breaker Note / Winner Badge */}
                         <View style={styles.cardCountColumn}>
                           {isWinner ? (
                             <View style={styles.winnerBadge}>
-                              <Text style={styles.winnerBadgeText}>1ST • WINNER</Text>
+                              <Text style={styles.winnerBadgeText}>
+                                {endedByTimeout
+                                  ? `1ST • ${p.hand.length} ${pCardLabel}`
+                                  : '1ST • WINNER'}
+                              </Text>
                             </View>
                           ) : (
                             <Text style={styles.playerRowCount}>
-                              {p.hand.length} {p.hand.length === 1 ? 'card' : 'cards'} left
+                              {p.hand.length} {pCardLabel} left
                             </Text>
+                          )}
+                          {Boolean(tieBreakerNote) && (
+                            <Text style={styles.tieBreakerMeta}>{tieBreakerNote}</Text>
                           )}
                         </View>
                       </View>
@@ -552,6 +598,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FEE2E2',
     borderColor: '#FECACA',
   },
+  bannerTagTimeout: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B',
+  },
   bannerTagText: {
     ...FONT_CARTOON_HEAVY,
     fontSize: 10,
@@ -562,6 +612,9 @@ const styles = StyleSheet.create({
   },
   bannerTagTextDefeat: {
     color: '#EF4444',
+  },
+  bannerTagTextTimeout: {
+    color: '#B45309',
   },
   stepPill: {
     backgroundColor: '#FEF3C7',
@@ -709,6 +762,13 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_SEMIBOLD,
     fontSize: 12,
     color: '#475569',
+  },
+  tieBreakerMeta: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#92400E',
+    marginTop: 2,
+    textAlign: 'right',
   },
   continueBtn: {
     width: '100%',

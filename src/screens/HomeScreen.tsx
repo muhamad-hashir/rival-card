@@ -1,14 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
-  ImageBackground,
+  Animated,
+  Easing,
+  Image,
   Platform,
   Pressable,
-  SafeAreaView,
   StyleSheet,
   Text,
-  TouchableOpacity,
+  TextStyle,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -40,7 +42,75 @@ import { audioService } from '../services/audioService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 import type { GameState } from '../types';
 
-const HOMESCREEN_IMAGE = require('../../assets/homescreen.png');
+const RIVAL_LOGO = require('../../assets/logo.png');
+const BG_PATTERN = require('../../assets/home/bg-pattern.png');
+const ICON_CPU = require('../../assets/home/icon-cpu.png');
+const ICON_PASSPLAY = require('../../assets/home/icon-passplay.png');
+const ICON_ONLINE = require('../../assets/home/icon-online.png');
+const ICON_HOWTOPLAY = require('../../assets/home/icon-howtoplay.png');
+const ICON_STORE = require('../../assets/home/icon-store.png');
+const ICON_SETTINGS = require('../../assets/home/icon-settings.png');
+const CORNER_TR = require('../../assets/home/corner-tr.png');
+const CORNER_BL = require('../../assets/home/corner-bl.png');
+const CORNER_BR = require('../../assets/home/corner-br.png');
+const SPARKLE_4PT = require('../../assets/home/sparkle-4pt.png');
+const STAR_5PT = require('../../assets/home/star-5pt.png');
+
+const OUTLINE_NAVY = '#0F1142';
+const CREAM_BG = '#FFF2D8';
+
+const STROKE_OFFSETS: readonly { dx: number; dy: number }[] = [
+  { dx: -1.8, dy: 0 },
+  { dx: 1.8, dy: 0 },
+  { dx: 0, dy: -1.8 },
+  { dx: 0, dy: 1.8 },
+  { dx: -1.3, dy: -1.3 },
+  { dx: 1.3, dy: -1.3 },
+  { dx: -1.3, dy: 1.3 },
+  { dx: 1.3, dy: 1.3 },
+];
+
+interface OutlinedTextProps {
+  children: React.ReactNode;
+  style: TextStyle | TextStyle[];
+  strokeColor?: string;
+  numberOfLines?: number;
+}
+
+/**
+ * Renders crisp comic-book outlined lettering matching the reference artwork.
+ */
+const OutlinedText: React.FC<OutlinedTextProps> = ({
+  children,
+  style,
+  strokeColor = OUTLINE_NAVY,
+  numberOfLines,
+}) => (
+  <View style={styles.outlinedTextWrap}>
+    {STROKE_OFFSETS.map((offset, idx) => (
+      <Text
+        key={idx}
+        accessible={false}
+        importantForAccessibility="no"
+        numberOfLines={numberOfLines}
+        maxFontSizeMultiplier={1.2}
+        style={[
+          style,
+          styles.outlinedTextStroke,
+          {
+            color: strokeColor,
+            transform: [{ translateX: offset.dx }, { translateY: offset.dy }],
+          },
+        ]}
+      >
+        {children}
+      </Text>
+    ))}
+    <Text numberOfLines={numberOfLines} maxFontSizeMultiplier={1.2} style={style}>
+      {children}
+    </Text>
+  </View>
+);
 
 export type SetupPreset = 'vs_bot_2p' | 'vs_bot_3p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
 
@@ -59,6 +129,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onStartOnlineGame,
 }) => {
   const insets = useSafeAreaInsets();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const [isModesModalOpen, setIsModesModalOpen] = useState(false);
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
@@ -69,6 +140,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [pendingResumeSession, setPendingResumeSession] = useState<ActiveMatchSession | null>(null);
   const [isRejoiningSession, setIsRejoiningSession] = useState(false);
+
+  // Subtle idle float on the centerpiece hero logo
+  const logoFloatAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const floatLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(logoFloatAnim, {
+          toValue: -4,
+          duration: 1800,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(logoFloatAnim, {
+          toValue: 0,
+          duration: 1800,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    floatLoop.start();
+    return () => floatLoop.stop();
+  }, [logoFloatAnim]);
 
   // Check for unexpired active online match session on initial launch (< 10 minutes old)
   useEffect(() => {
@@ -202,21 +296,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     lockPortrait();
   }, []);
 
-  // Button 1: Play vs Bot (opens ModesModal to select 1v1 vs Bot or 4-Player vs Bots)
   const handlePressVsBot = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
     setIsModesModalOpen(true);
   };
 
-  // Button 2: Pass & Play (triggers local 2P mode immediately)
   const handlePressPassAndPlay = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
     onStartOfflineGame('pass_play_2p');
   };
 
-  // Button 3: Online Multiplayer (opens real-time room lobby modal)
   const handlePressOnlineMultiplayer = async () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
@@ -225,28 +316,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setIsLobbyModalOpen(true);
   };
 
-  // Button 4: How to Play (opens interactive book rulebook modal)
   const handlePressHowToPlay = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
     setIsHowToPlayOpen(true);
   };
 
-  // Button 5: Store / Shop (opens interactive cosmetics & currency shop)
   const handlePressShop = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
     setIsShopOpen(true);
   };
 
-  // Button 6: Settings (opens audio/gameplay toggles & account management)
   const handlePressSettings = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
     setIsSettingsOpen(true);
   };
 
-  // Header: Open Profile Editor Modal (refresh persisted & cloud Career Stats immediately)
   const handlePressProfile = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
@@ -269,106 +356,141 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   const activeAvatar = getAvatarConfig(profile?.avatarId);
 
+  // Responsive measurements balanced across compact and tall 20:9 Android screens
+  const isCompactHeight = screenHeight < 700;
+  const isNarrowWidth = screenWidth < 360;
+  const heroLogoWidth = Math.min(screenWidth * 0.76, screenHeight * (isCompactHeight ? 0.27 : 0.30), 312);
+  const mainColumnWidth = Math.min(screenWidth * 0.82, 340);
+  const pillMinHeight = isCompactHeight ? 58 : 66;
+  const pillIconSize = isCompactHeight ? 40 : 46;
+  const utilMinHeight = isCompactHeight ? 50 : 56;
+  const utilIconSize = isCompactHeight ? 21 : 24;
+
+  const primaryModes = [
+    {
+      key: 'vs_cpu',
+      label: 'PLAY WITH BOT',
+      accessibilityLabel: 'Play with Bot',
+      icon: ICON_CPU,
+      faceColor: '#F6364D',
+      lipColor: '#D62738',
+      onPress: handlePressVsBot,
+    },
+    {
+      key: 'pass_play',
+      label: 'PASS & PLAY',
+      accessibilityLabel: 'Pass and Play',
+      icon: ICON_PASSPLAY,
+      faceColor: '#2CAEF9',
+      lipColor: '#1889CD',
+      onPress: handlePressPassAndPlay,
+    },
+    {
+      key: 'online',
+      label: 'PLAY ONLINE',
+      accessibilityLabel: 'Play Online',
+      icon: ICON_ONLINE,
+      faceColor: '#4ACF72',
+      lipColor: '#32B45A',
+      onPress: handlePressOnlineMultiplayer,
+    },
+  ] as const;
+
+  const utilityButtons = [
+    {
+      key: 'howtoplay',
+      testID: 'how-to-play-trigger',
+      accessibilityLabel: 'How to Play',
+      label: 'HOW TO\nPLAY',
+      fontSize: isNarrowWidth ? 9.5 : 10.5,
+      lineHeight: isNarrowWidth ? 11 : 12.5,
+      icon: ICON_HOWTOPLAY,
+      faceColor: '#FFB731',
+      lipColor: '#E78427',
+      onPress: handlePressHowToPlay,
+    },
+    {
+      key: 'store',
+      testID: 'store-trigger',
+      accessibilityLabel: 'Store',
+      label: 'STORE',
+      fontSize: isNarrowWidth ? 10 : 11.5,
+      lineHeight: isNarrowWidth ? 12 : 14,
+      icon: ICON_STORE,
+      faceColor: '#FC856D',
+      lipColor: '#DA437A',
+      onPress: handlePressShop,
+    },
+    {
+      key: 'settings',
+      testID: 'settings-trigger',
+      accessibilityLabel: 'Settings',
+      label: 'SETTINGS',
+      fontSize: isNarrowWidth ? 9.5 : 10.5,
+      lineHeight: isNarrowWidth ? 11.5 : 13,
+      icon: ICON_SETTINGS,
+      faceColor: '#6572E2',
+      lipColor: '#464EB9',
+      onPress: handlePressSettings,
+    },
+  ] as const;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ImageBackground
-        source={HOMESCREEN_IMAGE}
-        style={styles.backgroundImage}
-        resizeMode="stretch"
+    <View style={styles.container}>
+      {/* Full-bleed Warm Parchment Background with Subtle Suit Watermarks */}
+      <Image source={BG_PATTERN} style={styles.bgPattern} resizeMode="cover" />
+
+      {/* Outer Navy Comic Frame Border */}
+      <View style={styles.frameBorder} pointerEvents="none" />
+
+      {/* Corner Card Clusters & Yellow Sparkles matching homescreen.png */}
+      <View style={styles.decorLayer} pointerEvents="none">
+        <Image source={CORNER_TR} style={styles.cornerTR} resizeMode="contain" />
+        <Image source={CORNER_BL} style={styles.cornerBL} resizeMode="contain" />
+        <Image source={CORNER_BR} style={styles.cornerBR} resizeMode="contain" />
+
+        <Image source={STAR_5PT} style={styles.starTopEdge} resizeMode="contain" />
+        <Image source={STAR_5PT} style={styles.starMidRight} resizeMode="contain" />
+        <Image source={SPARKLE_4PT} style={styles.sparkleMidRight} resizeMode="contain" />
+        <Image source={SPARKLE_4PT} style={styles.sparkleLowerLeft} resizeMode="contain" />
+        <Image source={SPARKLE_4PT} style={styles.sparkleLowerRight} resizeMode="contain" />
+        <Image source={SPARKLE_4PT} style={styles.sparkleBottomLeft} resizeMode="contain" />
+        <Image source={SPARKLE_4PT} style={styles.sparkleBottomRight} resizeMode="contain" />
+      </View>
+
+      {/* Top Safe-Area HUD Bar: Balanced 2-Row Layout (No Collisions or Clipping) */}
+      <View
+        style={[
+          styles.topHeaderContainer,
+          { paddingTop: Math.max(insets.top + 8, 16) },
+        ]}
+        pointerEvents="box-none"
       >
-        {/* Invisible Touch Overlay Button 1: Play vs Bot */}
-        <Pressable
-          onPress={handlePressVsBot}
-          style={({ pressed }) => [
-            styles.touchOverlay,
-            styles.btn1,
-            pressed && styles.touchOverlayPressed,
-          ]}
-        />
-
-        {/* Invisible Touch Overlay Button 2: Pass & Play */}
-        <Pressable
-          onPress={handlePressPassAndPlay}
-          style={({ pressed }) => [
-            styles.touchOverlay,
-            styles.btn2,
-            pressed && styles.touchOverlayPressed,
-          ]}
-        />
-
-        {/* Invisible Touch Overlay Button 3: Online Multiplayer */}
-        <Pressable
-          onPress={handlePressOnlineMultiplayer}
-          style={({ pressed }) => [
-            styles.touchOverlay,
-            styles.btn3,
-            pressed && styles.touchOverlayPressed,
-          ]}
-        />
-
-        {/* Invisible Touch Overlay Row matching illustrated buttons in homescreen.png */}
-        <View style={styles.bottomButtonsContainer}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="How to Play"
-            testID="how-to-play-trigger"
-            onPress={handlePressHowToPlay}
-            style={({ pressed }) => [
-              styles.bottomUtilityBtn,
-              pressed && styles.bottomUtilityBtnPressed,
-            ]}
-          />
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Store"
-            testID="store-trigger"
-            onPress={handlePressShop}
-            style={({ pressed }) => [
-              styles.bottomUtilityBtn,
-              pressed && styles.bottomUtilityBtnPressed,
-            ]}
-          />
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Settings"
-            testID="settings-trigger"
-            onPress={handlePressSettings}
-            style={({ pressed }) => [
-              styles.bottomUtilityBtn,
-              pressed && styles.bottomUtilityBtnPressed,
-            ]}
-          />
-        </View>
-      </ImageBackground>
-
-      {/* Top Header Row with Profile Pill, Level Badge, Coins, and Gems */}
-      <View style={styles.topHeaderContainer} pointerEvents="box-none">
-        {/* Left Cluster: Profile Pill & Level Badge */}
-        <View style={styles.headerLeftGroup} pointerEvents="box-none">
+        {/* Row 1: Roomy Profile Pill (clears top-right corner cards) */}
+        <View style={styles.headerTopRow} pointerEvents="box-none">
           <Pressable
             pointerEvents="auto"
+            hitSlop={6}
             onPress={handlePressProfile}
             style={({ pressed }) => [
               styles.profilePill,
               pressed && styles.headerPillPressed,
             ]}
           >
-            {/* Avatar Circle */}
             <View style={[styles.avatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
               <Text style={styles.avatarEmoji}>{activeAvatar.emoji}</Text>
             </View>
-
-            {/* Nickname */}
             <Text style={styles.profileNickname} numberOfLines={1}>
               {profile?.nickname || 'Player'}
             </Text>
           </Pressable>
+        </View>
 
-          {/* Level Badge with Mini XP Progress Bar */}
+        {/* Row 2: Level + XP Bar on Left, Coins & Gems on Right */}
+        <View style={styles.headerBottomRow} pointerEvents="box-none">
           <Pressable
             pointerEvents="auto"
+            hitSlop={6}
             onPress={handlePressProfile}
             style={({ pressed }) => [
               styles.levelPill,
@@ -395,41 +517,177 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               />
             </View>
           </Pressable>
+
+          <View style={styles.headerCurrencyGroup} pointerEvents="box-none">
+            <Pressable
+              pointerEvents="auto"
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Coins Shop"
+              testID="coins-shop-trigger"
+              onPress={handlePressShop}
+              style={({ pressed }) => [
+                styles.coinPill,
+                pressed && styles.headerPillPressed,
+              ]}
+            >
+              <Text style={styles.coinIcon}>🪙</Text>
+              <Text style={styles.coinText}>{profile?.coins ?? 250}</Text>
+            </Pressable>
+
+            <Pressable
+              pointerEvents="auto"
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Gems Shop"
+              testID="gems-shop-trigger"
+              onPress={handlePressShop}
+              style={({ pressed }) => [
+                styles.gemPill,
+                pressed && styles.headerPillPressed,
+              ]}
+            >
+              <Text style={styles.gemIcon}>💎</Text>
+              <Text style={styles.gemText}>{profile?.gems ?? 10}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      {/* Main Content Stack: Hero Logo -> 3 Pill Mode Buttons -> 3 Bottom Utility Buttons */}
+      <View
+        style={[
+          styles.mainContent,
+          {
+            paddingBottom: Math.max(insets.bottom + (isCompactHeight ? 42 : 58), isCompactHeight ? 48 : 66),
+          },
+        ]}
+      >
+        {/* Centerpiece RIVAL CARD Logo */}
+        <View style={styles.heroSlot}>
+          <Animated.View
+            style={{
+              width: heroLogoWidth,
+              transform: [{ translateY: logoFloatAnim }],
+            }}
+          >
+            <Image
+              source={RIVAL_LOGO}
+              style={{
+                width: heroLogoWidth,
+                height: heroLogoWidth * (802 / 1024),
+              }}
+              resizeMode="contain"
+              accessibilityLabel="Rival Card Logo"
+            />
+          </Animated.View>
         </View>
 
-        {/* Right Cluster: Coin & Gem Economy Pills (Opens Shop) */}
-        <View style={styles.headerRightGroup} pointerEvents="box-none">
-          {/* Coins Pill */}
-          <Pressable
-            pointerEvents="auto"
-            accessibilityRole="button"
-            accessibilityLabel="Coins Shop"
-            testID="coins-shop-trigger"
-            onPress={handlePressShop}
-            style={({ pressed }) => [
-              styles.coinPill,
-              pressed && styles.headerPillPressed,
-            ]}
-          >
-            <Text style={styles.coinIcon}>🪙</Text>
-            <Text style={styles.coinText}>{profile?.coins ?? 250}</Text>
-          </Pressable>
+        {/* Primary Pill Buttons */}
+        <View
+          style={[
+            styles.modeButtonsStack,
+            { width: mainColumnWidth, gap: isCompactHeight ? 10 : 13 },
+          ]}
+        >
+          {primaryModes.map((mode) => (
+            <Pressable
+              key={mode.key}
+              accessibilityRole="button"
+              accessibilityLabel={mode.accessibilityLabel}
+              onPress={mode.onPress}
+              style={({ pressed }) => [
+                styles.pillShadowOuter,
+                pressed && styles.pillPressed,
+              ]}
+            >
+              <View style={styles.pillNavyOutline}>
+                <View
+                  style={[
+                    styles.pillFace,
+                    {
+                      backgroundColor: mode.faceColor,
+                      borderBottomColor: mode.lipColor,
+                      minHeight: pillMinHeight,
+                    },
+                  ]}
+                >
+                  <View style={styles.pillTopSheen} pointerEvents="none" />
+                  <View style={styles.pillIconBox}>
+                    <Image
+                      source={mode.icon}
+                      style={{ width: pillIconSize, height: pillIconSize }}
+                      resizeMode="contain"
+                    />
+                  </View>
+                  <View style={styles.pillLabelCenter}>
+                    <OutlinedText
+                      numberOfLines={1}
+                      style={[
+                        styles.pillLabelText,
+                        { fontSize: isNarrowWidth ? 19 : screenWidth < 390 ? 21 : 22.5 },
+                      ]}
+                    >
+                      {mode.label}
+                    </OutlinedText>
+                  </View>
+                </View>
+              </View>
+            </Pressable>
+          ))}
+        </View>
 
-          {/* Gems Pill */}
-          <Pressable
-            pointerEvents="auto"
-            accessibilityRole="button"
-            accessibilityLabel="Gems Shop"
-            testID="gems-shop-trigger"
-            onPress={handlePressShop}
-            style={({ pressed }) => [
-              styles.gemPill,
-              pressed && styles.headerPillPressed,
-            ]}
-          >
-            <Text style={styles.gemIcon}>💎</Text>
-            <Text style={styles.gemText}>{profile?.gems ?? 10}</Text>
-          </Pressable>
+        {/* Bottom Utility Dock: How To Play, Store, Settings */}
+        <View
+          style={[
+            styles.utilityRow,
+            {
+              width: mainColumnWidth,
+              marginTop: isCompactHeight ? 14 : 20,
+            },
+          ]}
+        >
+          {utilityButtons.map((btn) => (
+            <Pressable
+              key={btn.key}
+              accessibilityRole="button"
+              accessibilityLabel={btn.accessibilityLabel}
+              testID={btn.testID}
+              onPress={btn.onPress}
+              style={({ pressed }) => [
+                styles.utilShadowOuter,
+                pressed && styles.utilPressed,
+              ]}
+            >
+              <View style={styles.utilNavyOutline}>
+                <View
+                  style={[
+                    styles.utilFace,
+                    {
+                      backgroundColor: btn.faceColor,
+                      borderBottomColor: btn.lipColor,
+                      minHeight: utilMinHeight,
+                    },
+                  ]}
+                >
+                  <View style={styles.utilTopSheen} pointerEvents="none" />
+                  <Image
+                    source={btn.icon}
+                    style={{ width: utilIconSize, height: utilIconSize, marginRight: 4 }}
+                    resizeMode="contain"
+                  />
+                  <OutlinedText
+                    style={[
+                      styles.utilLabelText,
+                      { fontSize: btn.fontSize, lineHeight: btn.lineHeight },
+                    ]}
+                  >
+                    {btn.label}
+                  </OutlinedText>
+                </View>
+              </View>
+            </Pressable>
+          ))}
         </View>
       </View>
 
@@ -506,40 +764,135 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       {/* Global Error & Disconnection Toast */}
       <ErrorToast />
-    </SafeAreaView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  safeArea: {
+  container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: CREAM_BG,
   },
-  backgroundImage: {
-    flex: 1,
+  bgPattern: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     width: '100%',
     height: '100%',
   },
-  topHeaderContainer: {
+  frameBorder: {
     position: 'absolute',
-    top: Platform.select({
-      ios: 14,
-      android: 14,
-      default: 14,
-    }),
+    top: 6,
+    bottom: 6,
+    left: 6,
+    right: 6,
+    borderRadius: 16,
+    borderWidth: 3.5,
+    borderColor: OUTLINE_NAVY,
+    zIndex: 1,
+  },
+  decorLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    zIndex: 2,
+  },
+  cornerTR: {
+    position: 'absolute',
+    top: -14,
+    right: -14,
+    width: 78,
+    height: 78,
+  },
+  cornerBL: {
+    position: 'absolute',
+    bottom: -12,
+    left: -12,
+    width: 96,
+    height: 88,
+  },
+  cornerBR: {
+    position: 'absolute',
+    bottom: -12,
+    right: -12,
+    width: 92,
+    height: 84,
+  },
+  starTopEdge: {
+    position: 'absolute',
+    top: 4,
+    right: 76,
+    width: 20,
+    height: 20,
+  },
+  starMidRight: {
+    position: 'absolute',
+    top: 138,
+    right: 12,
+    width: 22,
+    height: 22,
+  },
+  sparkleMidRight: {
+    position: 'absolute',
+    top: 118,
+    right: 32,
+    width: 17,
+    height: 17,
+  },
+  sparkleLowerLeft: {
+    position: 'absolute',
+    bottom: 124,
     left: 14,
+    width: 20,
+    height: 20,
+  },
+  sparkleLowerRight: {
+    position: 'absolute',
+    bottom: 124,
     right: 14,
+    width: 20,
+    height: 20,
+  },
+  sparkleBottomLeft: {
+    position: 'absolute',
+    bottom: 18,
+    left: 96,
+    width: 20,
+    height: 20,
+  },
+  sparkleBottomRight: {
+    position: 'absolute',
+    bottom: 18,
+    right: 96,
+    width: 20,
+    height: 20,
+  },
+
+  // Top Header HUD
+  topHeaderContainer: {
+    width: '100%',
+    paddingHorizontal: 14,
+    zIndex: 10,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingRight: 64,
+  },
+  headerBottomRow: {
+    marginTop: 7,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    zIndex: 10,
-  },
-  headerLeftGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
   },
-  headerRightGroup: {
+  headerCurrencyGroup: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -551,21 +904,18 @@ const styles = StyleSheet.create({
   profilePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEF6E9', // Warm cream surface matching design system
+    backgroundColor: '#FEF6E9',
     borderWidth: 2.5,
-    borderColor: '#E2D9C8',
+    borderColor: OUTLINE_NAVY,
     borderRadius: 999,
     paddingVertical: 4,
-    paddingHorizontal: 8,
-    shadowColor: '#1E293B',
+    paddingHorizontal: 10,
+    maxWidth: 235,
+    shadowColor: '#8B6D52',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 4,
-  },
-  profilePillPressed: {
-    transform: [{ scale: 0.96 }],
-    opacity: 0.9,
+    shadowOpacity: 0.22,
+    shadowRadius: 3,
+    elevation: 3,
   },
   avatarCircle: {
     width: 26,
@@ -573,67 +923,67 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 6,
+    marginRight: 7,
     borderWidth: 1.5,
-    borderColor: '#FFFFFF',
+    borderColor: OUTLINE_NAVY,
   },
   avatarEmoji: {
     fontSize: 14,
   },
   profileNickname: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 12,
-    color: '#0F172A',
-    maxWidth: 90,
+    fontSize: 13,
+    color: OUTLINE_NAVY,
+    flexShrink: 1,
   },
   levelPill: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FEF6E9',
-    borderWidth: 2,
-    borderColor: '#E2D9C8',
+    borderWidth: 2.5,
+    borderColor: OUTLINE_NAVY,
     borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    shadowColor: '#1E293B',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    shadowColor: '#8B6D52',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
     elevation: 3,
   },
   levelText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 11,
-    color: '#0F172A',
-    marginRight: 5,
+    fontSize: 12,
+    color: OUTLINE_NAVY,
+    marginRight: 6,
   },
   levelTrack: {
-    width: 28,
-    height: 6,
-    backgroundColor: '#E2E8F0',
+    width: 44,
+    height: 7,
+    backgroundColor: '#EADBC5',
     borderRadius: 999,
     overflow: 'hidden',
-    borderWidth: 0.5,
-    borderColor: '#CBD5E1',
+    borderWidth: 1,
+    borderColor: OUTLINE_NAVY,
   },
   levelFill: {
     height: '100%',
-    backgroundColor: '#10B981',
+    backgroundColor: '#4ACF72',
     borderRadius: 999,
   },
   coinPill: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FEF3C7',
-    borderWidth: 2,
-    borderColor: '#FDE68A',
+    borderWidth: 2.5,
+    borderColor: OUTLINE_NAVY,
     borderRadius: 999,
-    paddingHorizontal: 9,
+    paddingHorizontal: 10,
     paddingVertical: 5,
-    shadowColor: '#1E293B',
+    shadowColor: '#8B6D52',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
     elevation: 3,
   },
   coinIcon: {
@@ -642,22 +992,22 @@ const styles = StyleSheet.create({
   },
   coinText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 12,
-    color: '#92400E',
+    fontSize: 12.5,
+    color: '#78350F',
   },
   gemPill: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#E0F2FE',
-    borderWidth: 2,
-    borderColor: '#BAE6FD',
+    borderWidth: 2.5,
+    borderColor: OUTLINE_NAVY,
     borderRadius: 999,
-    paddingHorizontal: 9,
+    paddingHorizontal: 10,
     paddingVertical: 5,
-    shadowColor: '#1E293B',
+    shadowColor: '#8B6D52',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
     elevation: 3,
   },
   gemIcon: {
@@ -666,53 +1016,142 @@ const styles = StyleSheet.create({
   },
   gemText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 12,
+    fontSize: 12.5,
     color: '#0369A1',
   },
-  touchOverlay: {
-    position: 'absolute',
-    width: '74%',
-    height: '12.6%',
-    alignSelf: 'center',
-    backgroundColor: 'transparent',
-    borderRadius: 24,
-  },
-  touchOverlayPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.40)',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.85)',
-    transform: [{ scale: 0.98 }],
-  },
-  btn1: {
-    top: '40.6%',
-  },
-  btn2: {
-    top: '53.4%',
-  },
-  btn3: {
-    top: '66.2%',
-  },
-  bottomButtonsContainer: {
-    position: 'absolute',
-    top: '84.8%',
-    height: '8.4%',
-    left: '12%',
-    right: '12%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'stretch',
-    zIndex: 10,
-  },
-  bottomUtilityBtn: {
+
+  // Main Vertical Stack
+  mainContent: {
     flex: 1,
-    marginHorizontal: 3,
-    backgroundColor: 'transparent',
-    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 4,
+    zIndex: 5,
   },
-  bottomUtilityBtnPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.40)',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.85)',
-    transform: [{ scale: 0.96 }],
+  heroSlot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+  },
+  modeButtonsStack: {
+    alignItems: 'stretch',
+  },
+
+  // Pill Mode Buttons (matching homescreen.png)
+  pillShadowOuter: {
+    borderRadius: 999,
+    shadowColor: '#8B6D52',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.28,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  pillPressed: {
+    transform: [{ translateY: 2 }, { scale: 0.985 }],
+  },
+  pillNavyOutline: {
+    backgroundColor: OUTLINE_NAVY,
+    borderRadius: 999,
+    padding: 3.5,
+  },
+  pillFace: {
+    borderRadius: 999,
+    borderBottomWidth: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    overflow: 'hidden',
+  },
+  pillTopSheen: {
+    position: 'absolute',
+    top: 3,
+    left: 26,
+    right: 26,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+  },
+  pillIconBox: {
+    width: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  pillLabelCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingRight: 8,
+  },
+  pillLabelText: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#FFFFFF',
+    letterSpacing: 0.6,
+    textAlign: 'center',
+  },
+
+  // Bottom Utility Row (HOW TO PLAY, STORE, SETTINGS)
+  utilityRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  utilShadowOuter: {
+    flex: 1,
+    borderRadius: 18,
+    shadowColor: '#8B6D52',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.26,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  utilPressed: {
+    transform: [{ translateY: 2 }, { scale: 0.97 }],
+  },
+  utilNavyOutline: {
+    backgroundColor: OUTLINE_NAVY,
+    borderRadius: 18,
+    padding: 3,
+  },
+  utilFace: {
+    borderRadius: 15,
+    borderBottomWidth: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+    paddingVertical: 7,
+    overflow: 'hidden',
+  },
+  utilTopSheen: {
+    position: 'absolute',
+    top: 2.5,
+    left: 12,
+    right: 12,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+  },
+  utilLabelText: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+
+  // Comic Outlined Text Helper
+  outlinedTextWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  outlinedTextStroke: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
   },
 });

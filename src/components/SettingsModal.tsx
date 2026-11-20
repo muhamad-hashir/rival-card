@@ -46,9 +46,14 @@ function getAppVersion(): string {
 export interface SettingsModalProps {
   visible: boolean;
   onClose: () => void;
+  onOpenRulebook?: () => void;
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({
+  visible,
+  onClose,
+  onOpenRulebook,
+}) => {
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -368,7 +373,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
               </View>
 
               {/* Row 5: Auto-Pass on Draw */}
-              <View style={[styles.settingRow, styles.lastRow]}>
+              <View style={[styles.settingRow, !onOpenRulebook && styles.lastRow]}>
                 <View style={styles.settingTextCol}>
                   <Text style={styles.settingLabel}>Auto-Pass on Draw</Text>
                   <Text style={styles.settingSubtext}>Automatically pass if drawn card is unplayable</Text>
@@ -380,6 +385,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onClose }
                   accessibilityLabel="Auto-Pass on Draw"
                 />
               </View>
+
+              {Boolean(onOpenRulebook) && (
+                <TouchableOpacity
+                  onPress={() => {
+                    hapticsService.cardSelection();
+                    soundService.playCardSnap();
+                    onOpenRulebook?.();
+                  }}
+                  style={[styles.settingRow, styles.lastRow]}
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open Rulebook"
+                >
+                  <View style={styles.settingTextCol}>
+                    <Text style={styles.settingLabel}>📖 Rival Rulebook</Text>
+                    <Text style={styles.settingSubtext}>View card rules, 3-minute timer & tie-breakers</Text>
+                  </View>
+                  <Text style={styles.copyChipText}>Open →</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Section 3: Account & Session */}

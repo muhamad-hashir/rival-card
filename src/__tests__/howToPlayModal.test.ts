@@ -47,6 +47,7 @@ describe('Interactive Book-Style Rulebook Modal Specifications', () => {
     assert.ok(ch1.topics.some((t) => t.includes('Symbol')));
     assert.ok(ch1.topics.some((t) => t.includes('Wild')));
     assert.ok(ch1.topics.some((t) => t.toLowerCase().includes('draw 1 card')));
+    assert.ok(ch1.topics.some((t) => t.includes('3-Minute Match Timer')));
   });
 
   test('Chapter 2 covers Action Cards (Skip, Reverse, Draw 2) and 1v1 rules', () => {
@@ -84,5 +85,6 @@ describe('Interactive Book-Style Rulebook Modal Specifications', () => {
     assert.ok(ch4.topics.some((t) => t.includes('+120 XP')));
     assert.ok(ch4.topics.some((t) => t.includes('+60 Coins')));
     assert.ok(ch4.topics.some((t) => t.includes('+100 Coins & +5 Gems')));
+    assert.ok(ch4.topics.some((t) => t.includes('Timeout Tie-Breaker')));
   });
 });

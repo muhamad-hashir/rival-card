@@ -1,5 +1,6 @@
 // src/services/matchmakingService.ts - Quick Match 1v1 Auto-Matchmaking Service using Supabase Realtime & Presence
 import { supabase, generateRoomCode, multiplayerService } from './supabase';
+import { stampOnlineMatchTimer } from './multiplayerService';
 import { createGame } from '../gameEngine';
 import type { GameState } from '../types';
 
@@ -225,12 +226,14 @@ export class MatchmakingService {
       activeCallbacks.onStatusChange?.('matched');
 
       const roomCode = generateRoomCode();
-      const initialState = createGame(
-        [
-          { id: player.id, name: player.name, avatarId: player.avatarId, isBot: false },
-          { id: opponent.id, name: opponent.name, avatarId: opponent.avatarId, isBot: false },
-        ],
-        'multiplayer'
+      const initialState = stampOnlineMatchTimer(
+        createGame(
+          [
+            { id: player.id, name: player.name, avatarId: player.avatarId, isBot: false },
+            { id: opponent.id, name: opponent.name, avatarId: opponent.avatarId, isBot: false },
+          ],
+          'multiplayer'
+        )
       );
 
       try {

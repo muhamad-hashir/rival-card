@@ -67,7 +67,8 @@ export type GameActionType =
   | 'SHIELD_BLOCK'
   | 'MIRROR_REFLECT'
   | 'RESHUFFLE_DECK'
-  | 'DISMISS_PRIVACY_MASK';
+  | 'DISMISS_PRIVACY_MASK'
+  | 'MATCH_TIMEOUT';
 
 export interface GameEventLog {
   id: string;
@@ -137,6 +138,16 @@ export interface DefenseBannerState {
   timestamp: number;
 }
 
+export interface TimeoutStandingBreakdown {
+  playerId: string;
+  cardCount: number;
+  priorityScore: number;
+  tier1Count: number; // Special cards (Swap, Mute, Shield, Mirror), +4, and Wild (10 pts each)
+  tier2Count: number; // Action cards: Skip, Reverse, +2 (5 pts each)
+  tier3Count: number; // Number cards: 0-9 (1 pt each)
+  highestTier: 0 | 1 | 2 | 3; // 3 = Tier 1, 2 = Tier 2, 1 = Tier 3, 0 = empty hand
+}
+
 export interface GameState {
   deck: Card[];
   discardPile: Card[];
@@ -163,4 +174,10 @@ export interface GameState {
   lastRivalCalledName?: string;
   lastRivalCallTimestamp?: number;
   seriesState?: SeriesState;
+  matchDurationSeconds?: number;
+  matchStartedAt?: number;
+  matchTimeRemainingMs?: number;
+  endedByTimeout?: boolean;
+  timeoutUsedTieBreaker?: boolean;
+  timeoutStandings?: TimeoutStandingBreakdown[];
 }

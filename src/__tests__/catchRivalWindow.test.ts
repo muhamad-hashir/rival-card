@@ -6,6 +6,8 @@ import {
   declareRival,
   catchRival,
   playCard,
+  makeBotMove,
+  playerDrawCard,
 } from '../gameEngine';
 import type { GameState } from '../types';
 
@@ -105,6 +107,86 @@ describe('CATCH RIVAL! 2.5s Penalty Window & Catch Mechanics', () => {
     }
     const rate = catchCount / trials;
     assert.ok(rate >= 0.73 && rate <= 0.87, `Rate ${rate} should be near 0.80`);
+  });
+
+  it('automatically declares RIVAL! when Rival Swap gives a 1-card hand so no catch window or +2 penalty occurs', () => {
+    let game = createGame([
+      { id: 'human', name: 'Human', isBot: false },
+      { id: 'bot', name: 'RivalBot', isBot: true },
+    ]);
+
+    // Human has 4 cards including Rival Swap; Bot has 1 card
+    game.players[0].hand = [
+      { id: 'rs_1', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'h_1', color: 'red', value: '4', scoreValue: 4 },
+      { id: 'h_2', color: 'blue', value: '7', scoreValue: 7 },
+      { id: 'h_3', color: 'green', value: '9', scoreValue: 9 },
+    ];
+    game.players[0].hasDeclaredRival = false;
+    game.players[1].hand = [
+      { id: 'bot_last', color: 'yellow', value: '6', scoreValue: 6 },
+    ];
+    game.players[1].hasDeclaredRival = true;
+    game.discardPile = [{ id: 'top', color: 'red', value: '3', scoreValue: 3 }];
+    game.activeColor = 'red';
+    game.currentTurnIndex = 0;
+
+    // Human plays Rival Swap and chooses green
+    const afterSwap = playCard(game, 'human', 'rs_1', { chosenColor: 'green' });
+    assert.strictEqual(afterSwap.players[0].hand.length, 1);
+    assert.strictEqual(
+      afterSwap.players[0].hasDeclaredRival,
+      true,
+      'Swapping into a 1-card hand must automatically set hasDeclaredRival = true'
+    );
+    assert.strictEqual(afterSwap.players[1].hand.length, 3);
+    assert.strictEqual(afterSwap.players[1].hasDeclaredRival, false);
+
+    // Neither catchRival nor bot's turn AI may penalize human with +2 cards
+    const afterCatchAttempt = catchRival(afterSwap, 'bot', 'human');
+    assert.strictEqual(afterCatchAttempt.players[0].hand.length, 1);
+
+    const afterBotTurn = makeBotMove(afterSwap);
+    assert.strictEqual(
+      afterBotTurn.players[0].hand.length,
+      1,
+      'Bot must not apply a +2 CATCH RIVAL penalty after human swapped into 1 card'
+    );
+
+    // Drawing later resets hasDeclaredRival back to false as normal
+    const humanTurnState: GameState = { ...afterSwap, currentTurnIndex: 0, hasDrawnThisTurn: false };
+    const afterDraw = playerDrawCard(humanTurnState, 'human');
+    assert.strictEqual(afterDraw.players[0].hand.length, 2);
+    assert.strictEqual(afterDraw.players[0].hasDeclaredRival, false);
+  });
+
+  it('also protects an opponent who receives a 1-card hand from an attacker playing Rival Swap', () => {
+    const game = createGame([
+      { id: 'p1', name: 'P1', isBot: false },
+      { id: 'p2', name: 'P2', isBot: false },
+    ]);
+
+    game.players[0].hand = [
+      { id: 'rs_1', color: 'wild', value: 'rival_swap', scoreValue: 50 },
+      { id: 'p1_extra', color: 'blue', value: '2', scoreValue: 2 },
+    ];
+    game.players[0].hasDeclaredRival = false;
+    game.players[1].hand = [
+      { id: 'p2_1', color: 'red', value: '5', scoreValue: 5 },
+      { id: 'p2_2', color: 'green', value: '8', scoreValue: 8 },
+    ];
+    game.players[1].hasDeclaredRival = false;
+    game.discardPile = [{ id: 'top', color: 'red', value: '3', scoreValue: 3 }];
+    game.activeColor = 'red';
+    game.currentTurnIndex = 0;
+
+    const afterSwap = playCard(game, 'p1', 'rs_1', { chosenColor: 'red' });
+    assert.strictEqual(afterSwap.players[1].hand.length, 1);
+    assert.strictEqual(
+      afterSwap.players[1].hasDeclaredRival,
+      true,
+      'Recipient handed 1 card by an opponent Rival Swap must not be catchable'
+    );
   });
 });
 

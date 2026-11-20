@@ -34,6 +34,7 @@ export const RULEBOOK_CHAPTERS: readonly RulebookChapter[] = [
       'Match by Symbol (Skip, Reverse, Draw 2)',
       'Wild cards can be played on any card anytime',
       'Draw 1 card if stuck; play immediately if valid',
+      '3-Minute Match Timer: Every match runs on a 3:00 clock; when time runs out, fewest cards wins',
     ],
   },
   {
@@ -75,6 +76,7 @@ export const RULEBOOK_CHAPTERS: readonly RulebookChapter[] = [
       'RIVAL! Shout: Announce when down to exactly 1 card in hand',
       'CATCH RIVAL! Penalty: 2.5-second window for opponents to catch you',
       '+2 Penalty Cards: Applied immediately if caught before declaring Rival',
+      '3-Minute Match Timer & Timeout Tie-Breaker: If 3:00 expires, fewest cards wins. Tied card counts break by priority score: Specials & Wilds (Swap/Mute/Shield/Mirror/+4/Color Change = 10 pts) > Actions (Skip/Reverse/+2 = 5 pts) > Numbers (0–9 = 1 pt)',
       'Match Completion XP: +120 XP on victory, +50 XP on defeat',
       'Match Completion Coins: +60 Coins on victory, +20 Coins on defeat',
       'Level Up Rewards: +100 Coins & +5 Gems awarded per level threshold',

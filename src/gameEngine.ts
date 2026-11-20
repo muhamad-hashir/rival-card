@@ -17,6 +17,7 @@ import type {
   Player,
   PrivacyMaskState,
   StandardColor,
+  TimeoutStandingBreakdown,
   TurnDirection,
 } from './types';
 
@@ -25,6 +26,237 @@ import type {
 // ============================================================================
 
 export const TURN_DURATION = 15;
+export const MATCH_DURATION_SECONDS = 180;
+export const MATCH_DURATION_MS = MATCH_DURATION_SECONDS * 1000;
+
+const TIMEOUT_TIER1_VALUES: ReadonlySet<CardValue> = new Set([
+  'rival_swap',
+  'mute',
+  'shield',
+  'mirror',
+  'wild_draw4',
+  'wild',
+]);
+
+const TIMEOUT_TIER2_VALUES: ReadonlySet<CardValue> = new Set([
+  'skip',
+  'reverse',
+  'draw2',
+]);
+
+/**
+ * Estimates initial card-dealing animation duration so online clocks align across devices.
+ */
+export function computeMatchDealDurationMs(playerCount: number): number {
+  return Math.max(1, playerCount) * 7 * 95 + 360;
+}
+
+/**
+ * Formats remaining milliseconds as MM:SS using ceiling seconds (e.g. 180000 -> "03:00").
+ */
+export function formatMatchTimer(remainingMs: number): string {
+  const clampedMs = Math.max(0, remainingMs);
+  const totalSeconds = Math.ceil(clampedMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+/**
+ * Computes remaining match milliseconds for an anchored online start timestamp.
+ */
+export function computeRemainingMsFromStart(
+  matchStartedAt: number | undefined,
+  nowMs: number = Date.now(),
+  durationMs: number = MATCH_DURATION_MS
+): number {
+  if (!matchStartedAt || !Number.isFinite(matchStartedAt)) {
+    return durationMs;
+  }
+  const elapsed = Math.max(0, nowMs - matchStartedAt);
+  return Math.max(0, durationMs - elapsed);
+}
+
+/**
+ * Returns the timeout tie-breaker tier & priority points for a card:
+ * - Tier 1 (10 pts): Rival Swap, Mute, Shield, Mirror, Wild Draw 4, Wild Color Change
+ * - Tier 2 (5 pts): Skip, Reverse, Draw Two (+2)
+ * - Tier 3 (1 pt): Number cards (0-9)
+ */
+export function getCardTimeoutPriorityTier(card: Card): { tier: 1 | 2 | 3; points: number } {
+  if (TIMEOUT_TIER1_VALUES.has(card.value)) {
+    return { tier: 1, points: 10 };
+  }
+  if (TIMEOUT_TIER2_VALUES.has(card.value)) {
+    return { tier: 2, points: 5 };
+  }
+  return { tier: 3, points: 1 };
+}
+
+/**
+ * Summarizes a player's remaining hand for 3-minute timeout winner resolution.
+ */
+export function evaluatePlayerTimeoutHand(player: Player): TimeoutStandingBreakdown {
+  let tier1Count = 0;
+  let tier2Count = 0;
+  let tier3Count = 0;
+  let priorityScore = 0;
+
+  for (const card of player.hand) {
+    const { tier, points } = getCardTimeoutPriorityTier(card);
+    priorityScore += points;
+    if (tier === 1) tier1Count += 1;
+    else if (tier === 2) tier2Count += 1;
+    else tier3Count += 1;
+  }
+
+  const highestTier: 0 | 1 | 2 | 3 =
+    tier1Count > 0 ? 3 : tier2Count > 0 ? 2 : tier3Count > 0 ? 1 : 0;
+
+  return {
+    playerId: player.id,
+    cardCount: player.hand.length,
+    priorityScore,
+    tier1Count,
+    tier2Count,
+    tier3Count,
+    highestTier,
+  };
+}
+
+/**
+ * Ranks players deterministically when the 3-minute match timer expires:
+ * 1. Fewest cards remaining in hand.
+ * 2. Highest card-priority score (Tier 1 specials/wilds = 10, Tier 2 actions = 5, Tier 3 numbers = 1).
+ * 3. Highest single card tier held.
+ * 4. Higher total card scoreValue.
+ * 5. Earliest seat order in `players`.
+ */
+export function rankPlayersForTimeout(players: readonly Player[]): {
+  orderedPlayers: Player[];
+  breakdowns: TimeoutStandingBreakdown[];
+  usedTieBreaker: boolean;
+} {
+  if (players.length === 0) {
+    return { orderedPlayers: [], breakdowns: [], usedTieBreaker: false };
+  }
+
+  const entries = players.map((player, seatIndex) => ({
+    player,
+    seatIndex,
+    breakdown: evaluatePlayerTimeoutHand(player),
+    totalScoreValue: player.hand.reduce((sum, c) => sum + c.scoreValue, 0),
+  }));
+
+  const minCards = Math.min(...entries.map((e) => e.breakdown.cardCount));
+  const tiedAtMinCards = entries.filter((e) => e.breakdown.cardCount === minCards).length;
+  const usedTieBreaker = tiedAtMinCards > 1;
+
+  entries.sort((a, b) => {
+    if (a.breakdown.cardCount !== b.breakdown.cardCount) {
+      return a.breakdown.cardCount - b.breakdown.cardCount;
+    }
+    if (a.breakdown.priorityScore !== b.breakdown.priorityScore) {
+      return b.breakdown.priorityScore - a.breakdown.priorityScore;
+    }
+    if (a.breakdown.highestTier !== b.breakdown.highestTier) {
+      return b.breakdown.highestTier - a.breakdown.highestTier;
+    }
+    if (a.totalScoreValue !== b.totalScoreValue) {
+      return b.totalScoreValue - a.totalScoreValue;
+    }
+    return a.seatIndex - b.seatIndex;
+  });
+
+  return {
+    orderedPlayers: entries.map((e) => e.player),
+    breakdowns: entries.map((e) => e.breakdown),
+    usedTieBreaker,
+  };
+}
+
+/**
+ * Ends an active match on 3-minute timeout and determines the winner deterministically.
+ * Idempotent if the match is already over.
+ */
+export function resolveMatchTimeout(state: GameState): GameState {
+  if (state.isGameOver || state.players.length === 0) {
+    return state;
+  }
+
+  const { orderedPlayers, breakdowns, usedTieBreaker } = rankPlayersForTimeout(state.players);
+  const winner = orderedPlayers[0];
+  const winnerBreakdown = breakdowns[0];
+  const cardLabel = winner.hand.length === 1 ? 'card' : 'cards';
+  const reasonSuffix = usedTieBreaker
+    ? ` (tie-breaker priority ${winnerBreakdown.priorityScore} pts)`
+    : '';
+  const logMsg = `Time's up! ${winner.name} wins with ${winner.hand.length} ${cardLabel}${reasonSuffix}!`;
+
+  return {
+    ...state,
+    winner,
+    isGameOver: true,
+    endedByTimeout: true,
+    timeoutUsedTieBreaker: usedTieBreaker,
+    timeoutStandings: breakdowns,
+    matchTimeRemainingMs: 0,
+    pendingColorChoice: false,
+    pendingWildCard: null,
+    pendingDefense: null,
+    privacyMask: {
+      ...state.privacyMask,
+      isActive: false,
+    },
+    lastActionTimestamp: Date.now(),
+    logs: [...state.logs, createLogEntry('MATCH_TIMEOUT', logMsg, winner)],
+  };
+}
+
+/**
+ * Returns a concise, plain-English tie-breaker subtitle only when a tie-breaker
+ * actually decided a player's rank ahead of a tied opponent. Returns `null` when
+ * card count alone determined the player's placement.
+ */
+export function getTimeoutTieBreakerNote(
+  playerId: string,
+  standings: readonly TimeoutStandingBreakdown[] | undefined
+): string | null {
+  if (!standings || standings.length === 0) return null;
+
+  const entryIndex = standings.findIndex((s) => s.playerId === playerId);
+  if (entryIndex === -1) return null;
+
+  const entry = standings[entryIndex];
+  const tiedWithLowerRanks = standings
+    .slice(entryIndex + 1)
+    .filter((s) => s.cardCount === entry.cardCount);
+
+  if (tiedWithLowerRanks.length === 0) {
+    return null;
+  }
+
+  const lowerWithStrictlySmallerScore = tiedWithLowerRanks.filter(
+    (s) => s.priorityScore < entry.priorityScore
+  );
+
+  if (lowerWithStrictlySmallerScore.length > 0) {
+    if (
+      entry.tier1Count > 0 &&
+      lowerWithStrictlySmallerScore.some((s) => entry.tier1Count > s.tier1Count)
+    ) {
+      return 'Tie-breaker: Special/Wild card';
+    }
+    if (
+      entry.tier2Count > 0 &&
+      lowerWithStrictlySmallerScore.some((s) => entry.tier2Count > s.tier2Count)
+    ) {
+      return 'Tie-breaker: Action card';
+    }
+  }
+
+  return 'Tie-breaker: Higher card priority';
+}
 
 /**
  * Generates the full 108-card deck for Rival Card:
@@ -413,14 +645,16 @@ function applyRivalSwapWithTarget(
       return {
         ...p,
         hand: targetHandBeforeSwap,
-        hasDeclaredRival: targetHandBeforeSwap.length === 1 ? p.hasDeclaredRival : false,
+        // Automatically declare RIVAL! when a swap hands this player 1 card so opponents cannot catch them before they could tap RIVAL!
+        hasDeclaredRival: targetHandBeforeSwap.length === 1,
       };
     }
     if (idx === targetPlayerIndex) {
       return {
         ...p,
         hand: playerHandBeforeSwap,
-        hasDeclaredRival: playerHandBeforeSwap.length === 1 ? p.hasDeclaredRival : false,
+        // Automatically declare RIVAL! if the swap leaves the target holding 1 card
+        hasDeclaredRival: playerHandBeforeSwap.length === 1,
       };
     }
     return p;
@@ -1212,6 +1446,12 @@ export function createGame(
     allowStacking: options?.allowStacking ?? false,
     pendingDefense: null,
     lastDefenseBanner: null,
+    matchDurationSeconds: MATCH_DURATION_SECONDS,
+    matchStartedAt: undefined,
+    matchTimeRemainingMs: MATCH_DURATION_MS,
+    endedByTimeout: false,
+    timeoutUsedTieBreaker: false,
+    timeoutStandings: undefined,
   };
 }
 

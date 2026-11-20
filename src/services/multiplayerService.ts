@@ -1,7 +1,33 @@
 // src/services/multiplayerService.ts - Online Multiplayer Realtime Service with Session Persistence & Auto-Reconnection
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, safeStorage } from './supabase';
+import {
+  MATCH_DURATION_MS,
+  MATCH_DURATION_SECONDS,
+  computeMatchDealDurationMs,
+} from '../gameEngine';
 import type { GameState, Player } from '../types';
+
+/**
+ * Ensures an online match carries an aligned `matchStartedAt` timestamp (after dealing)
+ * so host and guests share the exact same 3-minute countdown clock.
+ */
+export function stampOnlineMatchTimer(state: GameState, nowMs: number = Date.now()): GameState {
+  if (state.matchStartedAt && Number.isFinite(state.matchStartedAt)) {
+    return {
+      ...state,
+      matchDurationSeconds: state.matchDurationSeconds ?? MATCH_DURATION_SECONDS,
+      matchTimeRemainingMs: state.matchTimeRemainingMs ?? MATCH_DURATION_MS,
+    };
+  }
+  const dealDuration = computeMatchDealDurationMs(state.players.length);
+  return {
+    ...state,
+    matchDurationSeconds: MATCH_DURATION_SECONDS,
+    matchStartedAt: nowMs + dealDuration,
+    matchTimeRemainingMs: MATCH_DURATION_MS,
+  };
+}
 
 export const ACTIVE_MATCH_STORAGE_KEY = '@rivalcard:active_online_match';
 export const MIN_ROOM_PLAYERS = 2;
@@ -559,11 +585,12 @@ export class MultiplayerService {
   public async startGame(initialState: GameState): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'connected') return;
 
+    const syncedState = stampOnlineMatchTimer(initialState);
     try {
       await this.channel.send({
         type: 'broadcast',
         event: 'game_start',
-        payload: { initialState },
+        payload: { initialState: syncedState },
       });
     } catch (err: any) {
       console.warn('Failed to broadcast game start:', err?.message || err);
@@ -654,12 +681,13 @@ export class MultiplayerService {
   ): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'connected') return;
 
+    const syncedState = stampOnlineMatchTimer(nextState);
     try {
       await this.channel.send({
         type: 'broadcast',
         event: 'series_next_match',
         payload: {
-          nextState,
+          nextState: syncedState,
           isNewSeries,
         },
       });

@@ -26,6 +26,7 @@ import {
   canPlayerCallRival,
   catchRival,
   chooseWildColor,
+  computeRemainingMsFromStart,
   createGame,
   declareRival,
   dismissPrivacyMask,
@@ -36,6 +37,7 @@ import {
   isValidMove,
   isWildCard,
   makeBotMove,
+  MATCH_DURATION_MS,
   pickBestBotCard,
   playCard,
   playPairCards,
@@ -45,6 +47,7 @@ import {
   resolveDefenseTakeHit,
   resolveDefenseWithMirror,
   resolveDefenseWithShield,
+  resolveMatchTimeout,
   resolvePendingDraw,
   TURN_DURATION,
 } from '../gameEngine';
@@ -61,8 +64,10 @@ import { ErrorToast } from '../components/ErrorToast';
 import { errorToastService } from '../services/errorToastService';
 import { ModesModal } from '../components/ModesModal';
 import { SettingsModal } from '../components/SettingsModal';
+import { HowToPlayModal } from '../components/HowToPlayModal';
 import { TauntBar, TauntToastBanner } from '../components/TauntBar';
 import { TurnTimerBadge } from '../components/TurnTimerBadge';
+import { MatchTimerBadge } from '../components/MatchTimerBadge';
 import { FlyingCard, FlyingCardData } from '../components/FlyingCard';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
@@ -78,6 +83,7 @@ import { shopService, ShopItem } from '../services/shopService';
 import { settingsService, UserSettings, DEFAULT_SETTINGS } from '../services/settingsService';
 import {
   multiplayerService,
+  stampOnlineMatchTimer,
   TauntMessage,
   saveActiveMatchSession,
   clearActiveMatchSession,
@@ -232,6 +238,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [isLobbyModalOpen, setIsLobbyModalOpen] = useState(false);
   const [isModesModalOpen, setIsModesModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHowToPlayOpen, setIsHowToPlayOpen] = useState(false);
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
   const [onlineRoomCode, setOnlineRoomCode] = useState<string | null>(initialOnlineRoomCode);
   const [localOnlinePlayerId, setLocalOnlinePlayerId] = useState<string | null>(initialLocalOnlinePlayerId);
@@ -799,7 +806,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   };
 
   // Broadcast state changes in multiplayer mode (recording Private Room Series standings on round end)
-  const commitGameState = (nextState: GameState, actionDescription: string) => {
+  const commitGameState = useCallback((nextState: GameState, actionDescription: string) => {
     const finalizedState =
       nextState.isGameOver && nextState.seriesState?.isPrivateSeries
         ? recordSeriesRoundResult(nextState)
@@ -811,7 +818,129 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     if (finalizedState.gameMode === 'multiplayer') {
       multiplayerService.broadcastGameState(finalizedState, actionDescription);
     }
-  };
+  }, []);
+
+  // =========================================================================
+  // 3-MINUTE MATCH TIMER (ALL MODES) & TIMEOUT TIE-BREAKER
+  // =========================================================================
+  const [matchRemainingMs, setMatchRemainingMs] = useState<number>(() => {
+    if (initialGameState?.gameMode === 'multiplayer' && initialGameState.matchStartedAt) {
+      return computeRemainingMsFromStart(
+        initialGameState.matchStartedAt,
+        Date.now(),
+        (initialGameState.matchDurationSeconds ?? 180) * 1000
+      );
+    }
+    return initialGameState?.matchTimeRemainingMs ?? MATCH_DURATION_MS;
+  });
+  const matchRemainingRef = useRef<number>(matchRemainingMs);
+  const hasTriggeredMatchTimeoutRef = useRef<boolean>(Boolean(initialGameState?.isGameOver));
+  const lastMatchTickSecRef = useRef<number | null>(null);
+  const matchLastTickAtRef = useRef<number>(Date.now());
+  const gameStateRef = useRef<GameState>(gameState);
+  gameStateRef.current = gameState;
+
+  const resetMatchCountdown = useCallback((nextRemainingMs: number = MATCH_DURATION_MS) => {
+    hasTriggeredMatchTimeoutRef.current = false;
+    lastMatchTickSecRef.current = null;
+    matchRemainingRef.current = nextRemainingMs;
+    matchLastTickAtRef.current = Date.now();
+    setMatchRemainingMs(nextRemainingMs);
+  }, []);
+
+  // Pause match timer cleanly when dealing, game over, or local Pause/Settings/Rulebook/Leave modals are open
+  const isMatchTimerPaused =
+    gameState.isGameOver ||
+    isDealing ||
+    (!isOnlineMode &&
+      (isSettingsOpen ||
+        isHowToPlayOpen ||
+        isLeaveModalOpen ||
+        isModesModalOpen ||
+        isLobbyModalOpen));
+
+  // Ensure online rooms always carry an aligned matchStartedAt anchor after initial deal
+  useEffect(() => {
+    if (!isOnlineMode || isDealing || gameState.isGameOver || gameState.matchStartedAt) return;
+    const hostId =
+      gameState.seriesState?.hostPlayerId ||
+      (multiplayerService.getMyPlayer()?.isHost ? myPlayer.id : gameState.players[0]?.id);
+    if (hostId === myPlayer.id) {
+      const anchoredState: GameState = {
+        ...gameState,
+        matchStartedAt: Date.now(),
+        matchTimeRemainingMs: MATCH_DURATION_MS,
+      };
+      commitGameState(anchoredState, 'Match timer started');
+    }
+  }, [
+    isOnlineMode,
+    isDealing,
+    gameState,
+    myPlayer.id,
+    commitGameState,
+  ]);
+
+  // 250ms match clock ticker (wall-clock anchored in Online Rooms, pause-aware delta in Local Modes)
+  useEffect(() => {
+    if (gameState.isGameOver || isDealing) {
+      return;
+    }
+
+    matchLastTickAtRef.current = Date.now();
+
+    const interval = setInterval(() => {
+      const latestState = gameStateRef.current;
+      if (latestState.isGameOver) return;
+
+      let nextMs: number;
+      if (latestState.gameMode === 'multiplayer') {
+        const durationMs = (latestState.matchDurationSeconds ?? 180) * 1000;
+        nextMs = computeRemainingMsFromStart(latestState.matchStartedAt, Date.now(), durationMs);
+      } else {
+        if (isMatchTimerPaused) {
+          matchLastTickAtRef.current = Date.now();
+          return;
+        }
+        const now = Date.now();
+        const delta = Math.max(0, Math.min(1000, now - matchLastTickAtRef.current));
+        matchLastTickAtRef.current = now;
+        nextMs = Math.max(0, matchRemainingRef.current - delta);
+      }
+
+      matchRemainingRef.current = nextMs;
+      setMatchRemainingMs(nextMs);
+
+      const sec = Math.ceil(nextMs / 1000);
+      if (sec <= 10 && sec > 0 && sec !== lastMatchTickSecRef.current) {
+        lastMatchTickSecRef.current = sec;
+        soundService.playCardSnap();
+      }
+
+      if (nextMs <= 0 && !hasTriggeredMatchTimeoutRef.current) {
+        if (latestState.gameMode === 'multiplayer') {
+          const durationMs = (latestState.matchDurationSeconds ?? 180) * 1000;
+          const startedAt = latestState.matchStartedAt ?? Date.now();
+          const hostId =
+            latestState.seriesState?.hostPlayerId ||
+            (multiplayerService.getMyPlayer()?.isHost ? myPlayer.id : latestState.players[0]?.id);
+          const overtimeMs = Date.now() - (startedAt + durationMs);
+          // Host resolves immediately at 00:00; guests have a 1.5s fallback in case host dropped
+          if (myPlayer.id !== hostId && overtimeMs < 1500) {
+            return;
+          }
+        }
+
+        hasTriggeredMatchTimeoutRef.current = true;
+        const timedOutState = resolveMatchTimeout(latestState);
+        soundService.playWinChime();
+        hapticsService.victory();
+        commitGameState(timedOutState, "Time's up! Match ended by 3-minute timer");
+      }
+    }, 250);
+
+    return () => clearInterval(interval);
+  }, [gameState.isGameOver, isDealing, isMatchTimerPaused, myPlayer.id, commitGameState]);
 
   // =========================================================================
   // 15-SECOND TURN TIMER & AFK AUTO-PLAY LOGIC
@@ -831,6 +960,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     isLeaveModalOpen ||
     isModesModalOpen ||
     isLobbyModalOpen ||
+    (!isOnlineMode && (isSettingsOpen || isHowToPlayOpen)) ||
     isReconnecting;
 
   // Reset turn timer to 15s whenever the active player turn changes or game deals
@@ -1091,10 +1221,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
     lastHandledRivalCallRef.current = null;
     resetMatchTrackingIds(null);
+    resetMatchCountdown(MATCH_DURATION_MS);
     setSeriesNextCountdown(null);
     setRivalCountdown(null);
     runDealingAnimation(players);
-  }, [runDealingAnimation, resetMatchTrackingIds]);
+  }, [runDealingAnimation, resetMatchTrackingIds, resetMatchCountdown]);
 
   // Handle post-game "Play Again" action
   const handlePlayAgain = async () => {
@@ -1121,12 +1252,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
     if (isOnlineMode) {
       resetMatchTrackingIds(onlineRoomCode);
+      resetMatchCountdown(MATCH_DURATION_MS);
       const playerConfigs = gameState.players.map((p) => ({
         id: p.id,
         name: p.name,
         isBot: false,
       }));
-      const freshState = createGame(playerConfigs, 'multiplayer', { allowStacking: true });
+      const freshState = stampOnlineMatchTimer(
+        createGame(playerConfigs, 'multiplayer', { allowStacking: true })
+      );
       lastTopDiscardIdRef.current =
         freshState.discardPile[freshState.discardPile.length - 1]?.id ?? null;
       lastPendingColorChoiceRef.current = Boolean(freshState.pendingColorChoice);
@@ -1167,6 +1301,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       lastTopDiscardIdRef.current =
         nextMatchState.discardPile[nextMatchState.discardPile.length - 1]?.id ?? null;
       lastPendingColorChoiceRef.current = Boolean(nextMatchState.pendingColorChoice);
+      resetMatchCountdown(MATCH_DURATION_MS);
       setGameState(nextMatchState);
 
       try {
@@ -1181,7 +1316,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         runDealingAnimation(nextMatchState.players);
       }
     },
-    [isPrivateSeriesRoom, gameState, runDealingAnimation]
+    [isPrivateSeriesRoom, gameState, runDealingAnimation, resetMatchCountdown]
   );
 
   // Between-round countdown timer (12s) in Private Room Series; Host auto-advances at 0
@@ -1361,16 +1496,39 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
           lastTopDiscardIdRef.current = remoteTopId;
           lastPendingColorChoiceRef.current = Boolean(normalizedRemote.pendingColorChoice);
+          if (normalizedRemote.matchStartedAt) {
+            const syncedRem = computeRemainingMsFromStart(
+              normalizedRemote.matchStartedAt,
+              Date.now(),
+              (normalizedRemote.matchDurationSeconds ?? 180) * 1000
+            );
+            matchRemainingRef.current = syncedRem;
+            setMatchRemainingMs(syncedRem);
+          }
           setGameState(normalizedRemote);
           setIsReconnecting(false);
 
           if (normalizedRemote.isGameOver) {
+            hasTriggeredMatchTimeoutRef.current = true;
+            if (normalizedRemote.endedByTimeout) {
+              matchRemainingRef.current = 0;
+              setMatchRemainingMs(0);
+            }
             if (!wasGameOver) {
               soundService.playWinChime();
               hapticsService.victory();
             }
           } else if (wasGameOver) {
             resetMatchTrackingIds(onlineRoomCode);
+            resetMatchCountdown(
+              normalizedRemote.matchStartedAt
+                ? computeRemainingMsFromStart(
+                    normalizedRemote.matchStartedAt,
+                    Date.now(),
+                    (normalizedRemote.matchDurationSeconds ?? 180) * 1000
+                  )
+                : MATCH_DURATION_MS
+            );
             setSelectedWildCard(null);
             setIsColorPickerOpen(false);
             setPendingPairPlay(null);
@@ -1424,6 +1582,21 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           syncedState.discardPile[syncedState.discardPile.length - 1]?.id ?? null;
         lastPendingColorChoiceRef.current = Boolean(syncedState.pendingColorChoice);
         lastHandledDefenseBannerIdRef.current = syncedState.lastDefenseBanner?.id ?? null;
+        if (syncedState.isGameOver) {
+          hasTriggeredMatchTimeoutRef.current = true;
+          if (syncedState.endedByTimeout) {
+            matchRemainingRef.current = 0;
+            setMatchRemainingMs(0);
+          }
+        } else if (syncedState.matchStartedAt) {
+          resetMatchCountdown(
+            computeRemainingMsFromStart(
+              syncedState.matchStartedAt,
+              Date.now(),
+              (syncedState.matchDurationSeconds ?? 180) * 1000
+            )
+          );
+        }
         setGameState(syncedState);
         setIsReconnecting(false);
         showQuickBanner('Match state synchronized!');
@@ -1451,6 +1624,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         lastTopDiscardIdRef.current =
           nextState.discardPile[nextState.discardPile.length - 1]?.id ?? null;
         lastPendingColorChoiceRef.current = Boolean(nextState.pendingColorChoice);
+        resetMatchCountdown(
+          nextState.matchStartedAt
+            ? computeRemainingMsFromStart(
+                nextState.matchStartedAt,
+                Date.now(),
+                (nextState.matchDurationSeconds ?? 180) * 1000
+              )
+            : MATCH_DURATION_MS
+        );
         setGameState(nextState);
         setIsReconnecting(false);
         if (!nextState.seriesState?.seriesEndedEarly) {
@@ -2793,6 +2975,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               </View>
 
               <View style={styles.headerRight}>
+                {/* 3-Minute Match Countdown Pill */}
+                <MatchTimerBadge remainingMs={matchRemainingMs} isPaused={isMatchTimerPaused} />
+
                 {/* Real-time Quick Taunt Bar Button */}
                 <TauntBar
                   activeTaunt={activeTaunt}
@@ -3343,6 +3528,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           gameMode={gameState.gameMode}
           isOnlineMode={isOnlineMode}
           matchRewards={matchRewards}
+          endedByTimeout={gameState.endedByTimeout}
+          timeoutUsedTieBreaker={gameState.timeoutUsedTieBreaker}
+          timeoutStandings={gameState.timeoutStandings}
           onPlayAgain={handlePlayAgain}
           onQuitRoom={handleQuitGame}
           onPlayWithMoreBots={() => handleStartGame('vs_bot_4p')}
@@ -3358,6 +3546,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           roundWinner={gameState.winner}
           localPlayerId={myPlayer.id}
           nextMatchCountdown={seriesNextCountdown}
+          endedByTimeout={gameState.endedByTimeout}
+          timeoutUsedTieBreaker={gameState.timeoutUsedTieBreaker}
           onNextMatch={() => handleAdvanceNextSeriesMatch(false)}
           onPlayNewSeries={() => handleAdvanceNextSeriesMatch(true)}
           onLeaveRoom={handleQuitGame}
@@ -3381,6 +3571,16 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         <SettingsModal
           visible={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
+          onOpenRulebook={() => {
+            setIsSettingsOpen(false);
+            setIsHowToPlayOpen(true);
+          }}
+        />
+
+        {/* In-Game Rulebook Modal (pauses local match clock while open) */}
+        <HowToPlayModal
+          visible={isHowToPlayOpen}
+          onClose={() => setIsHowToPlayOpen(false)}
         />
 
         {/* Reactive 3-Second Defense Modal (shown only to defending human player) */}
@@ -3917,7 +4117,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 0,
-    marginTop: 0,
+    marginTop: 14,
     zIndex: 10,
   },
   arenaSectionCentered: {
@@ -3997,7 +4197,7 @@ const styles = StyleSheet.create({
     left: '50%',
     width: 220,
     height: 154,
-    transform: [{ translateX: -110 }, { translateY: -77 }],
+    transform: [{ translateX: -110 }, { translateY: -69 }],
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,

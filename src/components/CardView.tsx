@@ -150,9 +150,18 @@ export const CardView: React.FC<CardViewProps> = ({
       >
         {/* Top-Left Corner Badge */}
         <View style={styles.topLeftCorner}>
-          <Text style={[styles.cornerText, dimensions.cornerText]}>
-            {cornerLabel}
-          </Text>
+          {card.value === 'reverse' ? (
+            <View style={styles.cornerMotifShadow}>
+              <ReverseArrowsMotif
+                size={size === 'small' ? 'corner_small' : size === 'large' ? 'corner_large' : 'corner_medium'}
+                color="#FFFFFF"
+              />
+            </View>
+          ) : (
+            <Text style={[styles.cornerText, dimensions.cornerText]}>
+              {cornerLabel}
+            </Text>
+          )}
         </View>
 
         {/* Center Oval Visual */}
@@ -215,9 +224,18 @@ export const CardView: React.FC<CardViewProps> = ({
 
         {/* Bottom-Right Corner Badge */}
         <View style={styles.bottomRightCorner}>
-          <Text style={[styles.cornerText, dimensions.cornerText]}>
-            {cornerLabel}
-          </Text>
+          {card.value === 'reverse' ? (
+            <View style={styles.cornerMotifShadow}>
+              <ReverseArrowsMotif
+                size={size === 'small' ? 'corner_small' : size === 'large' ? 'corner_large' : 'corner_medium'}
+                color="#FFFFFF"
+              />
+            </View>
+          ) : (
+            <Text style={[styles.cornerText, dimensions.cornerText]}>
+              {cornerLabel}
+            </Text>
+          )}
         </View>
       </View>
     </TouchableOpacity>
@@ -304,76 +322,73 @@ function getCornerDisplayLabel(value: string): string {
   }
 }
 
-// Iconic curved, dynamic circular looping vector arrows for Reverse cards
-const ReverseArrowsMotif: React.FC<{ size: 'small' | 'medium' | 'large'; color: string }> = ({
+type ReverseMotifSize = 'corner_small' | 'corner_medium' | 'corner_large' | 'small' | 'medium' | 'large';
+
+const SingleCurvedArrow: React.FC<{
+  width: number;
+  arcH: number;
+  stroke: number;
+  arrowHead: number;
+  color: string;
+}> = ({ width, arcH, stroke, arrowHead, color }) => {
+  const headWidth = arrowHead * 1.45;
+  const stemWidth = Math.max(4, width - headWidth + 1.5);
+  return (
+    <View style={[styles.reverseArrowHalf, { width, height: arcH }]}>
+      <View
+        style={[
+          styles.reverseArcStem,
+          {
+            width: stemWidth,
+            height: arcH,
+            borderColor: color,
+            borderTopWidth: stroke,
+            borderLeftWidth: stroke,
+            borderTopLeftRadius: arcH * 0.9,
+            borderBottomLeftRadius: stroke * 0.5,
+          },
+        ]}
+      />
+      <View
+        style={[
+          styles.reverseArrowHeadRight,
+          {
+            borderTopWidth: arrowHead,
+            borderBottomWidth: arrowHead,
+            borderLeftWidth: headWidth,
+            borderLeftColor: color,
+            top: stroke / 2 - arrowHead,
+            right: 0,
+          },
+        ]}
+      />
+    </View>
+  );
+};
+
+// Iconic curved circular looping vector arrows for Reverse cards with flush tangent arrowheads
+const ReverseArrowsMotif: React.FC<{ size: ReverseMotifSize; color: string }> = ({
   size,
   color,
 }) => {
-  const isSmall = size === 'small';
-  const isLarge = size === 'large';
-  const stroke = isSmall ? 2 : isLarge ? 3.5 : 2.8;
-  const boxW = isSmall ? 15 : isLarge ? 34 : 26;
-  const boxH = isSmall ? 14 : isLarge ? 30 : 23;
-  const arrowHead = isSmall ? 3 : isLarge ? 6 : 4.5;
+  const metrics: Record<ReverseMotifSize, { boxW: number; boxH: number; stroke: number; arrowHead: number }> = {
+    corner_small: { boxW: 8, boxH: 7.5, stroke: 1.2, arrowHead: 1.9 },
+    corner_medium: { boxW: 11, boxH: 10, stroke: 1.6, arrowHead: 2.5 },
+    corner_large: { boxW: 13, boxH: 12, stroke: 1.9, arrowHead: 2.9 },
+    small: { boxW: 15, boxH: 14, stroke: 2, arrowHead: 3 },
+    medium: { boxW: 26, boxH: 23, stroke: 2.8, arrowHead: 4.5 },
+    large: { boxW: 34, boxH: 30, stroke: 3.5, arrowHead: 5.8 },
+  };
+  const { boxW, boxH, stroke, arrowHead } = metrics[size];
+  const arcH = boxH * 0.54;
 
   return (
     <View style={[styles.reverseMotifBox, { width: boxW, height: boxH }]}>
-      {/* Top curving arrow looping clockwise to right */}
-      <View style={[styles.reverseArrowGroupTop, { height: boxH * 0.6 }]}>
-        <View
-          style={[
-            styles.reverseArcTop,
-            {
-              borderColor: color,
-              borderTopWidth: stroke,
-              borderLeftWidth: stroke,
-              borderTopLeftRadius: boxW * 0.5,
-              borderTopRightRadius: boxW * 0.3,
-            },
-          ]}
-        />
-        <View
-          style={[
-            styles.reverseArrowHeadRight,
-            {
-              borderTopWidth: arrowHead,
-              borderBottomWidth: arrowHead,
-              borderLeftWidth: arrowHead * 1.6,
-              borderLeftColor: color,
-              top: -arrowHead + stroke / 2,
-              right: -1,
-            },
-          ]}
-        />
+      <View style={[styles.reverseArrowLayerTop, { width: boxW, height: arcH }]}>
+        <SingleCurvedArrow width={boxW} arcH={arcH} stroke={stroke} arrowHead={arrowHead} color={color} />
       </View>
-
-      {/* Bottom curving arrow looping clockwise to left */}
-      <View style={[styles.reverseArrowGroupBottom, { height: boxH * 0.6 }]}>
-        <View
-          style={[
-            styles.reverseArcBottom,
-            {
-              borderColor: color,
-              borderBottomWidth: stroke,
-              borderRightWidth: stroke,
-              borderBottomRightRadius: boxW * 0.5,
-              borderBottomLeftRadius: boxW * 0.3,
-            },
-          ]}
-        />
-        <View
-          style={[
-            styles.reverseArrowHeadLeft,
-            {
-              borderTopWidth: arrowHead,
-              borderBottomWidth: arrowHead,
-              borderRightWidth: arrowHead * 1.6,
-              borderRightColor: color,
-              bottom: -arrowHead + stroke / 2,
-              left: -1,
-            },
-          ]}
-        />
+      <View style={[styles.reverseArrowLayerBottom, { width: boxW, height: arcH }]}>
+        <SingleCurvedArrow width={boxW} arcH={arcH} stroke={stroke} arrowHead={arrowHead} color={color} />
       </View>
     </View>
   );
@@ -559,41 +574,38 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 2,
   },
+  cornerMotifShadow: {
+    paddingTop: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0.5, height: 1 },
+    shadowOpacity: 0.6,
+    shadowRadius: 1.5,
+    elevation: 2,
+  },
   reverseMotifBox: {
-    justifyContent: 'space-between',
-    alignItems: 'center',
     position: 'relative',
   },
-  reverseArrowGroupTop: {
-    width: '100%',
-    position: 'relative',
+  reverseArrowLayerTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
   },
-  reverseArcTop: {
-    width: '85%',
-    height: '100%',
-    alignSelf: 'flex-start',
+  reverseArrowLayerBottom: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    transform: [{ rotate: '180deg' }],
+  },
+  reverseArrowHalf: {
+    position: 'relative',
+    overflow: 'visible',
+  },
+  reverseArcStem: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
     borderRightWidth: 0,
     borderBottomWidth: 0,
-  },
-  reverseArrowHeadLeft: {
-    position: 'absolute',
-    width: 0,
-    height: 0,
-    borderStyle: 'solid',
-    borderTopColor: 'transparent',
-    borderBottomColor: 'transparent',
-    borderLeftWidth: 0,
-  },
-  reverseArrowGroupBottom: {
-    width: '100%',
-    position: 'relative',
-  },
-  reverseArcBottom: {
-    width: '85%',
-    height: '100%',
-    alignSelf: 'flex-end',
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
   },
   reverseArrowHeadRight: {
     position: 'absolute',

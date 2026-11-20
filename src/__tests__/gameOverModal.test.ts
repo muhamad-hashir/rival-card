@@ -1,7 +1,8 @@
 // src/__tests__/gameOverModal.test.ts - Unit tests for GameOverModal rankings and mode-aware button logic
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Player } from '../types';
+import { getTimeoutTieBreakerNote } from '../gameEngine';
+import type { Player, TimeoutStandingBreakdown } from '../types';
 
 function getOrdinalRank(index: number): string {
   if (index === 0) return '1ST';
@@ -226,5 +227,25 @@ describe('GameOverModal Standings & Ranking Logic', () => {
     // Standard colored cards retain their own intrinsic color
     assert.strictEqual(getCardEffectiveColor('red', 'blue'), '#EF4444');
     assert.strictEqual(getCardEffectiveColor('green', 'yellow'), '#22C55E');
+  });
+
+  test('getTimeoutTieBreakerNote shows plain-English tie-breaker subtitle only when a tie-breaker decided rank', () => {
+    // Un-tied card counts: show nothing extra for anyone
+    const untied: TimeoutStandingBreakdown[] = [
+      { playerId: 'p1', cardCount: 1, priorityScore: 1, tier1Count: 0, tier2Count: 0, tier3Count: 1, highestTier: 1 },
+      { playerId: 'p2', cardCount: 3, priorityScore: 15, tier1Count: 1, tier2Count: 1, tier3Count: 0, highestTier: 3 },
+    ];
+    assert.strictEqual(getTimeoutTieBreakerNote('p1', untied), null);
+    assert.strictEqual(getTimeoutTieBreakerNote('p2', untied), null);
+
+    // 3-way tie on 2 cards: Special/Wild > Action > Number
+    const threeWayTie: TimeoutStandingBreakdown[] = [
+      { playerId: 'p1', cardCount: 2, priorityScore: 11, tier1Count: 1, tier2Count: 0, tier3Count: 1, highestTier: 3 },
+      { playerId: 'p2', cardCount: 2, priorityScore: 6, tier1Count: 0, tier2Count: 1, tier3Count: 1, highestTier: 2 },
+      { playerId: 'p3', cardCount: 2, priorityScore: 2, tier1Count: 0, tier2Count: 0, tier3Count: 2, highestTier: 1 },
+    ];
+    assert.strictEqual(getTimeoutTieBreakerNote('p1', threeWayTie), 'Tie-breaker: Special/Wild card');
+    assert.strictEqual(getTimeoutTieBreakerNote('p2', threeWayTie), 'Tie-breaker: Action card');
+    assert.strictEqual(getTimeoutTieBreakerNote('p3', threeWayTie), null);
   });
 });

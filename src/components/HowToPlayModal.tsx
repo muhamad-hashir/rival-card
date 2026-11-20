@@ -303,6 +303,17 @@ const PageOneBasics: React.FC = () => {
           If the drawn card matches, you may play it immediately!
         </Text>
       </View>
+
+      {/* Rule 4: 3-Minute Match Clock */}
+      <View style={styles.ruleCard}>
+        <View style={styles.ruleHeader}>
+          <Text style={styles.ruleIconEmoji}>⏱️</Text>
+          <Text style={styles.ruleTitle}>3-Minute Match Timer</Text>
+        </View>
+        <Text style={styles.ruleBody}>
+          Every match runs on a <Text style={styles.textHighlightDark}>3:00 clock</Text>. If time expires before anyone empties their hand, the player with the <Text style={styles.textHighlightGreen}>fewest cards remaining</Text> wins!
+        </Text>
+      </View>
     </View>
   );
 };
@@ -538,6 +549,28 @@ const PageFourRivalShout: React.FC = () => {
             <Text style={styles.penaltyPillText}>AUTO-PASS</Text>
           </View>
         </View>
+        <View style={styles.penaltyTableRow}>
+          <Text style={styles.penaltyTableEvent}>3:00 Match Clock Expired</Text>
+          <View style={styles.penaltyPillOrange}>
+            <Text style={styles.penaltyPillText}>FEWEST CARDS</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Timeout Tie-Breaker Card Priority */}
+      <View style={styles.ruleCard}>
+        <View style={styles.ruleHeader}>
+          <Text style={styles.ruleIconEmoji}>⚖️</Text>
+          <Text style={styles.ruleTitle}>Timeout Tie-Breaker Priority</Text>
+        </View>
+        <Text style={styles.ruleBody}>
+          If players tie for the fewest cards at <Text style={styles.textHighlightRed}>00:00</Text>, remaining hand priority decides the winner:
+        </Text>
+        <Text style={[styles.ruleBodySmall, { marginTop: 4 }]}>
+          <Text style={styles.textHighlightGold}>10 pts</Text> — Specials & Wilds (Swap, Mute, Shield, Mirror, +4, Color Change){'\n'}
+          <Text style={styles.textHighlightDark}>5 pts</Text> — Action Cards (Skip, Reverse, +2){'\n'}
+          <Text style={styles.textHighlightGreen}>1 pt</Text> — Number Cards (0–9)
+        </Text>
       </View>
 
       {/* Shout 3: XP & Economy */}

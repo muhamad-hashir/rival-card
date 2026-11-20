@@ -20,6 +20,7 @@ import {
 import {
   MAX_ROOM_PLAYERS,
   MIN_ROOM_PLAYERS,
+  stampOnlineMatchTimer,
 } from '../services/multiplayerService';
 import { matchmakingService } from '../services/matchmakingService';
 import { createGame } from '../gameEngine';
@@ -293,12 +294,13 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
       }));
 
       const resolvedHostId = getResolvedPlayerId();
-      const initialState = createGame(playerConfigs, 'multiplayer', { allowStacking: true });
-      initialState.seriesState = createInitialSeriesState(
+      const rawState = createGame(playerConfigs, 'multiplayer', { allowStacking: true });
+      rawState.seriesState = createInitialSeriesState(
         playerConfigs,
         resolvedHostId,
         PRIVATE_SERIES_TOTAL_MATCHES
       );
+      const initialState = stampOnlineMatchTimer(rawState);
 
       await multiplayerService.startGame(initialState);
       setIsBusy(false);

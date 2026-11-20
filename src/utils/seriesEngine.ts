@@ -1,5 +1,11 @@
 // src/utils/seriesEngine.ts - Pure state engine for Private Room 5-Match Series
-import { createGame } from '../gameEngine';
+import {
+  MATCH_DURATION_MS,
+  MATCH_DURATION_SECONDS,
+  computeMatchDealDurationMs,
+  createGame,
+  rankPlayersForTimeout,
+} from '../gameEngine';
 import type {
   GameState,
   Player,
@@ -67,16 +73,18 @@ export function recordSeriesRoundResult(state: GameState): GameState {
   }
 
   const winnerId = state.winner.id;
-  const rankedPlayers = [...state.players].sort((a, b) => {
-    if (a.id === winnerId) return -1;
-    if (b.id === winnerId) return 1;
-    if (a.hand.length !== b.hand.length) {
-      return a.hand.length - b.hand.length;
-    }
-    const scoreA = a.hand.reduce((sum, c) => sum + c.scoreValue, 0);
-    const scoreB = b.hand.reduce((sum, c) => sum + c.scoreValue, 0);
-    return scoreA - scoreB;
-  });
+  const rankedPlayers = state.endedByTimeout
+    ? rankPlayersForTimeout(state.players).orderedPlayers
+    : [...state.players].sort((a, b) => {
+        if (a.id === winnerId) return -1;
+        if (b.id === winnerId) return 1;
+        if (a.hand.length !== b.hand.length) {
+          return a.hand.length - b.hand.length;
+        }
+        const scoreA = a.hand.reduce((sum, c) => sum + c.scoreValue, 0);
+        const scoreB = b.hand.reduce((sum, c) => sum + c.scoreValue, 0);
+        return scoreA - scoreB;
+      });
 
   const nextStats: Record<string, SeriesPlayerStats> = { ...series.playerStats };
   const placements: SeriesRoundResult['placements'] = rankedPlayers.map((player, index) => {
@@ -232,6 +240,9 @@ export function createNextSeriesMatchState(
 
   return {
     ...freshGame,
+    matchDurationSeconds: MATCH_DURATION_SECONDS,
+    matchStartedAt: Date.now() + computeMatchDealDurationMs(playerConfigs.length),
+    matchTimeRemainingMs: MATCH_DURATION_MS,
     seriesState: nextSeriesState,
   };
 }
