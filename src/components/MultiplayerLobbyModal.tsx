@@ -37,6 +37,7 @@ import {
   PlayerProfile,
   getAvatarConfig,
 } from '../services/playerProfileService';
+import { AvatarIcon } from './AvatarIcon';
 import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
@@ -358,14 +359,11 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
 
             {/* Profile Status Chip (Uses saved nickname & avatar without prompting to re-type) */}
             <View style={styles.profileChip}>
-              <View
-                style={[
-                  styles.profileAvatarCircle,
-                  { backgroundColor: avatarConfig.bgColor || '#FED7AA' },
-                ]}
-              >
-                <Text style={styles.profileAvatarEmoji}>{avatarConfig.emoji}</Text>
-              </View>
+              <AvatarIcon
+                avatarId={profile?.avatarId}
+                size={36}
+                style={{ marginRight: 10 }}
+              />
               <View style={styles.profileChipInfo}>
                 <Text style={styles.profileChipLabel}>Playing as</Text>
                 <Text style={styles.profileChipName} numberOfLines={1}>
@@ -516,7 +514,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                           return (
                             <View key={p.id} style={styles.playerItemRow}>
                               <View style={styles.playerItemLeft}>
-                                <Text style={styles.playerItemEmoji}>{pAvatar.emoji}</Text>
+                                <AvatarIcon avatarId={p.avatarId} size={24} showCircle />
                                 <Text style={styles.playerItemName}>
                                   {p.name} {p.id === getResolvedPlayerId() ? '(You)' : ''}
                                 </Text>
@@ -635,7 +633,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                             return (
                               <View key={p.id} style={styles.playerItemRow}>
                                 <View style={styles.playerItemLeft}>
-                                  <Text style={styles.playerItemEmoji}>{pAvatar.emoji}</Text>
+                                  <AvatarIcon avatarId={p.avatarId} size={24} showCircle />
                                   <Text style={styles.playerItemName}>
                                     {p.name} {p.id === getResolvedPlayerId() ? '(You)' : ''}
                                   </Text>

@@ -110,7 +110,7 @@ describe('Auth Service & Deep Link Parsing', () => {
       // 1. Simulate active gameplay as a guest
       await playerProfileService.addCurrency(450, 15); // Coins: 250 + 450 = 700; Gems: 10 + 15 = 25
       await playerProfileService.updateNickname('AceRival');
-      await playerProfileService.updateAvatar('avatar_3');
+      await playerProfileService.updateAvatar('bot');
       await playerProfileService.recordMatchResult(true); // Wins: 1, GamesPlayed: 1, Streak: 1
       await playerProfileService.recordMatchResult(true); // Wins: 2, GamesPlayed: 2, Streak: 2
 
@@ -135,7 +135,7 @@ describe('Auth Service & Deep Link Parsing', () => {
       assert.strictEqual(linked.id, 'new_google_user_123');
       assert.strictEqual(linked.email, 'ace@rivalcard.com');
       assert.strictEqual(linked.nickname, 'AceRival'); // Preserves custom nickname!
-      assert.strictEqual(linked.avatarId, 'avatar_3'); // Preserves avatar!
+      assert.strictEqual(linked.avatarId, 'bot'); // Preserves avatar!
       assert.strictEqual(linked.coins, 700); // 700 coins preserved! Not reset to 250 or 0!
       assert.strictEqual(linked.gems, 25); // 25 gems preserved! Not reset to 10 or 0!
       assert.strictEqual(linked.stats.wins, 2); // 2 wins preserved!
@@ -177,7 +177,8 @@ describe('Auth Service & Deep Link Parsing', () => {
       assert.strictEqual(merged.id, 'returning_user_456');
       assert.strictEqual(merged.email, 'veteran@rivalcard.com');
       assert.strictEqual(merged.nickname, 'VeteranPro');
-      assert.strictEqual(merged.avatarId, 'avatar_5');
+      assert.strictEqual(merged.avatarId, 'rival');
+      assert.ok(merged.unlockedAvatars.includes('rival'));
       assert.strictEqual(merged.level, 8); // Higher level preserved
       assert.strictEqual(merged.coins, 10100); // 10,000 cloud + 100 delta earned as guest!
       assert.strictEqual(merged.gems, 152); // 150 cloud + 2 delta earned as guest!
@@ -223,7 +224,8 @@ describe('Auth Service & Deep Link Parsing', () => {
       assert.strictEqual(restored.id, 'veteran_device2_789');
       assert.strictEqual(restored.email, 'device2@rivalcard.com');
       assert.strictEqual(restored.nickname, 'CloudMaster');
-      assert.strictEqual(restored.avatarId, 'avatar_6');
+      assert.strictEqual(restored.avatarId, 'champ');
+      assert.ok(restored.unlockedAvatars.includes('champ'));
       assert.strictEqual(restored.level, 12);
       assert.strictEqual(restored.currentXp, 850);
       assert.strictEqual(restored.coins, 15000);

@@ -17,7 +17,8 @@ describe('Player Profile Service (Guest Profile System)', () => {
     const profile = await playerProfileService.getProfile();
     assert.ok(profile.id, 'Profile should have a unique ID');
     assert.strictEqual(profile.nickname, 'Player');
-    assert.strictEqual(profile.avatarId, 'avatar_1');
+    assert.strictEqual(profile.avatarId, 'fox');
+    assert.deepStrictEqual(profile.unlockedAvatars, ['fox', 'bot']);
     assert.strictEqual(profile.isGuest, true);
     assert.strictEqual(profile.stats.gamesPlayed, 0);
     assert.strictEqual(profile.stats.wins, 0);
@@ -42,17 +43,21 @@ describe('Player Profile Service (Guest Profile System)', () => {
     assert.strictEqual(empty.nickname, 'Player');
   });
 
-  it('updates avatar only with valid avatar IDs and falls back on invalid', async () => {
-    const updated = await playerProfileService.updateAvatar('avatar_4');
-    assert.strictEqual(updated.avatarId, 'avatar_4');
+  it('updates avatar only with unlocked valid avatar IDs and falls back on invalid', async () => {
+    const updated = await playerProfileService.updateAvatar('avatar_2');
+    assert.strictEqual(updated.avatarId, 'bot');
 
     const config = getAvatarConfig(updated.avatarId);
-    assert.strictEqual(config.id, 'avatar_4');
-    assert.strictEqual(config.emoji, '🐼');
+    assert.strictEqual(config.id, 'bot');
+    assert.strictEqual(config.emoji, '🤖');
+
+    // Locked avatar cannot be equipped directly without unlocking
+    const lockedAttempt = await playerProfileService.updateAvatar('avatar_4');
+    assert.strictEqual(lockedAttempt.avatarId, 'bot');
 
     // Invalid avatar id fallback
     const invalid = await playerProfileService.updateAvatar('invalid_avatar_999');
-    assert.strictEqual(invalid.avatarId, 'avatar_1');
+    assert.strictEqual(invalid.avatarId, 'fox');
   });
 
   it('records match wins correctly and tracks win streaks', async () => {
@@ -97,12 +102,14 @@ describe('Player Profile Service (Guest Profile System)', () => {
   });
 
   it('provides avatar options list with required assets and emojis', () => {
-    assert.ok(AVATAR_OPTIONS.length >= 6);
+    assert.strictEqual(AVATAR_OPTIONS.length, 12);
     for (const opt of AVATAR_OPTIONS) {
-      assert.ok(opt.id.startsWith('avatar_'));
+      assert.ok(opt.id.length > 0);
       assert.ok(opt.emoji.length > 0);
       assert.ok(opt.label.length > 0);
       assert.ok(opt.bgColor.startsWith('#'));
+      assert.ok(opt.requiredLevel >= 1);
+      assert.ok(opt.coinCost >= 0);
     }
   });
 

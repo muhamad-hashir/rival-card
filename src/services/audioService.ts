@@ -32,6 +32,35 @@ try {
 
 export type BgmTrackType = 'none' | 'menu' | 'gameplay';
 
+export const FINAL_SECONDS_BGM_THRESHOLD = 20;
+export const NORMAL_BGM_PLAYBACK_RATE = 1.0;
+export const ESCALATED_BGM_PLAYBACK_RATE = 1.18;
+export const BASE_GAMEPLAY_BGM_VOLUME = 0.85;
+export const ESCALATED_GAMEPLAY_BGM_VOLUME = 0.98;
+export const BGM_ESCALATION_RAMP_MS = 1200;
+export const BGM_ESCALATION_STEPS = 12;
+
+export interface GameplayBgmIntensityState {
+  isEscalated: boolean;
+  currentRate: number;
+  targetRate: number;
+  currentVolume: number;
+  targetVolume: number;
+  shouldCorrectPitch: boolean;
+}
+
+export function shouldEscalateGameplayBgm(
+  timeLeftSeconds: number,
+  isMatchActive: boolean
+): boolean {
+  return (
+    isMatchActive &&
+    Number.isFinite(timeLeftSeconds) &&
+    timeLeftSeconds > 0 &&
+    timeLeftSeconds <= FINAL_SECONDS_BGM_THRESHOLD
+  );
+}
+
 // ============================================================================
 // Asset Loaders with Safe Fallback Protection
 // ============================================================================
@@ -169,6 +198,13 @@ export class AudioService {
   private sfxPlayers: Map<string, any> = new Map();
   private audioModeConfigured: boolean = false;
   private isBgmLoading: boolean = false;
+  private isGameplayEscalated: boolean = false;
+  private currentBgmRate: number = NORMAL_BGM_PLAYBACK_RATE;
+  private targetBgmRate: number = NORMAL_BGM_PLAYBACK_RATE;
+  private currentBgmVolume: number = BASE_GAMEPLAY_BGM_VOLUME;
+  private targetBgmVolume: number = BASE_GAMEPLAY_BGM_VOLUME;
+  private shouldCorrectBgmPitch: boolean = true;
+  private bgmRampInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.initSettingsSubscription();
@@ -302,6 +338,182 @@ export class AudioService {
     return this.currentBgmType;
   }
 
+  public getGameplayIntensityState(): GameplayBgmIntensityState {
+    return {
+      isEscalated: this.isGameplayEscalated,
+      currentRate: this.currentBgmRate,
+      targetRate: this.targetBgmRate,
+      currentVolume: this.currentBgmVolume,
+      targetVolume: this.targetBgmVolume,
+      shouldCorrectPitch: this.shouldCorrectBgmPitch,
+    };
+  }
+
+  private getActiveBgmVolume(trackType: BgmTrackType = this.currentBgmType): number {
+    return trackType === 'gameplay' ? this.currentBgmVolume : 1.0;
+  }
+
+  private clearBgmRampInterval(): void {
+    if (this.bgmRampInterval !== null) {
+      clearInterval(this.bgmRampInterval);
+      this.bgmRampInterval = null;
+    }
+  }
+
+  private applyPlayerBgmParams(player: any, rate: number, volume: number): void {
+    if (!player) return;
+    try {
+      player.shouldCorrectPitch = this.shouldCorrectBgmPitch;
+    } catch {}
+    try {
+      if (typeof player.setPlaybackRate === 'function') {
+        player.setPlaybackRate(rate, 'high');
+      } else {
+        player.playbackRate = rate;
+      }
+    } catch {
+      try {
+        player.playbackRate = rate;
+      } catch {}
+    }
+    try {
+      player.volume = Math.max(0, Math.min(1, volume));
+    } catch {}
+  }
+
+  /**
+   * Smoothly ramps gameplay BGM rate (1.0x -> 1.18x, pitch-corrected) and volume (+15% clamped <= 1.0)
+   * without restarting or cutting the active loop.
+   */
+  public escalateGameplayBgm(options?: { immediate?: boolean }): void {
+    if (this.isGameplayEscalated) return;
+
+    this.isGameplayEscalated = true;
+    this.targetBgmRate = ESCALATED_BGM_PLAYBACK_RATE;
+    this.targetBgmVolume = ESCALATED_GAMEPLAY_BGM_VOLUME;
+    this.shouldCorrectBgmPitch = true;
+    this.clearBgmRampInterval();
+
+    const startRate = this.currentBgmRate;
+    const startVolume =
+      this.currentBgmType === 'gameplay' ? this.currentBgmVolume : BASE_GAMEPLAY_BGM_VOLUME;
+
+    if (options?.immediate || typeof setInterval !== 'function') {
+      this.currentBgmRate = this.targetBgmRate;
+      this.currentBgmVolume = this.targetBgmVolume;
+      if (this.currentBgmPlayer && this.currentBgmType === 'gameplay' && !this.isBgmPaused) {
+        this.applyPlayerBgmParams(
+          this.currentBgmPlayer,
+          this.currentBgmRate,
+          this.currentBgmVolume
+        );
+      }
+      return;
+    }
+
+    const totalSteps = BGM_ESCALATION_STEPS;
+    const stepMs = Math.max(25, Math.round(BGM_ESCALATION_RAMP_MS / totalSteps));
+    let step = 0;
+
+    this.bgmRampInterval = setInterval(() => {
+      if (!this.isGameplayEscalated) {
+        this.clearBgmRampInterval();
+        return;
+      }
+
+      step += 1;
+      const t = Math.min(1, step / totalSteps);
+      // Smooth ease-out glide into high-stakes tempo
+      const eased = 1 - Math.pow(1 - t, 2);
+
+      this.currentBgmRate = Number(
+        (startRate + (this.targetBgmRate - startRate) * eased).toFixed(3)
+      );
+      this.currentBgmVolume = Number(
+        Math.min(1.0, startVolume + (this.targetBgmVolume - startVolume) * eased).toFixed(3)
+      );
+
+      if (this.currentBgmPlayer && this.currentBgmType === 'gameplay' && !this.isBgmPaused) {
+        this.applyPlayerBgmParams(
+          this.currentBgmPlayer,
+          this.currentBgmRate,
+          this.currentBgmVolume
+        );
+      }
+
+      if (step >= totalSteps) {
+        this.currentBgmRate = this.targetBgmRate;
+        this.currentBgmVolume = this.targetBgmVolume;
+        this.clearBgmRampInterval();
+      }
+    }, stepMs);
+  }
+
+  /**
+   * Immediately restores gameplay BGM tempo (1.0x) and base volume (0.85),
+   * cancelling any in-flight escalation ramp.
+   */
+  public resetGameplayBgmIntensity(): void {
+    this.clearBgmRampInterval();
+    const baseVolume = this.currentBgmType === 'gameplay' ? BASE_GAMEPLAY_BGM_VOLUME : 1.0;
+    this.isGameplayEscalated = false;
+    this.currentBgmRate = NORMAL_BGM_PLAYBACK_RATE;
+    this.targetBgmRate = NORMAL_BGM_PLAYBACK_RATE;
+    this.currentBgmVolume = baseVolume;
+    this.targetBgmVolume = baseVolume;
+    this.shouldCorrectBgmPitch = true;
+
+    if (this.currentBgmPlayer && this.currentBgmType === 'gameplay') {
+      const targetVol = this.isBgmPaused ? 0.0 : baseVolume;
+      this.applyPlayerBgmParams(this.currentBgmPlayer, NORMAL_BGM_PLAYBACK_RATE, targetVol);
+    }
+  }
+
+  /**
+   * Syncs dynamic final-20-seconds BGM escalation with match clock & active play state.
+   */
+  public updateGameplayBgmIntensity(
+    timeLeftSeconds: number,
+    isMatchActive: boolean,
+    options?: { immediate?: boolean }
+  ): void {
+    if (shouldEscalateGameplayBgm(timeLeftSeconds, isMatchActive)) {
+      if (!this.isGameplayEscalated && !this.isBgmPaused) {
+        this.escalateGameplayBgm(options);
+      }
+      return;
+    }
+
+    if (
+      this.isGameplayEscalated ||
+      this.currentBgmRate !== NORMAL_BGM_PLAYBACK_RATE ||
+      this.bgmRampInterval !== null
+    ) {
+      this.resetGameplayBgmIntensity();
+    }
+  }
+
+  /**
+   * Optional test/hook helper to inspect or attach an active BGM player safely.
+   */
+  public setActiveBgmPlayerForTesting(
+    player: any | null,
+    trackType: BgmTrackType = 'gameplay'
+  ): void {
+    this.clearBgmRampInterval();
+    this.currentBgmPlayer = player;
+    this.currentBgmType = trackType;
+    this.isBgmPaused = false;
+    this.isGameplayEscalated = false;
+    this.currentBgmRate = NORMAL_BGM_PLAYBACK_RATE;
+    this.targetBgmRate = NORMAL_BGM_PLAYBACK_RATE;
+    this.currentBgmVolume = trackType === 'gameplay' ? BASE_GAMEPLAY_BGM_VOLUME : 1.0;
+    this.targetBgmVolume = this.currentBgmVolume;
+    if (player) {
+      this.applyPlayerBgmParams(player, this.currentBgmRate, this.currentBgmVolume);
+    }
+  }
+
   private attachBgmLoopSafety(player: any, trackType: Exclude<BgmTrackType, 'none'>): void {
     if (!player || typeof player.addListener !== 'function') return;
     try {
@@ -321,7 +533,11 @@ export class AudioService {
               try {
                 player.loop = true;
                 player.muted = false;
-                player.volume = 1.0;
+                this.applyPlayerBgmParams(
+                  player,
+                  this.currentBgmRate,
+                  this.getActiveBgmVolume(trackType)
+                );
                 player.play();
               } catch {}
             }
@@ -335,6 +551,11 @@ export class AudioService {
               this.currentBgmType === trackType
             ) {
               try {
+                this.applyPlayerBgmParams(
+                  player,
+                  this.currentBgmRate,
+                  this.getActiveBgmVolume(trackType)
+                );
                 player.seekTo?.(0)?.catch?.(() => {});
                 player.play();
               } catch {}
@@ -364,7 +585,11 @@ export class AudioService {
           try {
             this.currentBgmPlayer.loop = true;
             this.currentBgmPlayer.muted = false;
-            this.currentBgmPlayer.volume = 1.0;
+            this.applyPlayerBgmParams(
+              this.currentBgmPlayer,
+              this.currentBgmRate,
+              this.getActiveBgmVolume(trackType)
+            );
             this.currentBgmPlayer.play();
           } catch {}
         }
@@ -373,6 +598,15 @@ export class AudioService {
 
       this.currentBgmType = trackType;
       this.isBgmPaused = false;
+      this.clearBgmRampInterval();
+      const baseVolume = trackType === 'gameplay' ? BASE_GAMEPLAY_BGM_VOLUME : 1.0;
+      this.isGameplayEscalated = false;
+      this.currentBgmRate = NORMAL_BGM_PLAYBACK_RATE;
+      this.targetBgmRate = NORMAL_BGM_PLAYBACK_RATE;
+      this.currentBgmVolume = baseVolume;
+      this.targetBgmVolume = baseVolume;
+      this.shouldCorrectBgmPitch = true;
+
       const settings = await settingsService.getSettings();
       if (epoch !== this.bgmTransitionEpoch) return;
 
@@ -401,7 +635,11 @@ export class AudioService {
       try {
         player.loop = true;
         player.muted = false;
-        player.volume = 1.0;
+        this.applyPlayerBgmParams(
+          player,
+          this.currentBgmRate,
+          settings.bgmEnabled && !this.isBgmPaused ? this.getActiveBgmVolume(trackType) : 0.0
+        );
       } catch {}
 
       if (epoch !== this.bgmTransitionEpoch || this.currentBgmType !== trackType) {
@@ -451,10 +689,12 @@ export class AudioService {
     this.bgmTransitionEpoch++;
     this.currentBgmType = 'none';
     this.isBgmPaused = false;
+    this.resetGameplayBgmIntensity();
     await this.stopBgmSoundOnly();
   }
 
   private async stopBgmSoundOnly(): Promise<void> {
+    this.clearBgmRampInterval();
     if (this.bgmStatusSubscription) {
       try {
         this.bgmStatusSubscription.remove?.();
@@ -478,6 +718,12 @@ export class AudioService {
    */
   public async pauseBgm(): Promise<void> {
     this.isBgmPaused = true;
+    const wasRamping = this.bgmRampInterval !== null;
+    this.clearBgmRampInterval();
+    if (wasRamping && this.currentBgmRate < this.targetBgmRate) {
+      // Allow escalation ramp to resume cleanly if paused mid-transition
+      this.isGameplayEscalated = false;
+    }
     try {
       if (this.currentBgmPlayer) {
         try {
@@ -507,7 +753,11 @@ export class AudioService {
         try {
           this.currentBgmPlayer.loop = true;
           this.currentBgmPlayer.muted = false;
-          this.currentBgmPlayer.volume = 1.0;
+          this.applyPlayerBgmParams(
+            this.currentBgmPlayer,
+            this.currentBgmRate,
+            this.getActiveBgmVolume()
+          );
           this.currentBgmPlayer.play();
         } catch {}
       } else if (this.currentBgmType === 'menu') {

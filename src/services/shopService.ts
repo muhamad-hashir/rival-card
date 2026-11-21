@@ -1,8 +1,15 @@
 // src/services/shopService.ts - Cosmetics catalog, inventory tracking, and purchasing service
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { playerProfileService } from './playerProfileService';
+import {
+  AVATAR_CATALOG,
+  DEFAULT_AVATAR_ID,
+  VIP_AVATAR_CATALOG,
+} from '../constants/avatars';
 
 export type ShopCategory = 'card_backs' | 'sceneries' | 'avatars' | 'cards' | 'emotes';
+
+export type ShopUnlockType = 'coins' | 'gems' | 'level_coins' | 'iap';
 
 export interface ShopItemPrice {
   currency: 'coins' | 'gems';
@@ -27,6 +34,11 @@ export interface ShopItem {
   isDefault?: boolean;
   isLocked?: boolean;
   purchasesUnavailable?: boolean;
+  unlockType?: ShopUnlockType;
+  isRealMoneyExclusive?: boolean;
+  comingSoon?: boolean;
+  requiredLevel?: number;
+  avatarKey?: string;
   previewStyle: ShopItemPreviewStyle;
   description?: string;
 }
@@ -146,61 +158,46 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
     description: 'Velvety imperial purple table reserved for grandmasters.',
   },
 
-  // --- AVATARS ---
-  {
-    id: 'avatar_1',
-    name: 'Guest Fox',
-    category: 'avatars',
-    price: { currency: 'coins', amount: 0 },
-    isDefault: true,
-    previewStyle: {
-      primaryColor: '#FED7AA',
-      emoji: '🦊',
-      borderColor: '#FB923C',
-    },
-    description: 'Swift and clever fox avatar.',
-  },
-  {
-    id: 'avatar_2',
-    name: 'Guest Bot',
-    category: 'avatars',
-    price: { currency: 'coins', amount: 0 },
-    isDefault: true,
-    previewStyle: {
-      primaryColor: '#BAE6FD',
-      emoji: '🤖',
-      borderColor: '#38BDF8',
-    },
-    description: 'Calculated algorithmic automaton.',
-  },
-  {
-    id: 'avatar_robo_king',
-    name: 'Robo King',
-    category: 'avatars',
-    price: { currency: 'coins', amount: 6000 },
-    isLocked: true,
-    purchasesUnavailable: true,
-    previewStyle: {
-      primaryColor: '#3B82F6',
-      emoji: '👑🤖',
-      borderColor: '#1D4ED8',
-    },
-    description: 'Crowned sovereign of mechanical logic.',
-  },
-  {
-    id: 'avatar_golden_phoenix',
-    name: 'Golden Phoenix',
-    category: 'avatars',
-    price: { currency: 'gems', amount: 60 },
-    isLocked: true,
-    purchasesUnavailable: true,
-    previewStyle: {
-      primaryColor: '#F59E0B',
-      emoji: '🦅✨',
-      borderColor: '#D97706',
-    },
-    description: 'Legendary radiant bird born from golden ashes.',
-  },
+  // --- AVATARS (EXCLUDES STARTER 'fox' & 'bot'; VIP STORE EXCLUSIVES + LEVEL/COIN UNLOCKABLES) ---
+  ...VIP_AVATAR_CATALOG.map(
+    (vip): ShopItem => ({
+      id: vip.shopId,
+      avatarKey: vip.id,
+      name: vip.label,
+      category: 'avatars',
+      price: { currency: 'gems', amount: 0 },
+      unlockType: 'iap',
+      isRealMoneyExclusive: true,
+      comingSoon: true,
+      isLocked: true,
+      purchasesUnavailable: true,
+      previewStyle: {
+        primaryColor: vip.bgColor,
+        accentColor: vip.accentColor,
+        borderColor: vip.borderColor,
+        emoji: vip.emoji,
+      },
+      description: vip.description,
+    })
+  ),
+  ...AVATAR_CATALOG.filter((avatar) => avatar.coinCost > 0).map(
+    (avatar): ShopItem => ({
+      id: avatar.id,
+      avatarKey: avatar.id,
+      name: avatar.label,
+      category: 'avatars',
+      price: { currency: 'coins', amount: avatar.coinCost },
+      unlockType: 'level_coins',
+      requiredLevel: avatar.requiredLevel,
+      previewStyle: {
+        primaryColor: avatar.bgColor,
+        accentColor: avatar.accentColor,
+        borderColor: avatar.accentColor,
+        emoji: avatar.emoji,
+      },
+      description: `Unlocks at Level ${avatar.requiredLevel} for ${avatar.coinCost.toLocaleString()} Coins.`,
+    })
+  ),
 
   // --- CARDS (CARD FACE THEMES) ---
   {
@@ -348,7 +345,7 @@ export const DEFAULT_INVENTORY: PlayerInventory = {
   equippedItems: {
     card_backs: 'card_back_classic',
     sceneries: 'scenery_meadow',
-    avatars: 'avatar_1',
+    avatars: DEFAULT_AVATAR_ID,
     cards: 'cards_standard',
     emotes: '',
   },
@@ -425,11 +422,30 @@ class ShopService {
       return { success: false, error: 'Item not found in catalog' };
     }
 
+    if (item.isRealMoneyExclusive || item.comingSoon || item.unlockType === 'iap') {
+      return {
+        success: false,
+        error: 'Real-money Store & VIP packs coming in the next update!',
+      };
+    }
+
     if (item.purchasesUnavailable || item.isLocked) {
       return {
         success: false,
         error: 'Store testing mode: Premium unlocks will be available at global launch!',
       };
+    }
+
+    if (item.unlockType === 'level_coins' && item.avatarKey) {
+      const unlockRes = await playerProfileService.unlockAvatar(item.avatarKey);
+      if (!unlockRes.success) {
+        return {
+          success: false,
+          error: unlockRes.error || 'Unable to unlock avatar.',
+        };
+      }
+      const inventory = await this.getInventory();
+      return { success: true, inventory };
     }
 
     const inventory = await this.getInventory();

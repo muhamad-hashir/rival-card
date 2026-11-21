@@ -21,7 +21,11 @@ import {
 import {
   playerProfileService,
   PlayerProfile,
+  isAvatarUnlocked,
+  normalizeAnyAvatarKey,
+  normalizeAvatarKey,
 } from '../services/playerProfileService';
+import { AvatarIcon } from './AvatarIcon';
 import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
@@ -159,9 +163,45 @@ export const ShopModal: React.FC<ShopModalProps> = ({
   };
 
   const handleBuyItem = async (item: ShopItem) => {
+    if (item.isRealMoneyExclusive || item.comingSoon || item.unlockType === 'iap') {
+      hapticsService.cardSnap();
+      showToast('Real-money Store & VIP packs coming in the next update!');
+      return;
+    }
+
     if (item.purchasesUnavailable || item.isLocked) {
       hapticsService.cardSnap();
       showToast('Store testing mode: Premium unlocks will be available at global launch!');
+      return;
+    }
+
+    if (item.unlockType === 'level_coins' && item.avatarKey) {
+      if (isProcessing) return;
+      const currentLevel = profile?.level ?? 1;
+      const reqLevel = item.requiredLevel ?? 1;
+      if (currentLevel < reqLevel) {
+        hapticsService.cardSelection();
+        showToast(`Reach Level ${reqLevel} to unlock ${item.name}!`);
+        return;
+      }
+
+      setIsProcessing(true);
+      try {
+        const res = await playerProfileService.unlockAvatar(item.avatarKey);
+        if (res.success) {
+          hapticsService.victory();
+          soundService.playWinChime();
+          setProfile(res.profile);
+          showToast(`Unlocked & Equipped ${item.name}! 🎉`);
+        } else {
+          hapticsService.cardSnap();
+          showToast(res.error || 'Unable to unlock avatar.');
+        }
+      } catch {
+        showToast('Transaction error. Please try again.');
+      } finally {
+        setIsProcessing(false);
+      }
       return;
     }
 
@@ -186,6 +226,19 @@ export const ShopModal: React.FC<ShopModalProps> = ({
     }
   };
 
+  const handleEquipProgressionAvatar = async (item: ShopItem) => {
+    if (!item.avatarKey) return;
+    try {
+      hapticsService.cardSelection();
+      soundService.playCardSnap();
+      const updated = await playerProfileService.updateAvatar(item.avatarKey);
+      setProfile(updated);
+      showToast(`Equipped ${item.name}!`);
+    } catch {
+      showToast('Could not equip avatar.');
+    }
+  };
+
   const handleClose = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
@@ -193,6 +246,18 @@ export const ShopModal: React.FC<ShopModalProps> = ({
   };
 
   const categoryItems = shopService.getItemsByCategory(selectedCategory);
+  const vipAvatarItems =
+    selectedCategory === 'avatars'
+      ? categoryItems.filter((item) => item.isRealMoneyExclusive || item.unlockType === 'iap')
+      : [];
+  const progressionAvatarItems =
+    selectedCategory === 'avatars'
+      ? categoryItems.filter((item) => item.unlockType === 'level_coins')
+      : [];
+  const currentLevel = profile?.level ?? 1;
+  const currentCoins = profile?.coins ?? 250;
+  const equippedAvatarKey = normalizeAvatarKey(profile?.avatarId) || 'fox';
+  const unlockedAvatars = profile?.unlockedAvatars ?? ['fox', 'bot'];
 
   return (
     <Modal
@@ -285,87 +350,218 @@ export const ShopModal: React.FC<ShopModalProps> = ({
             </ScrollView>
           </View>
 
-          {/* 2-Column Items Grid */}
+          {/* 2-Column Items Grid (Avatars split cleanly into VIP Exclusives + Level/Coin Unlocks) */}
           <ScrollView
             style={styles.itemsScrollContainer}
-            contentContainerStyle={styles.itemsGridContent}
+            contentContainerStyle={styles.itemsScrollWrap}
             showsVerticalScrollIndicator={false}
           >
-            {categoryItems.map((item) => {
-              const isOwned = inventory.ownedItemIds.includes(item.id);
-              const isEquipped = inventory.equippedItems[item.category] === item.id;
-
-              return (
-                <View key={item.id} style={styles.itemCard} testID={`shop-item-${item.id}`}>
-                  {/* Glossy top shine highlight */}
-                  <View style={styles.itemCardShine} pointerEvents="none" />
-
-                  {/* Item Preview Box */}
-                  <ItemPreviewBox item={item} />
-
-                  {/* Title & Description */}
-                  <Text style={styles.itemTitle} numberOfLines={1}>
-                    {item.name}
-                  </Text>
-                  {item.description ? (
-                    <Text style={styles.itemDescription} numberOfLines={2}>
-                      {item.description}
-                    </Text>
-                  ) : null}
-
-                  {/* Dynamic Action Button */}
-                  <View style={styles.itemActionWrapper}>
-                    {isEquipped ? (
-                      <View style={styles.equippedBadge} testID={`item-equipped-${item.id}`}>
-                        <Text style={styles.equippedBadgeText}>✓ EQUIPPED</Text>
-                      </View>
-                    ) : isOwned ? (
-                      <TactileButton
-                        onPress={() => handleEquipItem(item)}
-                        style={styles.equipBtn}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Equip ${item.name}`}
-                        testID={`item-equip-btn-${item.id}`}
-                      >
-                        <Text style={styles.equipBtnText}>EQUIP</Text>
-                      </TactileButton>
-                    ) : item.purchasesUnavailable || item.isLocked ? (
-                      <View style={styles.lockedItemCol}>
-                        <Text style={styles.pricePlaceholderText}>
-                          {item.price.currency === 'gems' ? '💎' : '🟡'} {item.price.amount.toLocaleString()}
-                        </Text>
-                        <TactileButton
-                          onPress={() => handleBuyItem(item)}
-                          style={styles.unavailableBadge}
-                          accessibilityRole="button"
-                          accessibilityLabel="Purchases Unavailable"
-                          testID={`item-unavailable-${item.id}`}
-                        >
-                          <Text style={styles.unavailableBadgeText}>UNAVAILABLE</Text>
-                        </TactileButton>
-                      </View>
-                    ) : (
-                      <TactileButton
-                        onPress={() => handleBuyItem(item)}
-                        disabled={isProcessing}
-                        style={[
-                          styles.buyBtn,
-                          item.price.currency === 'gems' ? styles.buyBtnGem : styles.buyBtnCoin,
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Buy ${item.name} for ${item.price.amount} ${item.price.currency}`}
-                        testID={`item-buy-btn-${item.id}`}
-                      >
-                        <Text style={styles.buyBtnPrice}>
-                          {item.price.currency === 'gems' ? '💎' : '🟡'}{' '}
-                          {item.price.amount.toLocaleString()}
-                        </Text>
-                      </TactileButton>
-                    )}
+            {selectedCategory === 'avatars' ? (
+              <>
+                {/* VIP Real-Money Store Exclusives (Coming Soon v1.2.0) */}
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionHeaderTitle}>👑 VIP STORE EXCLUSIVES</Text>
+                  <View style={styles.vipSeasonPill}>
+                    <Text style={styles.vipSeasonPillText}>COMING SOON • v1.2.0</Text>
                   </View>
                 </View>
-              );
-            })}
+
+                <View style={styles.itemsGridContent}>
+                  {vipAvatarItems.map((item) => (
+                    <View
+                      key={item.id}
+                      style={[styles.itemCard, styles.vipItemCard]}
+                      testID={`shop-item-${item.id}`}
+                    >
+                      <View style={styles.vipCrownTag}>
+                        <Text style={styles.vipCrownTagText}>VIP EXCLUSIVE</Text>
+                      </View>
+
+                      <ItemPreviewBox item={item} />
+
+                      <Text style={styles.itemTitle} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      {item.description ? (
+                        <Text style={styles.itemDescription} numberOfLines={2}>
+                          {item.description}
+                        </Text>
+                      ) : null}
+
+                      <View style={styles.itemActionWrapper}>
+                        <TactileButton
+                          onPress={() => handleBuyItem(item)}
+                          style={styles.comingSoonBtn}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${item.name} Coming Soon VIP Exclusive`}
+                          testID={`item-coming-soon-${item.id}`}
+                        >
+                          <Text style={styles.comingSoonBtnText}>COMING SOON</Text>
+                        </TactileButton>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Level + Coin Unlockable Avatars (Excludes Guest Fox & Guest Bot starters) */}
+                <View style={[styles.sectionHeaderRow, { marginTop: 10 }]}>
+                  <Text style={styles.sectionHeaderTitle}>🪙 LEVEL + COIN AVATARS</Text>
+                  <View style={styles.levelHeaderPill}>
+                    <Text style={styles.levelHeaderPillText}>LVL {currentLevel}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.itemsGridContent}>
+                  {progressionAvatarItems.map((item) => {
+                    const key = item.avatarKey || item.id;
+                    const isUnlocked = isAvatarUnlocked(unlockedAvatars, key);
+                    const isEquipped = isUnlocked && equippedAvatarKey === key;
+                    const reqLevel = item.requiredLevel ?? 1;
+                    const isLevelLocked = !isUnlocked && currentLevel < reqLevel;
+                    const canAfford = currentCoins >= item.price.amount;
+
+                    return (
+                      <View key={item.id} style={styles.itemCard} testID={`shop-item-${item.id}`}>
+                        <View style={styles.itemCardShine} pointerEvents="none" />
+                        <ItemPreviewBox item={item} />
+
+                        <Text style={styles.itemTitle} numberOfLines={1}>
+                          {item.name}
+                        </Text>
+                        <Text style={styles.itemDescription} numberOfLines={2}>
+                          {isLevelLocked
+                            ? `Reach Level ${reqLevel} to unlock`
+                            : item.description}
+                        </Text>
+
+                        <View style={styles.itemActionWrapper}>
+                          {isEquipped ? (
+                            <View style={styles.equippedBadge} testID={`item-equipped-${item.id}`}>
+                              <Text style={styles.equippedBadgeText}>✓ EQUIPPED</Text>
+                            </View>
+                          ) : isUnlocked ? (
+                            <TactileButton
+                              onPress={() => handleEquipProgressionAvatar(item)}
+                              style={styles.equipBtn}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Equip ${item.name}`}
+                              testID={`item-equip-btn-${item.id}`}
+                            >
+                              <Text style={styles.equipBtnText}>EQUIP</Text>
+                            </TactileButton>
+                          ) : isLevelLocked ? (
+                            <TactileButton
+                              onPress={() => handleBuyItem(item)}
+                              style={styles.unavailableBadge}
+                              accessibilityRole="button"
+                              accessibilityLabel={`${item.name} locked until Level ${reqLevel}`}
+                              testID={`item-level-locked-${item.id}`}
+                            >
+                              <Text style={styles.unavailableBadgeText}>🔒 LV. {reqLevel}</Text>
+                            </TactileButton>
+                          ) : (
+                            <TactileButton
+                              onPress={() => handleBuyItem(item)}
+                              disabled={isProcessing}
+                              style={[
+                                styles.buyBtn,
+                                canAfford ? styles.buyBtnCoin : styles.buyBtnInsufficient,
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Unlock ${item.name} for ${item.price.amount} coins`}
+                              testID={`item-buy-btn-${item.id}`}
+                            >
+                              <Text style={styles.buyBtnPrice}>
+                                🟡 {item.price.amount.toLocaleString()}
+                              </Text>
+                            </TactileButton>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              </>
+            ) : (
+              <View style={styles.itemsGridContent}>
+                {categoryItems.map((item) => {
+                  const isOwned = inventory.ownedItemIds.includes(item.id);
+                  const isEquipped = inventory.equippedItems[item.category] === item.id;
+
+                  return (
+                    <View key={item.id} style={styles.itemCard} testID={`shop-item-${item.id}`}>
+                      {/* Glossy top shine highlight */}
+                      <View style={styles.itemCardShine} pointerEvents="none" />
+
+                      {/* Item Preview Box */}
+                      <ItemPreviewBox item={item} />
+
+                      {/* Title & Description */}
+                      <Text style={styles.itemTitle} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      {item.description ? (
+                        <Text style={styles.itemDescription} numberOfLines={2}>
+                          {item.description}
+                        </Text>
+                      ) : null}
+
+                      {/* Dynamic Action Button */}
+                      <View style={styles.itemActionWrapper}>
+                        {isEquipped ? (
+                          <View style={styles.equippedBadge} testID={`item-equipped-${item.id}`}>
+                            <Text style={styles.equippedBadgeText}>✓ EQUIPPED</Text>
+                          </View>
+                        ) : isOwned ? (
+                          <TactileButton
+                            onPress={() => handleEquipItem(item)}
+                            style={styles.equipBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Equip ${item.name}`}
+                            testID={`item-equip-btn-${item.id}`}
+                          >
+                            <Text style={styles.equipBtnText}>EQUIP</Text>
+                          </TactileButton>
+                        ) : item.purchasesUnavailable || item.isLocked ? (
+                          <View style={styles.lockedItemCol}>
+                            <Text style={styles.pricePlaceholderText}>
+                              {item.price.currency === 'gems' ? '💎' : '🟡'}{' '}
+                              {item.price.amount.toLocaleString()}
+                            </Text>
+                            <TactileButton
+                              onPress={() => handleBuyItem(item)}
+                              style={styles.unavailableBadge}
+                              accessibilityRole="button"
+                              accessibilityLabel="Purchases Unavailable"
+                              testID={`item-unavailable-${item.id}`}
+                            >
+                              <Text style={styles.unavailableBadgeText}>UNAVAILABLE</Text>
+                            </TactileButton>
+                          </View>
+                        ) : (
+                          <TactileButton
+                            onPress={() => handleBuyItem(item)}
+                            disabled={isProcessing}
+                            style={[
+                              styles.buyBtn,
+                              item.price.currency === 'gems' ? styles.buyBtnGem : styles.buyBtnCoin,
+                            ]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Buy ${item.name} for ${item.price.amount} ${item.price.currency}`}
+                            testID={`item-buy-btn-${item.id}`}
+                          >
+                            <Text style={styles.buyBtnPrice}>
+                              {item.price.currency === 'gems' ? '💎' : '🟡'}{' '}
+                              {item.price.amount.toLocaleString()}
+                            </Text>
+                          </TactileButton>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
           </ScrollView>
         </View>
       </View>
@@ -413,13 +609,23 @@ const ItemPreviewBox: React.FC<{ item: ShopItem }> = ({ item }) => {
   }
 
   if (category === 'avatars') {
+    const knownAvatarKey = normalizeAnyAvatarKey(item.avatarKey || item.id);
+    if (knownAvatarKey) {
+      return (
+        <AvatarIcon
+          avatarId={knownAvatarKey}
+          size={62}
+          style={{ marginBottom: 8 }}
+        />
+      );
+    }
     return (
       <View
         style={[
           styles.previewAvatarCircle,
           {
             backgroundColor: previewStyle.primaryColor,
-            borderColor: previewStyle.borderColor || '#FFFFFF',
+            borderColor: previewStyle.borderColor || '#0F1142',
           },
         ]}
       >
@@ -620,12 +826,93 @@ const styles = StyleSheet.create({
   itemsScrollContainer: {
     maxHeight: 380,
   },
+  itemsScrollWrap: {
+    paddingBottom: 10,
+  },
   itemsGridContent: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
     gap: 10,
-    paddingBottom: 8,
+    paddingBottom: 4,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  sectionHeaderTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11.5,
+    color: '#0F172A',
+    letterSpacing: 0.5,
+  },
+  vipSeasonPill: {
+    backgroundColor: '#EDE9FE',
+    borderWidth: 1.5,
+    borderColor: '#C4B5FD',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  vipSeasonPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 9,
+    color: '#5B21B6',
+    letterSpacing: 0.4,
+  },
+  levelHeaderPill: {
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  levelHeaderPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 9.5,
+    color: '#15803D',
+  },
+  vipItemCard: {
+    backgroundColor: '#FFFDF5',
+    borderColor: '#F59E0B',
+    borderTopColor: '#FDE047',
+  },
+  vipCrownTag: {
+    backgroundColor: '#312E81',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginBottom: 6,
+  },
+  vipCrownTagText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    color: '#FDE047',
+    letterSpacing: 0.6,
+  },
+  comingSoonBtn: {
+    width: '100%',
+    backgroundColor: '#EDE9FE',
+    borderWidth: 1.5,
+    borderColor: '#C4B5FD',
+    borderRadius: 999,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  comingSoonBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#5B21B6',
+    letterSpacing: 0.5,
+  },
+  buyBtnInsufficient: {
+    backgroundColor: '#F87171',
+    borderColor: '#B91C1C',
   },
   itemCard: {
     width: '48%',

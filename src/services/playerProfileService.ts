@@ -2,6 +2,38 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import type { GameMode, Player } from '../types';
+import {
+  AVATAR_CATALOG,
+  VIP_AVATAR_CATALOG,
+  AnyAvatarKey,
+  AvatarKey,
+  AvatarOption,
+  VipAvatarKey,
+  VipAvatarOption,
+  DEFAULT_AVATAR_ID,
+  DEFAULT_UNLOCKED_AVATARS,
+  getAvatarConfig,
+  getProgressionAvatarConfig,
+  isAvatarUnlocked,
+  normalizeAnyAvatarKey,
+  normalizeAvatarKey,
+  normalizeUnlockedAvatars,
+} from '../constants/avatars';
+
+export {
+  AVATAR_CATALOG,
+  AVATAR_CATALOG as AVATAR_OPTIONS,
+  VIP_AVATAR_CATALOG,
+  DEFAULT_AVATAR_ID,
+  DEFAULT_UNLOCKED_AVATARS,
+  getAvatarConfig,
+  getProgressionAvatarConfig,
+  isAvatarUnlocked,
+  normalizeAnyAvatarKey,
+  normalizeAvatarKey,
+  normalizeUnlockedAvatars,
+};
+export type { AnyAvatarKey, AvatarKey, AvatarOption, VipAvatarKey, VipAvatarOption };
 
 export interface PlayerStats {
   gamesPlayed: number;
@@ -75,7 +107,8 @@ export function normalizePlayerStats(raw: any): PlayerStats {
 export interface PlayerProfile {
   id: string; // UUID generated on first run
   nickname: string; // defaults to "Player", user-editable
-  avatarId: string; // e.g. "avatar_1", "avatar_2", "avatar_3", "avatar_4"
+  avatarId: string; // canonical AvatarKey (e.g. "fox", "bot", "dragon")
+  unlockedAvatars: AvatarKey[]; // permanently unlocked avatars (defaults to ['fox', 'bot'])
   level: number; // starts at 1
   currentXp: number; // starts at 0
   xpToNextLevel: number; // formula: level * 100
@@ -84,6 +117,14 @@ export interface PlayerProfile {
   stats: PlayerStats;
   isGuest: boolean; // set to true
   email?: string; // optional linked email for authenticated accounts
+}
+
+export interface UnlockAvatarResult {
+  success: boolean;
+  profile: PlayerProfile;
+  avatar?: AvatarOption;
+  error?: string;
+  reason?: 'invalid_avatar' | 'already_unlocked' | 'level_too_low' | 'insufficient_coins';
 }
 
 export interface AwardRewardsResult {
@@ -103,27 +144,6 @@ export type AuthUserLike = {
   user_metadata?: Record<string, any>;
 };
 
-export interface AvatarOption {
-  id: string;
-  emoji: string;
-  label: string;
-  bgColor: string;
-}
-
-export const AVATAR_OPTIONS: AvatarOption[] = [
-  { id: 'avatar_1', emoji: '🦊', label: 'Fox', bgColor: '#FED7AA' },
-  { id: 'avatar_2', emoji: '🤖', label: 'Bot', bgColor: '#BAE6FD' },
-  { id: 'avatar_3', emoji: '🐯', label: 'Tiger', bgColor: '#FEF08A' },
-  { id: 'avatar_4', emoji: '🐼', label: 'Panda', bgColor: '#E2E8F0' },
-  { id: 'avatar_5', emoji: '⚡', label: 'Rival', bgColor: '#DDD6FE' },
-  { id: 'avatar_6', emoji: '👑', label: 'Champ', bgColor: '#FDE68A' },
-];
-
-export function getAvatarConfig(avatarId?: string): AvatarOption {
-  if (!avatarId) return AVATAR_OPTIONS[0];
-  return AVATAR_OPTIONS.find((a) => a.id === avatarId) || AVATAR_OPTIONS[0];
-}
-
 export const STORAGE_KEY = '@rivalcard:player_profile';
 export const LEGACY_STORAGE_KEY = '@rival_card_guest_player_profile_v1';
 export const ALT_STORAGE_KEY = '@rival_card_profile';
@@ -136,8 +156,21 @@ export const LEADERBOARD_TTL_MS = 45_000;
 
 export const PROFILE_STATS_SELECT_COLUMNS = 'id,games_played,wins,win_streak';
 export const PROFILE_LINK_SELECT_COLUMNS =
+  'id,email,nickname,avatar_id,level,current_xp,xp_to_next_level,coins,gems,games_played,wins,win_streak,unlocked_avatars';
+export const PROFILE_LINK_SELECT_COLUMNS_FALLBACK =
   'id,email,nickname,avatar_id,level,current_xp,xp_to_next_level,coins,gems,games_played,wins,win_streak';
 export const LEADERBOARD_SELECT_COLUMNS = 'id,nickname,avatar_id,level,coins,wins,win_streak';
+
+function isMissingUnlockedAvatarsColumnError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const message = String(err.message || err.details || err.hint || '').toLowerCase();
+  return (
+    code === '42703' ||
+    code === 'PGRST204' ||
+    message.includes('unlocked_avatars')
+  );
+}
 
 export interface LeaderboardEntry {
   id: string;
@@ -341,6 +374,11 @@ class PlayerProfileService {
         const gems = typeof best.gems === 'number' && best.gems >= 0 ? best.gems : 10;
         const isGuest = typeof best.isGuest === 'boolean' ? best.isGuest : true;
         const email = typeof best.email === 'string' && best.email ? best.email : undefined;
+        const normalizedAvatarId = normalizeAvatarKey(best.avatarId) || DEFAULT_AVATAR_ID;
+        const unlockedAvatars = normalizeUnlockedAvatars(
+          best.unlockedAvatars ?? best.unlocked_avatars,
+          normalizedAvatarId
+        );
 
         this.cachedProfile = {
           id: typeof best.id === 'string' && best.id ? best.id : generateUUID(),
@@ -348,7 +386,8 @@ class PlayerProfileService {
             typeof best.nickname === 'string' && best.nickname.trim()
               ? best.nickname.trim().slice(0, 16)
               : 'Player',
-          avatarId: typeof best.avatarId === 'string' ? best.avatarId : 'avatar_1',
+          avatarId: normalizedAvatarId,
+          unlockedAvatars,
           level,
           currentXp,
           xpToNextLevel,
@@ -369,7 +408,8 @@ class PlayerProfileService {
     const defaultProfile: PlayerProfile = {
       id: generateUUID(),
       nickname: 'Player',
-      avatarId: 'avatar_1',
+      avatarId: DEFAULT_AVATAR_ID,
+      unlockedAvatars: [...DEFAULT_UNLOCKED_AVATARS],
       level: 1,
       currentXp: 0,
       xpToNextLevel: 100,
@@ -405,14 +445,34 @@ class PlayerProfileService {
   }
 
   /**
-   * Updates and persists the selected avatar ID.
+   * Updates and persists the selected avatar ID (only if unlocked; invalid IDs fall back to 'fox').
    */
   public async updateAvatar(avatarId: string): Promise<PlayerProfile> {
     const current = await this.getProfile();
-    const isValid = AVATAR_OPTIONS.some((a) => a.id === avatarId);
+    const normalizedKey = normalizeAvatarKey(avatarId);
+
+    if (!normalizedKey) {
+      const updated: PlayerProfile = {
+        ...current,
+        avatarId: DEFAULT_AVATAR_ID,
+      };
+      this.cachedProfile = updated;
+      await persistProfile(updated);
+      this.notify();
+      if (!updated.isGuest) {
+        this.syncProfileToCloud(updated).catch(() => {});
+      }
+      return updated;
+    }
+
+    // Guard against equipping locked avatars without unlocking them first
+    if (!isAvatarUnlocked(current.unlockedAvatars, normalizedKey)) {
+      return current;
+    }
+
     const updated: PlayerProfile = {
       ...current,
-      avatarId: isValid ? avatarId : 'avatar_1',
+      avatarId: normalizedKey,
     };
     this.cachedProfile = updated;
     await persistProfile(updated);
@@ -421,6 +481,99 @@ class PlayerProfileService {
       this.syncProfileToCloud(updated).catch(() => {});
     }
     return updated;
+  }
+
+  /**
+   * Unlocks an avatar permanently if the player meets its requiredLevel and coinCost,
+   * deducts coins, equips it immediately, saves locally, and syncs to Supabase.
+   */
+  public async unlockAvatar(avatarId: string): Promise<UnlockAvatarResult> {
+    const current = await this.getProfile();
+    const key = normalizeAvatarKey(avatarId);
+
+    if (!key) {
+      return {
+        success: false,
+        profile: current,
+        reason: 'invalid_avatar',
+        error: 'Unknown avatar.',
+      };
+    }
+
+    const avatar = getProgressionAvatarConfig(key);
+
+    if (isAvatarUnlocked(current.unlockedAvatars, key)) {
+      return {
+        success: false,
+        profile: current,
+        avatar,
+        reason: 'already_unlocked',
+        error: `${avatar.label} is already unlocked.`,
+      };
+    }
+
+    if (current.level < avatar.requiredLevel) {
+      return {
+        success: false,
+        profile: current,
+        avatar,
+        reason: 'level_too_low',
+        error: `Reach Level ${avatar.requiredLevel} to unlock!`,
+      };
+    }
+
+    if (current.coins < avatar.coinCost) {
+      return {
+        success: false,
+        profile: current,
+        avatar,
+        reason: 'insufficient_coins',
+        error: `Not enough coins! Need ${avatar.coinCost.toLocaleString()} coins.`,
+      };
+    }
+
+    const updatedUnlocked = normalizeUnlockedAvatars([...current.unlockedAvatars, key], key);
+    const updated: PlayerProfile = {
+      ...current,
+      coins: current.coins - avatar.coinCost,
+      unlockedAvatars: updatedUnlocked,
+      avatarId: key,
+    };
+
+    this.cachedProfile = updated;
+    await persistProfile(updated);
+    this.notify();
+    if (!updated.isGuest) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
+
+    return {
+      success: true,
+      profile: updated,
+      avatar,
+    };
+  }
+
+  private async upsertProfileToSupabase(payload: Record<string, any>): Promise<void> {
+    const runUpsert = async (row: Record<string, any>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          supabase.from('profiles').upsert(row),
+          new Promise<any>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('cloud sync timeout')), 2500);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+
+    const res: any = await runUpsert(payload);
+    if (res?.error && 'unlocked_avatars' in payload && isMissingUnlockedAvatarsColumnError(res.error)) {
+      const { unlocked_avatars: _omitted, ...fallbackPayload } = payload;
+      await runUpsert(fallbackPayload);
+    }
   }
 
   private async getRecordedMatchIds(): Promise<string[]> {
@@ -451,25 +604,23 @@ class PlayerProfileService {
   public async syncProfileToCloud(profile: PlayerProfile): Promise<void> {
     if (!profile || profile.isGuest || !profile.id) return;
     try {
-      await Promise.race([
-        supabase.from('profiles').upsert({
-          id: profile.id,
-          email: profile.email || '',
-          nickname: profile.nickname,
-          avatar_id: profile.avatarId,
-          level: profile.level,
-          current_xp: profile.currentXp,
-          xp_to_next_level: profile.xpToNextLevel,
-          coins: profile.coins,
-          gems: profile.gems,
-          games_played: profile.stats.gamesPlayed,
-          wins: profile.stats.wins,
-          win_streak: profile.stats.winStreak,
-          is_guest: false,
-          updated_at: new Date().toISOString(),
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('cloud sync timeout')), 2500)),
-      ]);
+      await this.upsertProfileToSupabase({
+        id: profile.id,
+        email: profile.email || '',
+        nickname: profile.nickname,
+        avatar_id: profile.avatarId,
+        unlocked_avatars: normalizeUnlockedAvatars(profile.unlockedAvatars, profile.avatarId),
+        level: profile.level,
+        current_xp: profile.currentXp,
+        xp_to_next_level: profile.xpToNextLevel,
+        coins: profile.coins,
+        gems: profile.gems,
+        games_played: profile.stats.gamesPlayed,
+        wins: profile.stats.wins,
+        win_streak: profile.stats.winStreak,
+        is_guest: false,
+        updated_at: new Date().toISOString(),
+      });
     } catch (err) {
       console.warn('[PlayerProfileService] Cloud stat sync skipped/warning:', err);
     }
@@ -950,7 +1101,11 @@ class PlayerProfileService {
     const guestWins = currentGuest.stats?.wins || 0;
     const guestWinStreak = currentGuest.stats?.winStreak || 0;
     const guestNickname = currentGuest.nickname;
-    const guestAvatarId = currentGuest.avatarId;
+    const guestAvatarId = normalizeAvatarKey(currentGuest.avatarId) || DEFAULT_AVATAR_ID;
+    const guestUnlockedAvatars = normalizeUnlockedAvatars(
+      (currentGuest as any).unlockedAvatars ?? (currentGuest as any).unlocked_avatars,
+      guestAvatarId
+    );
 
     const authEmail = authUser.email?.trim().toLowerCase() || currentGuest.email;
     const authDisplayName =
@@ -959,20 +1114,34 @@ class PlayerProfileService {
       authUser.user_metadata?.user_name ||
       (authEmail ? authEmail.split('@')[0] : undefined);
 
-    // 2. Check Supabase `profiles` table for authUser.id with safety timeout
+    // 2. Check Supabase `profiles` table for authUser.id with safety timeout & column fallback
     let remoteProfile: any = null;
     if (remoteProfileOverride !== undefined) {
       remoteProfile = remoteProfileOverride;
     } else {
       try {
-        const { data, error } = await Promise.race([
-          supabase
-            .from('profiles')
-            .select(PROFILE_LINK_SELECT_COLUMNS)
-            .eq('id', authUser.id)
-            .maybeSingle(),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
-        ]);
+        const fetchWithCols = async (cols: string) => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            return await Promise.race([
+              supabase
+                .from('profiles')
+                .select(cols)
+                .eq('id', authUser.id)
+                .maybeSingle(),
+              new Promise<any>((_, reject) => {
+                timer = setTimeout(() => reject(new Error('timeout')), 1500);
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        };
+
+        let { data, error } = await fetchWithCols(PROFILE_LINK_SELECT_COLUMNS);
+        if (error && isMissingUnlockedAvatarsColumnError(error)) {
+          ({ data, error } = await fetchWithCols(PROFILE_LINK_SELECT_COLUMNS_FALLBACK));
+        }
         if (!error && data) {
           remoteProfile = data;
         }
@@ -1001,7 +1170,8 @@ class PlayerProfileService {
         ? (remoteProfile.win_streak ?? remoteProfile.stats?.winStreak)
         : 0;
     const remoteNickname = remoteProfile?.nickname?.trim();
-    const remoteAvatarId = remoteProfile?.avatar_id || remoteProfile?.avatarId;
+    const remoteAvatarId = normalizeAvatarKey(remoteProfile?.avatar_id || remoteProfile?.avatarId);
+    const remoteUnlockedRaw = remoteProfile?.unlocked_avatars ?? remoteProfile?.unlockedAvatars;
 
     const hasRemoteProgress =
       Boolean(remoteProfile) &&
@@ -1026,12 +1196,18 @@ class PlayerProfileService {
           ? guestNickname
           : (authDisplayName ? authDisplayName.slice(0, 16) : (guestNickname || 'Player'));
 
+      const mergedUnlocked = normalizeUnlockedAvatars(
+        [...guestUnlockedAvatars, ...(Array.isArray(remoteUnlockedRaw) ? remoteUnlockedRaw : [])],
+        guestAvatarId
+      );
+
       merged = {
         ...currentGuest,
         id: authUser.id,
         email: authEmail,
         nickname,
-        avatarId: guestAvatarId || 'avatar_1',
+        avatarId: guestAvatarId,
+        unlockedAvatars: mergedUnlocked,
         level: guestLevel,
         currentXp: guestXP,
         xpToNextLevel: guestXpToNextLevel,
@@ -1042,25 +1218,23 @@ class PlayerProfileService {
       };
 
       try {
-        await Promise.race([
-          supabase.from('profiles').upsert({
-            id: authUser.id,
-            email: authEmail || '',
-            nickname: merged.nickname,
-            avatar_id: merged.avatarId,
-            level: merged.level,
-            current_xp: merged.currentXp,
-            xp_to_next_level: merged.xpToNextLevel,
-            coins: merged.coins,
-            gems: merged.gems,
-            games_played: merged.stats.gamesPlayed,
-            wins: merged.stats.wins,
-            win_streak: merged.stats.winStreak,
-            is_guest: false,
-            updated_at: new Date().toISOString(),
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
-        ]);
+        await this.upsertProfileToSupabase({
+          id: authUser.id,
+          email: authEmail || '',
+          nickname: merged.nickname,
+          avatar_id: merged.avatarId,
+          unlocked_avatars: merged.unlockedAvatars,
+          level: merged.level,
+          current_xp: merged.currentXp,
+          xp_to_next_level: merged.xpToNextLevel,
+          coins: merged.coins,
+          gems: merged.gems,
+          games_played: merged.stats.gamesPlayed,
+          wins: merged.stats.wins,
+          win_streak: merged.stats.winStreak,
+          is_guest: false,
+          updated_at: new Date().toISOString(),
+        });
       } catch (upsertErr) {
         console.warn('[PlayerProfileService] Cloud upsert warning (Case 2 - New User):', upsertErr);
       }
@@ -1084,11 +1258,15 @@ class PlayerProfileService {
           mergedNickname = (guestNickname && guestNickname !== 'Player') ? guestNickname : (authDisplayName || 'Player');
         }
 
+        const resolvedAvatarId = remoteAvatarId || guestAvatarId || DEFAULT_AVATAR_ID;
+        const resolvedUnlocked = normalizeUnlockedAvatars(remoteUnlockedRaw, resolvedAvatarId);
+
         merged = {
           id: authUser.id,
           email: remoteProfile.email || authEmail,
           nickname: mergedNickname.slice(0, 16),
-          avatarId: remoteAvatarId || guestAvatarId || 'avatar_1',
+          avatarId: resolvedAvatarId,
+          unlockedAvatars: resolvedUnlocked,
           level: safeRemoteLevel,
           currentXp: safeRemoteXp,
           xpToNextLevel: safeRemoteXpToNextLevel,
@@ -1144,13 +1322,18 @@ class PlayerProfileService {
           mergedNickname = (guestNickname && guestNickname !== 'Player') ? guestNickname : (authDisplayName || 'Player');
         }
 
-        const mergedAvatarId = remoteAvatarId || guestAvatarId || 'avatar_1';
+        const mergedAvatarId = remoteAvatarId || guestAvatarId || DEFAULT_AVATAR_ID;
+        const mergedUnlocked = normalizeUnlockedAvatars(
+          [...guestUnlockedAvatars, ...(Array.isArray(remoteUnlockedRaw) ? remoteUnlockedRaw : [])],
+          mergedAvatarId
+        );
 
         merged = {
           id: authUser.id,
           email: authEmail || remoteProfile.email,
           nickname: mergedNickname.slice(0, 16),
           avatarId: mergedAvatarId,
+          unlockedAvatars: mergedUnlocked,
           level: mergedLevel,
           currentXp: mergedCurrentXp,
           xpToNextLevel: mergedXpToNextLevel,
@@ -1172,25 +1355,23 @@ class PlayerProfileService {
 
         // Persist positive delta merges back to cloud record
         try {
-          await Promise.race([
-            supabase.from('profiles').upsert({
-              id: authUser.id,
-              email: merged.email || '',
-              nickname: merged.nickname,
-              avatar_id: merged.avatarId,
-              level: merged.level,
-              current_xp: merged.currentXp,
-              xp_to_next_level: merged.xpToNextLevel,
-              coins: merged.coins,
-              gems: merged.gems,
-              games_played: merged.stats.gamesPlayed,
-              wins: merged.stats.wins,
-              win_streak: merged.stats.winStreak,
-              is_guest: false,
-              updated_at: new Date().toISOString(),
-            }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('upsert timeout')), 2500)),
-          ]);
+          await this.upsertProfileToSupabase({
+            id: authUser.id,
+            email: merged.email || '',
+            nickname: merged.nickname,
+            avatar_id: merged.avatarId,
+            unlocked_avatars: merged.unlockedAvatars,
+            level: merged.level,
+            current_xp: merged.currentXp,
+            xp_to_next_level: merged.xpToNextLevel,
+            coins: merged.coins,
+            gems: merged.gems,
+            games_played: merged.stats.gamesPlayed,
+            wins: merged.stats.wins,
+            win_streak: merged.stats.winStreak,
+            is_guest: false,
+            updated_at: new Date().toISOString(),
+          });
         } catch (upsertErr) {
           console.warn('[PlayerProfileService] Cloud upsert warning (Case 1 Delta):', upsertErr);
         }
@@ -1260,7 +1441,8 @@ class PlayerProfileService {
     const cleanGuest: PlayerProfile = {
       id: generateUUID(),
       nickname: 'Player',
-      avatarId: 'avatar_1',
+      avatarId: DEFAULT_AVATAR_ID,
+      unlockedAvatars: [...DEFAULT_UNLOCKED_AVATARS],
       level: 1,
       currentXp: 0,
       xpToNextLevel: 100,
@@ -1305,7 +1487,8 @@ class PlayerProfileService {
     const freshGuest: PlayerProfile = {
       id: generateUUID(),
       nickname: 'Player',
-      avatarId: 'avatar_1',
+      avatarId: DEFAULT_AVATAR_ID,
+      unlockedAvatars: [...DEFAULT_UNLOCKED_AVATARS],
       level: 1,
       currentXp: 0,
       xpToNextLevel: 100,

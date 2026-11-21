@@ -43,6 +43,7 @@ try {
   ExpoAudio = null;
 }
 import { playerProfileService } from './src/services/playerProfileService';
+import { AVATAR_ASSET_LIST } from './src/constants/avatars';
 import type { GameState } from './src/types';
 
 // Prevent splash screen auto-hiding until assets and fonts are ready
@@ -266,6 +267,7 @@ function MainAppContent() {
               require('./assets/icons/icon_swap.png'),
               require('./assets/sounds/background.mp3'),
               require('./assets/sounds/match-background.mp3'),
+              ...AVATAR_ASSET_LIST,
             ]),
           ]);
         } catch (fontErr) {

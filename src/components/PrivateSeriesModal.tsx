@@ -15,6 +15,7 @@ import {
   FONT_CARTOON_REGULAR,
 } from '../styles/typography';
 import { getAvatarConfig } from '../services/playerProfileService';
+import { AvatarIcon } from './AvatarIcon';
 import { getActiveSeriesPlayers, getSeriesStandings } from '../utils/seriesEngine';
 import { ModalConfettiBurst } from './ModalConfettiBurst';
 import { hapticsService } from '../services/hapticsService';
@@ -193,7 +194,7 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
 
                     {/* Avatar + Name + Left tag */}
                     <View style={styles.playerInfoColumn}>
-                      <Text style={styles.standingsAvatarEmoji}>{avatar.emoji}</Text>
+                      <AvatarIcon avatarId={entry.avatarId || 'fox'} size={22} showCircle />
                       <View style={styles.nameWrapper}>
                         <Text
                           style={[

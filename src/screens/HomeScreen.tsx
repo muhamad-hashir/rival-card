@@ -20,6 +20,7 @@ import { ProfileModal } from '../components/ProfileModal';
 import { ResumeMatchModal } from '../components/ResumeMatchModal';
 import { HowToPlayModal } from '../components/HowToPlayModal';
 import { SpecialCardsModal } from '../components/SpecialCardsModal';
+import { AvatarIcon } from '../components/AvatarIcon';
 import { ShopModal } from '../components/ShopModal';
 import { SettingsModal } from '../components/SettingsModal';
 import { OnboardingAuthModal } from '../components/OnboardingAuthModal';
@@ -486,9 +487,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 pressed && styles.headerPillPressed,
               ]}
             >
-              <View style={[styles.avatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
-                <Text style={styles.avatarEmoji}>{activeAvatar.emoji}</Text>
-              </View>
+              <AvatarIcon
+                avatarId={profile?.avatarId}
+                size={28}
+                style={{ marginRight: 7 }}
+              />
               <Text style={styles.profileNickname} numberOfLines={1}>
                 {profile?.nickname || 'Player'}
               </Text>

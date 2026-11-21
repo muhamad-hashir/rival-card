@@ -53,6 +53,7 @@ import {
 } from '../gameEngine';
 import { CardView } from '../components/CardView';
 import { DefenseReactionModal } from '../components/DefenseReactionModal';
+import { AvatarIcon } from '../components/AvatarIcon';
 import { DraggableCard } from '../components/DraggableCard';
 import { ColorPickerModal } from '../components/ColorPickerModal';
 import { PrivacyMaskModal } from '../components/PrivacyMaskModal';
@@ -110,14 +111,14 @@ export { TURN_DURATION };
 
 const PRESETS: Record<
   SetupPreset,
-  { name: string; mode: GameMode; players: { id: string; name: string; isBot: boolean }[] }
+  { name: string; mode: GameMode; players: { id: string; name: string; isBot: boolean; avatarId?: string }[] }
 > = {
   vs_bot_2p: {
     name: '1v1 vs Bot',
     mode: 'vs_bot',
     players: [
       { id: 'p1', name: 'You', isBot: false },
-      { id: 'bot1', name: 'RivalBot 🤖', isBot: true },
+      { id: 'bot1', name: 'RivalBot', isBot: true, avatarId: 'bot' },
     ],
   },
   vs_bot_3p: {
@@ -125,8 +126,8 @@ const PRESETS: Record<
     mode: 'vs_bot',
     players: [
       { id: 'p1', name: 'You', isBot: false },
-      { id: 'bot1', name: 'CyberBot 🤖', isBot: true },
-      { id: 'bot2', name: 'NovaBot 🤖', isBot: true },
+      { id: 'bot1', name: 'CyberBot', isBot: true, avatarId: 'bot' },
+      { id: 'bot2', name: 'NovaBot', isBot: true, avatarId: 'shield' },
     ],
   },
   vs_bot_4p: {
@@ -134,9 +135,9 @@ const PRESETS: Record<
     mode: 'vs_bot',
     players: [
       { id: 'p1', name: 'You', isBot: false },
-      { id: 'bot1', name: 'CyberBot 🤖', isBot: true },
-      { id: 'bot2', name: 'NovaBot 🤖', isBot: true },
-      { id: 'bot3', name: 'EchoBot 🤖', isBot: true },
+      { id: 'bot1', name: 'CyberBot', isBot: true, avatarId: 'bot' },
+      { id: 'bot2', name: 'NovaBot', isBot: true, avatarId: 'wolf' },
+      { id: 'bot3', name: 'EchoBot', isBot: true, avatarId: 'ninja' },
     ],
   },
   pass_play_2p: {
@@ -849,6 +850,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     matchRemainingRef.current = nextRemainingMs;
     matchLastTickAtRef.current = Date.now();
     setMatchRemainingMs(nextRemainingMs);
+    audioService.resetGameplayBgmIntensity();
   }, []);
 
   // Pause match timer cleanly when dealing, game over, or local Pause/Settings/Rulebook/Leave modals are open
@@ -944,6 +946,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
     return () => clearInterval(interval);
   }, [gameState.isGameOver, isDealing, isMatchTimerPaused, myPlayer.id, commitGameState]);
+
+  // Seamlessly escalate gameplay BGM tempo & energy in the final 20 seconds of an active match
+  useEffect(() => {
+    const timeLeftSeconds = Math.ceil(matchRemainingMs / 1000);
+    const isMatchActive = !gameState.isGameOver && !isDealing && !isMatchTimerPaused;
+    audioService.updateGameplayBgmIntensity(timeLeftSeconds, isMatchActive);
+  }, [matchRemainingMs, gameState.isGameOver, isDealing, isMatchTimerPaused]);
 
   // =========================================================================
   // 15-SECOND TURN TIMER & AFK AUTO-PLAY LOGIC
@@ -2702,16 +2711,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         >
           {/* Side Opponent Header (Avatar, Name, Count Badge, Muted, Rival) */}
           <View style={styles.sideOpponentInfo}>
-            <View
-              style={[
-                styles.opponentAvatarBadge,
-                { backgroundColor: getAvatarConfig(opp.avatarId).bgColor },
-              ]}
-            >
-              <Text style={styles.opponentAvatarEmoji}>
-                {getAvatarConfig(opp.avatarId).emoji}
-              </Text>
-            </View>
+            <AvatarIcon
+              avatarId={opp.avatarId}
+              size={22}
+              style={{ marginRight: 3 }}
+            />
             <Text style={styles.sideOpponentName} numberOfLines={1}>
               {opp.name}
             </Text>
@@ -2815,16 +2819,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       >
         {/* Opponent Top Row (Avatar, Name, Count Badge, Muted, Rival) */}
         <View style={styles.opponentTopRow}>
-          <View
-            style={[
-              styles.opponentAvatarBadge,
-              { backgroundColor: getAvatarConfig(opp.avatarId).bgColor },
-            ]}
-          >
-            <Text style={styles.opponentAvatarEmoji}>
-              {getAvatarConfig(opp.avatarId).emoji}
-            </Text>
-          </View>
+          <AvatarIcon
+            avatarId={opp.avatarId}
+            size={22}
+            style={{ marginRight: 3 }}
+          />
           <Text style={styles.opponentName} numberOfLines={1}>
             {opp.name}
           </Text>
@@ -3286,14 +3285,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   isMyTurn && !gameState.isGameOver && !isDealing && styles.playerBottomLeftBadgeActive,
                 ]}
               >
-                <View
-                  style={[
-                    styles.playerAvatarCircle,
-                    { backgroundColor: myPlayerAvatar.bgColor },
-                  ]}
-                >
-                  <Text style={styles.playerAvatarEmoji}>{myPlayerAvatar.emoji}</Text>
-                </View>
+                <AvatarIcon avatarId={myPlayer.avatarId} size={30} />
                 <View style={styles.playerInfoColumn}>
                   <View style={styles.playerNameCoinsRow}>
                     <Text style={styles.playerBottomName} numberOfLines={1}>

@@ -18,6 +18,7 @@ import {
   FONT_CARTOON_SEMIBOLD,
 } from '../styles/typography';
 import { getAvatarConfig, AwardRewardsResult } from '../services/playerProfileService';
+import { AvatarIcon } from './AvatarIcon';
 import { ModalConfettiBurst } from './ModalConfettiBurst';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
@@ -262,9 +263,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                         {/* Column 2: Player Avatar & Name */}
                         <View style={styles.playerInfoColumn}>
                           {Boolean(p.avatarId) && (
-                            <Text style={styles.standingsAvatarEmoji}>
-                              {getAvatarConfig(p.avatarId).emoji}
-                            </Text>
+                            <AvatarIcon avatarId={p.avatarId} size={22} showCircle />
                           )}
                           <Text
                             style={[

@@ -173,4 +173,55 @@ describe('Shop Catalog, High-Stakes Pricing & Locked Previews', () => {
     assert.strictEqual(scenery.name, 'Meadow Green');
     assert.strictEqual(scenery.previewStyle.primaryColor, '#15803D');
   });
+
+  test('Shop avatar list excludes Guest Fox and Guest Bot starters while keeping 10 progression + 4 VIP exclusives', () => {
+    const shopAvatars = shopService.getItemsByCategory('avatars');
+    assert.strictEqual(shopAvatars.length, 14);
+    assert.strictEqual(
+      shopAvatars.some((a) => ['fox', 'bot', 'avatar_1', 'avatar_2'].includes(a.id)),
+      false,
+      'Guest Fox & Guest Bot must be excluded from Shop avatars'
+    );
+
+    const vipIds = [
+      'avatar_robo_king',
+      'avatar_golden_phoenix',
+      'avatar_grand_maester',
+      'avatar_cyber_samurai',
+    ];
+    for (const id of vipIds) {
+      const vip = shopService.getItemById(id);
+      assert.ok(vip, `${id} must exist in Shop catalog`);
+      assert.strictEqual(vip.unlockType, 'iap');
+      assert.strictEqual(vip.isRealMoneyExclusive, true);
+      assert.strictEqual(vip.comingSoon, true);
+      assert.strictEqual(vip.purchasesUnavailable, true);
+    }
+  });
+
+  test('VIP Store Exclusive avatars cannot be purchased with coins or unlocked via level progression', async () => {
+    await playerProfileService.addCurrency(50000, 500);
+
+    const vipShopIds = [
+      'avatar_robo_king',
+      'avatar_golden_phoenix',
+      'avatar_grand_maester',
+      'avatar_cyber_samurai',
+    ];
+    for (const id of vipShopIds) {
+      const res = await shopService.buyItem(id);
+      assert.strictEqual(res.success, false);
+      assert.strictEqual(res.error, 'Real-money Store & VIP packs coming in the next update!');
+    }
+
+    for (const key of ['robo_king', 'golden_phoenix', 'grand_maester', 'cyber_samurai']) {
+      const unlockAttempt = await playerProfileService.unlockAvatar(key);
+      assert.strictEqual(unlockAttempt.success, false);
+      assert.strictEqual(unlockAttempt.reason, 'invalid_avatar');
+    }
+
+    const profileAfter = await playerProfileService.getProfile();
+    assert.strictEqual(profileAfter.coins, 50250);
+    assert.strictEqual(profileAfter.gems, 510);
+  });
 });

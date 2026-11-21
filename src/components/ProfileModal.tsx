@@ -18,9 +18,12 @@ import {
   AvatarOption,
   PlayerProfile,
   getAvatarConfig,
+  isAvatarUnlocked,
+  normalizeAvatarKey,
   normalizePlayerStats,
   playerProfileService,
 } from '../services/playerProfileService';
+import { AvatarIcon } from './AvatarIcon';
 import { authService } from '../services/authService';
 import { errorToastService } from '../services/errorToastService';
 import { networkService } from '../services/networkService';
@@ -60,6 +63,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   // Native Google Sign-In state
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  // 12-Avatar Unlock Flow State
+  const [pendingUnlockAvatar, setPendingUnlockAvatar] = useState<AvatarOption | null>(null);
+  const [isUnlockingAvatar, setIsUnlockingAvatar] = useState(false);
+  const [avatarNotice, setAvatarNotice] = useState<{ text: string; tone: 'info' | 'warn' | 'success' } | null>(null);
 
   // Re-assert sticky-immersive mode helper
   const reassertImmersiveMode = async () => {
@@ -111,6 +119,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setSaveStatus('idle');
       setIsSigningIn(false);
       setAuthError(null);
+      setPendingUnlockAvatar(null);
+      setIsUnlockingAvatar(false);
+      setAvatarNotice(null);
       reassertImmersiveMode();
     }
   }, [visible]);
@@ -119,6 +130,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const careerStats = normalizePlayerStats(activeProfile.stats);
   const isConnected = !activeProfile.isGuest || Boolean(session?.user);
   const connectedEmail = session?.user?.email || activeProfile.email;
+  const currentLevel = activeProfile.level ?? 1;
+  const currentCoins = activeProfile.coins ?? 250;
+  const equippedAvatarKey = normalizeAvatarKey(selectedAvatarId) || normalizeAvatarKey(activeProfile.avatarId) || 'fox';
+  const unlockedAvatarsList = activeProfile.unlockedAvatars ?? ['fox', 'bot'];
+  const unlockedCount = AVATAR_OPTIONS.filter((a) => isAvatarUnlocked(unlockedAvatarsList, a.id)).length;
 
   const activeAvatar = getAvatarConfig(selectedAvatarId);
   const winRate = careerStats.winRate ?? 0;
@@ -180,17 +196,76 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  // Auto-save avatar selection immediately
-  const handleSelectAvatar = async (avatarId: string) => {
+  // Handle tapping any of the 12 avatars (equip if unlocked, warn if level-locked, or prompt to unlock with coins)
+  const handleSelectAvatar = async (item: AvatarOption) => {
+    const unlocked = isAvatarUnlocked(unlockedAvatarsList, item.id);
+
+    if (!unlocked) {
+      if (currentLevel < item.requiredLevel) {
+        hapticsService.cardSelection();
+        soundService.playCardSnap();
+        const msg = `Reach Level ${item.requiredLevel} to unlock ${item.label}!`;
+        setAvatarNotice({ text: msg, tone: 'warn' });
+        errorToastService.show({
+          message: `Reach Level ${item.requiredLevel} to unlock!`,
+          type: 'info',
+          durationMs: 2200,
+        });
+        return;
+      }
+
+      // Level met -> open confirmation modal (handles both sufficient and insufficient coin states cleanly)
+      hapticsService.cardSelection();
+      soundService.playCardSnap();
+      setAvatarNotice(null);
+      setPendingUnlockAvatar(item);
+      return;
+    }
+
     hapticsService.cardSelection();
     soundService.playCardSnap();
-    setSelectedAvatarId(avatarId);
+    setAvatarNotice(null);
+    setSelectedAvatarId(item.id);
     setSaveStatus('saving');
     try {
-      await playerProfileService.updateAvatar(avatarId);
+      const updated = await playerProfileService.updateAvatar(item.id);
+      setLiveProfile(updated);
       setSaveStatus('saved');
     } catch (err) {
       console.warn('Failed to auto-save avatar:', err);
+    }
+  };
+
+  const handleConfirmUnlockAvatar = async () => {
+    if (!pendingUnlockAvatar || isUnlockingAvatar) return;
+    setIsUnlockingAvatar(true);
+
+    try {
+      const result = await playerProfileService.unlockAvatar(pendingUnlockAvatar.id);
+      if (result.success) {
+        soundService.playWinChime();
+        hapticsService.victory();
+        setLiveProfile(result.profile);
+        setSelectedAvatarId(result.profile.avatarId);
+        setPendingUnlockAvatar(null);
+        setSaveStatus('saved');
+        setAvatarNotice({
+          text: `${pendingUnlockAvatar.label} unlocked & equipped!`,
+          tone: 'success',
+        });
+      } else {
+        hapticsService.cardSelection();
+        setAvatarNotice({
+          text: result.error || 'Unable to unlock avatar.',
+          tone: 'warn',
+        });
+        setPendingUnlockAvatar(null);
+      }
+    } catch (err) {
+      console.warn('Failed to unlock avatar:', err);
+      setAvatarNotice({ text: 'Could not unlock avatar. Please try again.', tone: 'warn' });
+    } finally {
+      setIsUnlockingAvatar(false);
     }
   };
 
@@ -303,9 +378,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           >
             {/* Selected Avatar Preview & Guest/Verified Badge */}
             <View style={styles.previewSection}>
-              <View style={[styles.largeAvatarCircle, { backgroundColor: activeAvatar.bgColor }]}>
-                <Text style={styles.largeAvatarEmoji}>{activeAvatar.emoji}</Text>
-              </View>
+              <AvatarIcon
+                avatarId={equippedAvatarKey}
+                size={72}
+                style={{ marginBottom: 6 }}
+              />
 
               {!isConnected ? (
                 <View style={styles.guestBadge}>
@@ -325,11 +402,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <View style={styles.economyRow}>
                 <View style={styles.coinsBadge}>
                   <Text style={styles.coinsBadgeIcon}>🪙</Text>
-                  <Text style={styles.coinsBadgeText}>{profile.coins ?? 250}</Text>
+                  <Text style={styles.coinsBadgeText}>{currentCoins.toLocaleString()}</Text>
                 </View>
                 <View style={styles.gemsBadge}>
                   <Text style={styles.gemsBadgeIcon}>💎</Text>
-                  <Text style={styles.gemsBadgeText}>{profile.gems ?? 10}</Text>
+                  <Text style={styles.gemsBadgeText}>{activeProfile.gems ?? 10}</Text>
                 </View>
               </View>
             </View>
@@ -338,10 +415,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             <View style={styles.levelCard}>
               <View style={styles.levelHeaderRow}>
                 <View style={styles.levelBadge}>
-                  <Text style={styles.levelBadgeText}>⭐ LVL {profile.level ?? 1}</Text>
+                  <Text style={styles.levelBadgeText}>⭐ LVL {currentLevel}</Text>
                 </View>
                 <Text style={styles.levelXpText}>
-                  {profile.currentXp ?? 0} / {profile.xpToNextLevel ?? 100} XP
+                  {activeProfile.currentXp ?? 0} / {activeProfile.xpToNextLevel ?? 100} XP
                 </Text>
               </View>
               <View style={styles.xpTrack}>
@@ -354,7 +431,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         Math.max(
                           0,
                           Math.round(
-                            ((profile.currentXp ?? 0) / (profile.xpToNextLevel || 100)) * 100
+                            ((activeProfile.currentXp ?? 0) / (activeProfile.xpToNextLevel || 100)) * 100
                           )
                         )
                       )}%`,
@@ -401,33 +478,127 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               )}
             </View>
 
-            {/* Choose Avatar Grid */}
+            {/* Choose Avatar Grid (12 Cartoon-Arcade Avatars with Level + Coin Progression) */}
             <View style={styles.avatarSection}>
-              <Text style={styles.sectionLabel}>CHOOSE AVATAR</Text>
+              <View style={styles.avatarSectionHeader}>
+                <Text style={styles.sectionLabel}>CHOOSE AVATAR</Text>
+                <View style={styles.avatarCountPill}>
+                  <Text style={styles.avatarCountText}>
+                    {unlockedCount}/{AVATAR_OPTIONS.length} UNLOCKED
+                  </Text>
+                </View>
+              </View>
+
+              {avatarNotice && (
+                <View
+                  style={[
+                    styles.avatarNoticeBanner,
+                    avatarNotice.tone === 'success'
+                      ? styles.avatarNoticeSuccess
+                      : styles.avatarNoticeWarn,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.avatarNoticeText,
+                      avatarNotice.tone === 'success'
+                        ? styles.avatarNoticeTextSuccess
+                        : styles.avatarNoticeTextWarn,
+                    ]}
+                  >
+                    {avatarNotice.tone === 'success' ? '✨ ' : '🔒 '}
+                    {avatarNotice.text}
+                  </Text>
+                </View>
+              )}
+
               <View style={styles.avatarGrid}>
                 {AVATAR_OPTIONS.map((item: AvatarOption) => {
-                  const isSelected = item.id === selectedAvatarId;
+                  const isUnlocked = isAvatarUnlocked(unlockedAvatarsList, item.id);
+                  const isEquipped = isUnlocked && item.id === equippedAvatarKey;
+                  const isLevelLocked = !isUnlocked && currentLevel < item.requiredLevel;
+                  const isReadyToBuy = !isUnlocked && currentLevel >= item.requiredLevel;
+                  const canAfford = currentCoins >= item.coinCost;
+
                   return (
                     <TouchableOpacity
                       key={item.id}
-                      activeOpacity={0.75}
-                      onPress={() => handleSelectAvatar(item.id)}
+                      activeOpacity={0.78}
+                      onPress={() => handleSelectAvatar(item)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${item.label} avatar${
+                        isEquipped
+                          ? ', equipped'
+                          : isUnlocked
+                          ? ', unlocked'
+                          : isLevelLocked
+                          ? `, locked until level ${item.requiredLevel}`
+                          : `, unlock for ${item.coinCost} coins`
+                      }`}
+                      testID={`avatar-option-${item.id}`}
                       style={[
                         styles.avatarOptionCard,
-                        isSelected && styles.avatarOptionCardSelected,
+                        isEquipped && styles.avatarOptionCardSelected,
+                        isLevelLocked && styles.avatarOptionCardLocked,
+                        isReadyToBuy && styles.avatarOptionCardBuyable,
                       ]}
                     >
-                      {isSelected && (
+                      {isEquipped && (
                         <View style={styles.avatarSelectedBadge}>
                           <Text style={styles.avatarSelectedBadgeText}>✓</Text>
                         </View>
                       )}
-                      <View style={[styles.avatarOptionCircle, { backgroundColor: item.bgColor }]}>
-                        <Text style={styles.avatarOptionEmoji}>{item.emoji}</Text>
-                      </View>
-                      <Text style={[styles.avatarOptionLabel, isSelected && styles.avatarOptionLabelSelected]}>
+
+                      <AvatarIcon
+                        avatarId={item.id}
+                        size={46}
+                        dimmed={isLevelLocked}
+                        style={{ marginBottom: 4 }}
+                      />
+
+                      <Text
+                        style={[
+                          styles.avatarOptionLabel,
+                          isEquipped && styles.avatarOptionLabelSelected,
+                          isLevelLocked && styles.avatarOptionLabelLocked,
+                        ]}
+                        numberOfLines={1}
+                      >
                         {item.label}
                       </Text>
+
+                      {isEquipped ? (
+                        <View style={styles.avatarStatusEquippedPill}>
+                          <Text style={styles.avatarStatusEquippedText}>Equipped</Text>
+                        </View>
+                      ) : isUnlocked ? (
+                        <View style={styles.avatarStatusUnlockedPill}>
+                          <Text style={styles.avatarStatusUnlockedText}>Equip</Text>
+                        </View>
+                      ) : isLevelLocked ? (
+                        <View style={styles.avatarStatusLevelLockPill}>
+                          <Text style={styles.avatarStatusLevelLockText}>
+                            🔒 Lv. {item.requiredLevel}
+                          </Text>
+                        </View>
+                      ) : (
+                        <View
+                          style={[
+                            styles.avatarStatusPricePill,
+                            !canAfford && styles.avatarStatusPricePillLow,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.avatarStatusPriceText,
+                              !canAfford && styles.avatarStatusPriceTextLow,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            🪙 {item.coinCost.toLocaleString()}
+                          </Text>
+                        </View>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -558,6 +729,70 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <Text style={styles.saveBtnText}>{isSaving ? 'Saving...' : 'Save Profile'}</Text>
             </TouchableOpacity>
           </ScrollView>
+
+          {/* In-Modal Avatar Unlock Confirmation Overlay */}
+          {pendingUnlockAvatar && (
+            <View style={styles.unlockOverlay}>
+              <View style={styles.unlockConfirmCard}>
+                <AvatarIcon
+                  avatarId={pendingUnlockAvatar.id}
+                  size={64}
+                  showCircle
+                  borderWidth={3}
+                  style={styles.unlockPreviewAvatar}
+                />
+                <Text style={styles.unlockTitle}>UNLOCK {pendingUnlockAvatar.label.toUpperCase()}?</Text>
+                <Text style={styles.unlockSubtitle}>
+                  Unlock {pendingUnlockAvatar.label} for{' '}
+                  {pendingUnlockAvatar.coinCost.toLocaleString()} Coins?
+                </Text>
+
+                {currentCoins < pendingUnlockAvatar.coinCost ? (
+                  <View style={styles.unlockInsufficientBanner}>
+                    <Text style={styles.unlockInsufficientText}>
+                      Need {(pendingUnlockAvatar.coinCost - currentCoins).toLocaleString()} more coins
+                      (You have 🪙 {currentCoins.toLocaleString()})
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={styles.unlockBalanceHint}>
+                    Balance after unlock: 🪙{' '}
+                    {(currentCoins - pendingUnlockAvatar.coinCost).toLocaleString()}
+                  </Text>
+                )}
+
+                <View style={styles.unlockActionsRow}>
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => setPendingUnlockAvatar(null)}
+                    disabled={isUnlockingAvatar}
+                    style={styles.unlockCancelBtn}
+                  >
+                    <Text style={styles.unlockCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={handleConfirmUnlockAvatar}
+                    disabled={isUnlockingAvatar || currentCoins < pendingUnlockAvatar.coinCost}
+                    style={[
+                      styles.unlockConfirmBtn,
+                      (isUnlockingAvatar || currentCoins < pendingUnlockAvatar.coinCost) &&
+                        styles.unlockConfirmBtnDisabled,
+                    ]}
+                    testID="confirm-unlock-avatar-btn"
+                  >
+                    {isUnlockingAvatar ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.unlockConfirmText}>
+                        🪙 Unlock ({pendingUnlockAvatar.coinCost.toLocaleString()})
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
         </View>
       </View>
     </Modal>
@@ -906,50 +1141,104 @@ const styles = StyleSheet.create({
   },
   avatarSection: {
     width: '100%',
-    marginVertical: 4,
+    marginVertical: 6,
+  },
+  avatarSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
   },
   sectionLabel: {
     ...FONT_CARTOON_BOLD,
     fontSize: 11,
     color: '#64748B',
-    marginBottom: 6,
     letterSpacing: 0.6,
+  },
+  avatarCountPill: {
+    backgroundColor: '#EDE9FE',
+    borderWidth: 1.5,
+    borderColor: '#C4B5FD',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  avatarCountText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 9.5,
+    color: '#5B21B6',
+    letterSpacing: 0.4,
+  },
+  avatarNoticeBanner: {
+    borderRadius: 10,
+    borderWidth: 1.5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  avatarNoticeWarn: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B',
+  },
+  avatarNoticeSuccess: {
+    backgroundColor: '#DCFCE7',
+    borderColor: '#22C55E',
+  },
+  avatarNoticeText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    textAlign: 'center',
+  },
+  avatarNoticeTextWarn: {
+    color: '#92400E',
+  },
+  avatarNoticeTextSuccess: {
+    color: '#15803D',
   },
   avatarGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 6,
+    rowGap: 8,
   },
   avatarOptionCard: {
-    width: '31%',
+    width: '31.5%',
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 2,
     borderColor: '#E2E8F0',
-    paddingVertical: 6,
+    paddingVertical: 7,
+    paddingHorizontal: 4,
     alignItems: 'center',
   },
   avatarOptionCardSelected: {
-    borderColor: '#FACC15',
+    borderColor: '#F59E0B',
     backgroundColor: '#FEF9C3',
     borderWidth: 2.5,
     shadowColor: '#F59E0B',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.45,
-    shadowRadius: 5,
-    elevation: 5,
-    transform: [{ scale: 1.04 }],
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  avatarOptionCardLocked: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5E1',
+  },
+  avatarOptionCardBuyable: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FBBF24',
   },
   avatarSelectedBadge: {
     position: 'absolute',
-    top: 3,
-    right: 3,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#F59E0B',
-    borderWidth: 1,
+    top: 4,
+    right: 4,
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    backgroundColor: '#16A34A',
+    borderWidth: 1.5,
     borderColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
@@ -961,12 +1250,190 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   avatarOptionCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1.5,
+    borderColor: '#0F1142',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  avatarOptionCircleDimmed: {
+    opacity: 0.45,
+  },
+  avatarOptionLabelLocked: {
+    color: '#64748B',
+  },
+  avatarStatusEquippedPill: {
+    marginTop: 3,
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#4ADE80',
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+  },
+  avatarStatusEquippedText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    color: '#15803D',
+  },
+  avatarStatusUnlockedPill: {
+    marginTop: 3,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#93C5FD',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 1.5,
+  },
+  avatarStatusUnlockedText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 8.5,
+    color: '#1D4ED8',
+  },
+  avatarStatusLevelLockPill: {
+    marginTop: 3,
+    backgroundColor: '#E2E8F0',
+    borderWidth: 1,
+    borderColor: '#94A3B8',
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+  },
+  avatarStatusLevelLockText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 8.5,
+    color: '#475569',
+  },
+  avatarStatusPricePill: {
+    marginTop: 3,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.5,
+    borderColor: '#F59E0B',
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+  },
+  avatarStatusPricePillLow: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#F87171',
+  },
+  avatarStatusPriceText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    color: '#92400E',
+  },
+  avatarStatusPriceTextLow: {
+    color: '#B91C1C',
+  },
+  unlockOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 3,
+    padding: 20,
+    zIndex: 40,
+  },
+  unlockConfirmCard: {
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#FFFDF7',
+    borderRadius: 22,
+    borderWidth: 3,
+    borderColor: '#0F1142',
+    padding: 18,
+    alignItems: 'center',
+    shadowColor: '#0F1142',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  unlockPreviewAvatar: {
+    marginBottom: 10,
+  },
+  unlockTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 17,
+    color: '#0F1142',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  unlockSubtitle: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#334155',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  unlockBalanceHint: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 11.5,
+    color: '#15803D',
+    marginBottom: 14,
+  },
+  unlockInsufficientBanner: {
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 14,
+  },
+  unlockInsufficientText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#B91C1C',
+    textAlign: 'center',
+  },
+  unlockActionsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 10,
+  },
+  unlockCancelBtn: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    borderRadius: 14,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unlockCancelText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 13,
+    color: '#475569',
+  },
+  unlockConfirmBtn: {
+    flex: 1.4,
+    backgroundColor: '#F59E0B',
+    borderWidth: 2,
+    borderColor: '#0F1142',
+    borderBottomWidth: 4,
+    borderRadius: 14,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unlockConfirmBtnDisabled: {
+    backgroundColor: '#CBD5E1',
+    borderColor: '#94A3B8',
+    opacity: 0.75,
+  },
+  unlockConfirmText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FFFFFF',
   },
   avatarOptionEmoji: {
     fontSize: 16,

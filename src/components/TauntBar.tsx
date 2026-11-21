@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { multiplayerService, TauntMessage } from '../services/supabase';
 import { getAvatarConfig } from '../services/playerProfileService';
+import { AvatarIcon } from './AvatarIcon';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
@@ -95,14 +96,10 @@ export const TauntToastBanner: React.FC<TauntToastBannerProps> = ({
           },
         ]}
       >
-        <View
-          style={[
-            styles.toastEmojiBubble,
-            { backgroundColor: avatarConfig.bgColor },
-          ]}
-        >
-          <Text style={styles.toastEmoji}>{avatarConfig.emoji}</Text>
-        </View>
+        <AvatarIcon
+          avatarId={activeTaunt.senderAvatarId || matchedPlayer?.avatarId}
+          size={24}
+        />
         <Text style={styles.toastText}>
           <Text style={styles.toastSender}>{activeTaunt.senderName}</Text>
           <Text style={styles.toastSeparator}> • </Text>

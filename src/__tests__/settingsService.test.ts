@@ -86,7 +86,7 @@ describe('Settings Service & Account Management', () => {
   test('authService.signOut resets local profile to clean Guest state', async () => {
     // Customize profile first
     await playerProfileService.updateNickname('ChampionX');
-    await playerProfileService.updateAvatar('avatar_3');
+    await playerProfileService.updateAvatar('bot');
     await playerProfileService.awardMatchRewards(true, 10);
 
     const currentProfile = await playerProfileService.getProfile();
@@ -96,7 +96,7 @@ describe('Settings Service & Account Management', () => {
     // Perform sign out
     const cleanGuest = await authService.signOut();
     assert.strictEqual(cleanGuest.nickname, 'Player');
-    assert.strictEqual(cleanGuest.avatarId, 'avatar_1');
+    assert.strictEqual(cleanGuest.avatarId, 'fox');
     assert.strictEqual(cleanGuest.level, 1);
     assert.strictEqual(cleanGuest.coins, 250);
     assert.strictEqual(cleanGuest.gems, 10);
@@ -118,7 +118,7 @@ describe('Settings Service & Account Management', () => {
     await settingsService.resetSettings();
 
     assert.strictEqual(freshGuest.nickname, 'Player');
-    assert.strictEqual(freshGuest.avatarId, 'avatar_1');
+    assert.strictEqual(freshGuest.avatarId, 'fox');
     assert.strictEqual(freshGuest.level, 1);
     assert.strictEqual(freshGuest.coins, 250);
     assert.strictEqual(freshGuest.gems, 10);
