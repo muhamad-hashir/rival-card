@@ -24,8 +24,10 @@ import { AvatarIcon } from '../components/AvatarIcon';
 import { ShopModal } from '../components/ShopModal';
 import { SettingsModal } from '../components/SettingsModal';
 import { OnboardingAuthModal } from '../components/OnboardingAuthModal';
+import { TutorialWelcomeModal } from '../components/TutorialWelcomeModal';
 import { ErrorToast } from '../components/ErrorToast';
 import { authService } from '../services/authService';
+import { tutorialService } from '../services/tutorialService';
 import {
   playerProfileService,
   PlayerProfile,
@@ -124,11 +126,13 @@ interface HomeScreenProps {
     roomCode: string,
     isQuickMatch?: boolean
   ) => void;
+  onStartTutorialGame?: () => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   onStartOfflineGame,
   onStartOnlineGame,
+  onStartTutorialGame,
 }) => {
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -140,6 +144,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [isShopOpen, setIsShopOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [shouldShowTutorialWelcome, setShouldShowTutorialWelcome] = useState(false);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [pendingResumeSession, setPendingResumeSession] = useState<ActiveMatchSession | null>(null);
   const [isRejoiningSession, setIsRejoiningSession] = useState(false);
@@ -192,9 +197,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         if (!session) return;
         const TEN_MINUTES_MS = 10 * 60 * 1000;
         if (Date.now() - session.timestamp < TEN_MINUTES_MS) {
+          const roomCheck = await multiplayerService.isRoomStillPlaying(session.roomId);
+          if (!roomCheck.isPlaying && roomCheck.reason === 'finished') {
+            await clearActiveMatchSession();
+            return;
+          }
           setPendingResumeSession(session);
         } else {
           await clearActiveMatchSession();
+        }
+      } catch {
+        // ignore storage errors
+      }
+      try {
+        const tutStatus = await tutorialService.getTutorialStatus();
+        if (!tutStatus.hasSeenPrompt && !tutStatus.hasCompleted) {
+          setShouldShowTutorialWelcome(true);
         }
       } catch {
         // ignore storage errors
@@ -365,11 +383,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   const activeAvatar = getAvatarConfig(profile?.avatarId);
 
-  // Responsive measurements balanced across compact and tall 20:9 Android screens
-  const isCompactHeight = screenHeight < 700;
-  const isNarrowWidth = screenWidth < 360;
-  const heroLogoWidth = Math.min(screenWidth * 0.76, screenHeight * (isCompactHeight ? 0.27 : 0.30), 312);
-  const mainColumnWidth = Math.min(screenWidth * 0.82, 340);
+  // Responsive measurements locked to portrait orientation dimensions so
+  // returning from landscape matches never briefly downsamples the hero logo.
+  const portraitWidth = Math.min(screenWidth, screenHeight);
+  const portraitHeight = Math.max(screenWidth, screenHeight);
+  const isCompactHeight = portraitHeight < 700;
+  const isNarrowWidth = portraitWidth < 360;
+  const heroLogoWidth = Math.min(portraitWidth * 0.76, portraitHeight * (isCompactHeight ? 0.27 : 0.30), 312);
+  const mainColumnWidth = Math.min(portraitWidth * 0.82, 340);
   const pillMinHeight = isCompactHeight ? 58 : 66;
   const pillIconSize = isCompactHeight ? 40 : 46;
   const utilMinHeight = isCompactHeight ? 50 : 56;
@@ -489,8 +510,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             >
               <AvatarIcon
                 avatarId={profile?.avatarId}
-                size={28}
-                style={{ marginRight: 7 }}
+                size={38}
+                style={{ marginRight: 8 }}
               />
               <Text style={styles.profileNickname} numberOfLines={1}>
                 {profile?.nickname || 'Player'}
@@ -602,9 +623,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           >
             <Image
               source={RIVAL_LOGO}
+              fadeDuration={0}
+              resizeMethod="scale"
               style={{
                 width: heroLogoWidth,
-                height: heroLogoWidth * (802 / 1024),
+                height: heroLogoWidth * (1545 / 2048),
               }}
               resizeMode="contain"
               accessibilityLabel="Rival Card Logo"
@@ -753,6 +776,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <HowToPlayModal
         visible={isHowToPlayOpen}
         onClose={() => setIsHowToPlayOpen(false)}
+        onStartTutorial={onStartTutorialGame}
+      />
+
+      {/* First-Launch "New to Rival Card?" Interactive Tutorial Invite */}
+      <TutorialWelcomeModal
+        visible={shouldShowTutorialWelcome && !isOnboardingOpen && !pendingResumeSession}
+        onDismiss={async () => {
+          setShouldShowTutorialWelcome(false);
+          await tutorialService.markTutorialPromptSeen();
+        }}
+        onPlayTutorial={async () => {
+          setShouldShowTutorialWelcome(false);
+          await tutorialService.markTutorialPromptSeen();
+          onStartTutorialGame?.();
+        }}
       />
 
       {/* Interactive 4-Portion Special Cards Catalogue Modal */}
@@ -973,8 +1011,9 @@ const styles = StyleSheet.create({
     borderColor: OUTLINE_NAVY,
     borderRadius: 999,
     paddingVertical: 4,
-    paddingHorizontal: 10,
-    maxWidth: 165,
+    paddingLeft: 6,
+    paddingRight: 12,
+    maxWidth: 180,
     flexShrink: 1,
     shadowColor: '#8B6D52',
     shadowOffset: { width: 0, height: 3 },

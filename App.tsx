@@ -60,6 +60,7 @@ function MainAppContent() {
 
   const [currentScreen, setCurrentScreen] = useState<'home' | 'game'>('home');
   const [activePreset, setActivePreset] = useState<SetupPreset>('vs_bot_2p');
+  const [isTutorialSession, setIsTutorialSession] = useState(false);
   const [activeOnlineMatch, setActiveOnlineMatch] = useState<{
     initialState: GameState;
     playerId: string;
@@ -344,13 +345,22 @@ function MainAppContent() {
   }, []);
 
   const handleStartOfflineGame = useCallback((preset: SetupPreset) => {
+    setIsTutorialSession(false);
     setActivePreset(preset);
+    setActiveOnlineMatch(null);
+    setCurrentScreen('game');
+  }, []);
+
+  const handleStartTutorialGame = useCallback(() => {
+    setIsTutorialSession(true);
+    setActivePreset('vs_bot_2p');
     setActiveOnlineMatch(null);
     setCurrentScreen('game');
   }, []);
 
   const handleStartOnlineGame = useCallback(
     (initialState: GameState, playerId: string, roomCode: string, isQuickMatch: boolean = false) => {
+      setIsTutorialSession(false);
       setActiveOnlineMatch({ initialState, playerId, roomCode, isQuickMatch });
       setCurrentScreen('game');
     },
@@ -358,6 +368,7 @@ function MainAppContent() {
   );
 
   const handleGoHome = useCallback(() => {
+    setIsTutorialSession(false);
     setActiveOnlineMatch(null);
     setCurrentScreen('home');
   }, []);
@@ -381,6 +392,7 @@ function MainAppContent() {
         <HomeScreen
           onStartOfflineGame={handleStartOfflineGame}
           onStartOnlineGame={handleStartOnlineGame}
+          onStartTutorialGame={handleStartTutorialGame}
         />
       ) : (
         <GameScreen
@@ -389,6 +401,7 @@ function MainAppContent() {
           initialLocalOnlinePlayerId={activeOnlineMatch?.playerId}
           initialOnlineRoomCode={activeOnlineMatch?.roomCode}
           isQuickMatch={activeOnlineMatch?.isQuickMatch}
+          isTutorial={isTutorialSession}
           onGoHome={handleGoHome}
         />
       )}

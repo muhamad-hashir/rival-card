@@ -2,6 +2,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import type { GameMode, Player } from '../types';
+import { doesOpponentCountTowardCareerStats } from '../constants/quickMatchBots';
 import {
   AVATAR_CATALOG,
   VIP_AVATAR_CATALOG,
@@ -54,19 +55,52 @@ export interface CareerStatEligibilityInput {
   gameMode: GameMode;
   isQuickMatch: boolean;
   isPrivateSeries?: boolean;
-  players: ReadonlyArray<Pick<Player, 'id' | 'isBot'>>;
+  isTutorial?: boolean;
+  countsTowardCareerStats?: boolean;
+  players: ReadonlyArray<Pick<Player, 'id' | 'isBot'> & Partial<Pick<Player, 'name' | 'countsTowardCareerStats'>>>;
   localPlayerId: string;
 }
 
+export type MatchRewardType = 'online_ranked' | 'bot' | 'custom_private' | 'pass_and_play';
+
 /**
- * Career Statistics are tracked strictly and exclusively for public human-vs-human Multiplayer
- * matchmaking games (excluding Private Rooms, Solo vs Bot / Bot Fallback, and Local Pass & Play).
+ * Career Statistics (games_played, wins, win_streak) are tracked ONLY for matches against
+ * real human players or the 20 human-named undercover Quick Match bots (`countsTowardCareerStats = true`).
+ * Matches against the 3 named signature bots (NovaBot, CyberBot, EchoBot), Private Rooms,
+ * Tutorial matches, Solo AI, and Pass & Play leave Career Statistics untouched while still keeping Quick Match
+ * Coins & XP rewards intact.
  */
 export function isEligibleCareerStatMatch(input: CareerStatEligibilityInput): boolean {
-  if (input.gameMode !== 'multiplayer') return false;
+  if (input.isTutorial) return false;
   if (!input.isQuickMatch) return false;
   if (input.isPrivateSeries) return false;
-  return input.players.some((p) => p.id !== input.localPlayerId && !p.isBot);
+  if (input.gameMode === 'pass_and_play') return false;
+  if (input.countsTowardCareerStats === false) return false;
+
+  const opponents = input.players.filter((p) => p.id !== input.localPlayerId);
+  if (opponents.length === 0) return false;
+
+  return opponents.some((opp) => doesOpponentCountTowardCareerStats(opp));
+}
+
+/**
+ * Resolves the XP & Coin reward tier for a completed match.
+ * All Quick Matches (human, undercover bot, and signature bot) earn full 'online_ranked' rewards.
+ */
+export function resolveMatchRewardType(input: {
+  gameMode: GameMode;
+  isQuickMatch: boolean;
+}): MatchRewardType {
+  if (input.isQuickMatch && input.gameMode !== 'pass_and_play') {
+    return 'online_ranked';
+  }
+  if (input.gameMode === 'multiplayer') {
+    return 'custom_private';
+  }
+  if (input.gameMode === 'pass_and_play') {
+    return 'pass_and_play';
+  }
+  return 'bot';
 }
 
 export function normalizePlayerStats(raw: any): PlayerStats {

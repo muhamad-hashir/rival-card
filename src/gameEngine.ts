@@ -1337,6 +1337,8 @@ export interface PlayerConfig {
   name: string;
   isBot?: boolean;
   avatarId?: string;
+  level?: number;
+  countsTowardCareerStats?: boolean;
 }
 
 export interface CreateGameOptions {
@@ -1374,6 +1376,10 @@ export function createGame(
       mutedRoundsRemaining: 0,
       hasDeclaredRival: false,
       avatarId: config.avatarId || (config.isBot ? 'avatar_2' : 'avatar_1'),
+      ...(typeof config.level === 'number' ? { level: config.level } : {}),
+      ...(typeof config.countsTowardCareerStats === 'boolean'
+        ? { countsTowardCareerStats: config.countsTowardCareerStats }
+        : {}),
     };
   });
 

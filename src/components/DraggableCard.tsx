@@ -3,10 +3,14 @@ import React, { useEffect } from 'react';
 import { StyleSheet } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  cancelAnimation,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
+  withRepeat,
+  withSequence,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 import { CardView } from './CardView';
 import { hapticsService } from '../services/hapticsService';
@@ -17,6 +21,7 @@ interface DraggableCardProps {
   isPlayable: boolean;
   disabled?: boolean;
   isSelected?: boolean;
+  isTutorialHighlighted?: boolean;
   zIndex?: number;
   overlapMargin?: number;
   onPlay: (card: Card) => void;
@@ -28,6 +33,7 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
   isPlayable,
   disabled = false,
   isSelected = false,
+  isTutorialHighlighted = false,
   zIndex = 1,
   overlapMargin = 0,
   onPlay,
@@ -39,14 +45,31 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
   const isDragging = useSharedValue(false);
   const isPressed = useSharedValue(false);
   const scale = useSharedValue(1);
+  const tutorialPulse = useSharedValue(1);
 
   useEffect(() => {
-    if (isSelected) {
+    if (isTutorialHighlighted) {
+      tutorialPulse.value = withRepeat(
+        withSequence(
+          withTiming(1.07, { duration: 480 }),
+          withTiming(1.0, { duration: 480 })
+        ),
+        -1,
+        true
+      );
+    } else {
+      cancelAnimation(tutorialPulse);
+      tutorialPulse.value = withTiming(1, { duration: 150 });
+    }
+  }, [isTutorialHighlighted]);
+
+  useEffect(() => {
+    if (isSelected || isTutorialHighlighted) {
       liftY.value = withSpring(-16, { damping: 15, stiffness: 220 });
     } else if (!isPressed.value && !isDragging.value) {
       liftY.value = withSpring(0, { damping: 15, stiffness: 220 });
     }
-  }, [isSelected]);
+  }, [isSelected, isTutorialHighlighted]);
 
   const handleDragStartHaptic = () => {
     hapticsService.cardSnap();
@@ -132,14 +155,18 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
     const rotateZ = `${(translateX.value / 180) * 15}deg`;
     const currentY = translateY.value + liftY.value;
     const isElevated =
-      isDragging.value || isPressed.value || isSelected || liftY.value < -4;
+      isDragging.value ||
+      isPressed.value ||
+      isSelected ||
+      isTutorialHighlighted ||
+      liftY.value < -4;
 
     return {
       transform: [
         { translateX: translateX.value },
         { translateY: currentY },
         { rotateZ },
-        { scale: scale.value },
+        { scale: scale.value * tutorialPulse.value },
       ],
       zIndex: isElevated ? 999 : zIndex,
     };
@@ -150,6 +177,7 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
       <Animated.View
         style={[
           styles.cardContainer,
+          isTutorialHighlighted && styles.tutorialGlowContainer,
           { marginLeft: overlapMargin, zIndex },
           animatedStyle,
         ]}
@@ -170,5 +198,13 @@ const styles = StyleSheet.create({
   cardContainer: {
     paddingTop: 2,
     paddingBottom: 0,
+  },
+  tutorialGlowContainer: {
+    borderRadius: 14,
+    shadowColor: '#FACC15',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.95,
+    shadowRadius: 12,
+    elevation: 12,
   },
 });

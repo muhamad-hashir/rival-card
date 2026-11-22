@@ -1,12 +1,26 @@
-// src/__tests__/matchmaking.test.ts - Unit tests for Quick Match Auto-Matchmaking Service
-import { describe, test, after } from 'node:test';
+// src/__tests__/matchmaking.test.ts - Unit tests for Zero-Empty-Lobby Quick Match Auto-Matchmaking Service
+import { describe, test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MatchmakingService,
   matchmakingService,
   QueuedPlayer,
 } from '../services/matchmakingService';
+import {
+  ENABLE_UNDERCOVER_QUICK_MATCH_BOTS,
+  QUICK_MATCH_SEARCH_TIMEOUT_SECONDS,
+  SIGNATURE_QUICK_MATCH_BOTS,
+  UNDERCOVER_QUICK_MATCH_BOTS,
+  getQuickMatchBotThinkingDelayMs,
+  resetQuickMatchBotCounter,
+  selectNextQuickMatchBot,
+  selectQuickMatchBotForMatchNumber,
+} from '../constants/quickMatchBots';
 import { supabase } from '../services/supabase';
+
+beforeEach(async () => {
+  await resetQuickMatchBotCounter();
+});
 
 after(async () => {
   try {
@@ -83,15 +97,20 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
     assert.strictEqual(service.getElapsedSeconds(), 0);
   });
 
-  test('12-second Fallback: Automatically seeds match with RivalBot when queue times out', async () => {
+  test('Zero-Empty-Lobby Fallback: 5-7s timeout config, cleans waiting room, and seeds rotated Quick Match bot', async () => {
+    assert.ok(
+      QUICK_MATCH_SEARCH_TIMEOUT_SECONDS >= 5 && QUICK_MATCH_SEARCH_TIMEOUT_SECONDS <= 7,
+      'Quick Match live-search window must be between 5 and 7 seconds'
+    );
+
     const service = new MatchmakingService();
     const player: QueuedPlayer = {
       id: 'player_human',
       name: 'ChampHero',
-      avatarId: 'avatar_6',
+      avatarId: 'champ',
     };
 
-    // Use a short 0.1s timeout to test fallback without waiting 12 real seconds
+    // Use a short 0.1s timeout to verify fallback without waiting 6 real seconds
     const matchPromise = new Promise<any>((resolve) => {
       service.startMatchmaking(
         player,
@@ -110,18 +129,26 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
     assert.strictEqual(matchResult.isBotMatch, true, 'Fallback match must be bot match');
     assert.strictEqual(matchResult.myPlayerId, 'player_human');
     assert.strictEqual(matchResult.roomCode, 'BOT_MATCH');
-    assert.ok(matchResult.opponentName.includes('RivalBot'), 'Opponent must be RivalBot');
-    assert.strictEqual(matchResult.opponentAvatarId, 'avatar_2');
+    assert.strictEqual(service.getActiveWaitingRoomCode(), null, 'Empty waiting room must be cleared on fallback');
+
+    const allQuickMatchBots = [...UNDERCOVER_QUICK_MATCH_BOTS, ...SIGNATURE_QUICK_MATCH_BOTS];
+    const matchedBot = allQuickMatchBots.find((b) => b.name === matchResult.opponentName);
+    assert.ok(matchedBot, `Opponent "${matchResult.opponentName}" must come from Quick Match roster`);
+    assert.strictEqual(matchResult.opponentAvatarId, matchedBot.avatarId);
+    assert.strictEqual(matchResult.opponentLevel, matchedBot.level);
+    assert.strictEqual(matchResult.countsTowardCareerStats, matchedBot.countsTowardCareerStats);
 
     // Verify generated game state
     const { initialState } = matchResult;
     assert.ok(initialState, 'Initial game state must exist');
     assert.strictEqual(initialState.players.length, 2, 'Must have 2 players');
     assert.strictEqual(initialState.players[0].name, 'ChampHero');
-    assert.strictEqual(initialState.players[0].avatarId, 'avatar_6');
+    assert.strictEqual(initialState.players[0].avatarId, 'champ');
     assert.strictEqual(initialState.players[0].isBot, false);
-    assert.strictEqual(initialState.players[1].name, 'RivalBot 🤖');
-    assert.strictEqual(initialState.players[1].avatarId, 'avatar_2');
+    assert.strictEqual(initialState.players[1].name, matchedBot.name);
+    assert.strictEqual(initialState.players[1].avatarId, matchedBot.avatarId);
+    assert.strictEqual(initialState.players[1].level, matchedBot.level);
+    assert.strictEqual(initialState.players[1].countsTowardCareerStats, matchedBot.countsTowardCareerStats);
     assert.strictEqual(initialState.players[1].isBot, true);
     assert.ok(initialState.players[0].hand.length >= 7, 'Deals at least 7 cards');
     assert.ok(initialState.players[1].hand.length >= 7, 'Deals at least 7 cards');
@@ -129,6 +156,63 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
     assert.notStrictEqual(initialState.discardPile[0].color, 'wild', 'Top card is non-wild');
 
     await service.cancelMatchmaking();
+  });
+
+  test('Quick Match Bot Roster: 20 undercover bots + 3 signature bots + rotation & feature flag', async () => {
+    assert.strictEqual(ENABLE_UNDERCOVER_QUICK_MATCH_BOTS, true);
+    assert.strictEqual(UNDERCOVER_QUICK_MATCH_BOTS.length, 20);
+    assert.strictEqual(SIGNATURE_QUICK_MATCH_BOTS.length, 3);
+
+    const expectedNames = [
+      'Hamza_OP', 'ZainPlays', 'Ayesha_GG', 'Bilal_King', 'Usman_786',
+      'Mahnoor_X', 'Saad_Clutch', 'Daniyal_PK',
+      'Aarav_OP', 'RohanPlays', 'Priya_GG', 'Kabir_X', 'Ananya_99',
+      'Vikram_IND', 'Dev_Clutch',
+      'Kaito_99', 'ShadowHokage', 'ItachiVibes', 'Gojo_Satoru', 'ZoroLostAgain',
+    ];
+    assert.deepStrictEqual(
+      UNDERCOVER_QUICK_MATCH_BOTS.map((b) => b.name),
+      expectedNames
+    );
+    assert.ok(
+      UNDERCOVER_QUICK_MATCH_BOTS.every(
+        (b) => b.level >= 2 && b.level <= 14 && b.isUndercover && b.countsTowardCareerStats === true
+      ),
+      'All 20 undercover bots must have natural levels 2-14 and countsTowardCareerStats = true'
+    );
+    assert.ok(
+      SIGNATURE_QUICK_MATCH_BOTS.every((b) => !b.isUndercover && b.countsTowardCareerStats === false) &&
+        SIGNATURE_QUICK_MATCH_BOTS.some((b) => b.name === 'NovaBot'),
+      'Signature bot pool must preserve NovaBot and the other 2 named bots with countsTowardCareerStats = false'
+    );
+
+    // Every 3rd or 4th bot-matched Quick Match selects a signature bot; others pick undercover bots
+    assert.strictEqual(selectQuickMatchBotForMatchNumber(1, { signatureInterval: 3 }).isUndercover, true);
+    assert.strictEqual(selectQuickMatchBotForMatchNumber(2, { signatureInterval: 3 }).isUndercover, true);
+    assert.strictEqual(selectQuickMatchBotForMatchNumber(3, { signatureInterval: 3 }).isUndercover, false);
+    assert.strictEqual(selectQuickMatchBotForMatchNumber(4, { signatureInterval: 4 }).isUndercover, false);
+
+    // Feature flag off (500+ downloads): falls back strictly to 3 named signature bots
+    for (let i = 1; i <= 5; i++) {
+      const bot = selectQuickMatchBotForMatchNumber(i, { enableUndercover: false });
+      assert.strictEqual(bot.isUndercover, false);
+      assert.ok(SIGNATURE_QUICK_MATCH_BOTS.some((s) => s.id === bot.id));
+    }
+
+    // Persisted counter hits a signature bot within 3-4 matches and uses natural 1.2s-2.6s turn pacing
+    const picked = [];
+    for (let i = 0; i < 4; i++) {
+      picked.push(await selectNextQuickMatchBot());
+    }
+    assert.ok(
+      picked.some((b) => !b.isUndercover),
+      'Signature bot must appear by the 3rd or 4th bot-matched Quick Match'
+    );
+
+    const minDelay = getQuickMatchBotThinkingDelayMs(false, () => 0);
+    const maxDelay = getQuickMatchBotThinkingDelayMs(false, () => 0.9999);
+    assert.strictEqual(minDelay, 2200);
+    assert.strictEqual(maxDelay, 3600);
   });
 
   test('Deterministic Coordinator assignment: Player with smaller ID coordinates match', () => {
@@ -184,5 +268,17 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
     assert.ok(!statusesSecondRun.slice(0, 1).includes('idle'), 'Stale idle callback must not cancel new search');
 
     await service.cancelMatchmaking();
+  });
+
+  test('Cancelling Quick Match cleans up any temporary Supabase waiting room code immediately', async () => {
+    const service = new MatchmakingService();
+    await service.startMatchmaking(
+      { id: 'user_cancel_clean', name: 'CleanPlayer', avatarId: 'fox' },
+      {},
+      6
+    );
+    await service.cancelMatchmaking();
+    assert.strictEqual(service.getActiveWaitingRoomCode(), null);
+    assert.strictEqual(service.getStatus(), 'idle');
   });
 });

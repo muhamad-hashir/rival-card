@@ -194,7 +194,7 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
 
                     {/* Avatar + Name + Left tag */}
                     <View style={styles.playerInfoColumn}>
-                      <AvatarIcon avatarId={entry.avatarId || 'fox'} size={22} showCircle />
+                      <AvatarIcon avatarId={entry.avatarId || 'fox'} size={32} showCircle />
                       <View style={styles.nameWrapper}>
                         <Text
                           style={[

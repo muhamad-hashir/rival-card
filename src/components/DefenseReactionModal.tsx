@@ -21,6 +21,7 @@ export interface DefenseReactionModalProps {
   attackerName: string;
   canUseShield: boolean;
   canUseMirror: boolean;
+  tutorialAllowedAction?: 'shield' | 'mirror' | null;
   onUseShield: () => void;
   onUseMirror: () => void;
   onTakeHit: () => void;
@@ -61,6 +62,7 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
   attackerName,
   canUseShield,
   canUseMirror,
+  tutorialAllowedAction = null,
   onUseShield,
   onUseMirror,
   onTakeHit,
@@ -70,6 +72,12 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
 
   useEffect(() => {
     if (!visible || !pendingDefense) return;
+
+    if (tutorialAllowedAction) {
+      progressAnim.setValue(1);
+      setSecondsLeft('TUTORIAL');
+      return;
+    }
 
     const totalDuration = 3000;
     const remainingMs = Math.max(0, pendingDefense.expiresAt - Date.now());
@@ -93,7 +101,13 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
       clearInterval(interval);
       progressAnim.stopAnimation();
     };
-  }, [visible, pendingDefense?.defenseEventId, pendingDefense?.expiresAt, progressAnim]);
+  }, [
+    visible,
+    pendingDefense?.defenseEventId,
+    pendingDefense?.expiresAt,
+    progressAnim,
+    tutorialAllowedAction,
+  ]);
 
   if (!visible || !pendingDefense) return null;
 
@@ -130,8 +144,16 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
         {/* Attacker + Description */}
         <Text style={styles.title}>{copy.title}</Text>
         <Text style={styles.subtitle}>
-          <Text style={styles.attackerHighlight}>{attackerName}</Text> triggered this move.{' '}
-          {copy.subtitle}
+          {tutorialAllowedAction === 'shield' ? (
+            'CoachBot attacked with +2! Tap 🛡️ Use Shield below to block 100% of the penalty and draw 0 cards.'
+          ) : tutorialAllowedAction === 'mirror' ? (
+            'CoachBot used Wild +4! Tap 🪞 Use Mirror below to bounce all +4 cards right back at CoachBot!'
+          ) : (
+            <>
+              <Text style={styles.attackerHighlight}>{attackerName}</Text> triggered this move.{' '}
+              {copy.subtitle}
+            </>
+          )}
         </Text>
 
         {/* Smooth 3.0s Animated Progress Bar */}
@@ -153,7 +175,12 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={onUseShield}
-              style={styles.shieldBtn}
+              disabled={Boolean(tutorialAllowedAction && tutorialAllowedAction !== 'shield')}
+              style={[
+                styles.shieldBtn,
+                tutorialAllowedAction === 'shield' && { borderColor: '#FACC15', borderWidth: 2.5 },
+                tutorialAllowedAction && tutorialAllowedAction !== 'shield' && { opacity: 0.4 },
+              ]}
               accessibilityRole="button"
               accessibilityLabel="Use Shield"
             >
@@ -165,7 +192,12 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={onUseMirror}
-              style={styles.mirrorBtn}
+              disabled={Boolean(tutorialAllowedAction && tutorialAllowedAction !== 'mirror')}
+              style={[
+                styles.mirrorBtn,
+                tutorialAllowedAction === 'mirror' && { borderColor: '#FACC15', borderWidth: 2.5 },
+                tutorialAllowedAction && tutorialAllowedAction !== 'mirror' && { opacity: 0.4 },
+              ]}
               accessibilityRole="button"
               accessibilityLabel={isCounterMirror ? 'Counter Mirror' : 'Use Mirror'}
             >
@@ -175,15 +207,17 @@ export const DefenseReactionModal: React.FC<DefenseReactionModalProps> = ({
             </TouchableOpacity>
           )}
 
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={onTakeHit}
-            style={styles.takeHitBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Take Hit"
-          >
-            <Text style={styles.takeHitText}>Take Hit</Text>
-          </TouchableOpacity>
+          {!tutorialAllowedAction && (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={onTakeHit}
+              style={styles.takeHitBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Take Hit"
+            >
+              <Text style={styles.takeHitText}>Take Hit</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </View>

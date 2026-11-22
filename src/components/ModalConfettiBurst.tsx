@@ -1,6 +1,6 @@
-// src/components/ModalConfettiBurst.tsx - Lightweight Winner-Only Confetti Burst Constrained Inside Leaderboard Card
+// src/components/ModalConfettiBurst.tsx - Full-Window Winner Celebration Confetti Overlay
 import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, View } from 'react-native';
+import { Animated, Easing, StyleSheet, View, useWindowDimensions } from 'react-native';
 
 interface Particle {
   id: number;
@@ -9,6 +9,7 @@ interface Particle {
   height: number;
   borderRadius: number;
   startXPercent: number;
+  startYOffset: number;
   dx: number;
   dy: number;
   rotation: string;
@@ -24,29 +25,29 @@ const CONFETTI_COLORS = [
   '#8B5CF6', // Purple
 ];
 
-const NUM_PARTICLES = 36;
+const NUM_PARTICLES = 56;
 
-function generateParticles(): Particle[] {
+function generateParticles(windowHeight: number): Particle[] {
   const particles: Particle[] = [];
+  const fallRange = Math.max(360, windowHeight);
   for (let i = 0; i < NUM_PARTICLES; i++) {
-    // Spread horizontally across the top edge of the leaderboard card container
-    const startXPercent = 5 + Math.random() * 90;
-    // Downward gravity cascade distance inside the leaderboard card bounds
-    const dy = 55 + Math.random() * 160;
-    // Gentle horizontal sway
-    const dx = (Math.random() - 0.5) * 45;
-    const isRound = Math.random() > 0.55;
+    const startXPercent = 2 + Math.random() * 96;
+    const startYOffset = -20 - Math.random() * 70;
+    const dy = fallRange * (0.55 + Math.random() * 0.55);
+    const dx = (Math.random() - 0.5) * 90;
+    const isRound = Math.random() > 0.52;
 
     particles.push({
       id: i,
       color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
-      width: isRound ? 7 : 5 + Math.random() * 4,
-      height: isRound ? 7 : 10 + Math.random() * 6,
-      borderRadius: isRound ? 3.5 : 2,
+      width: isRound ? 8 : 6 + Math.random() * 5,
+      height: isRound ? 8 : 11 + Math.random() * 7,
+      borderRadius: isRound ? 4 : 2,
       startXPercent,
+      startYOffset,
       dx,
       dy,
-      rotation: `${(Math.random() > 0.5 ? 1 : -1) * (180 + Math.random() * 360)}deg`,
+      rotation: `${(Math.random() > 0.5 ? 1 : -1) * (240 + Math.random() * 480)}deg`,
     });
   }
   return particles;
@@ -57,6 +58,7 @@ export interface ModalConfettiBurstProps {
 }
 
 export const ModalConfettiBurst: React.FC<ModalConfettiBurstProps> = ({ active }) => {
+  const { height: windowHeight } = useWindowDimensions();
   const anim = useRef(new Animated.Value(0)).current;
   const particlesRef = useRef<Particle[]>([]);
 
@@ -66,16 +68,16 @@ export const ModalConfettiBurst: React.FC<ModalConfettiBurstProps> = ({ active }
       return;
     }
 
-    particlesRef.current = generateParticles();
+    particlesRef.current = generateParticles(windowHeight);
     anim.setValue(0);
 
     Animated.timing(anim, {
       toValue: 1,
-      duration: 1600,
+      duration: 2100,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start();
-  }, [active, anim]);
+  }, [active, anim, windowHeight]);
 
   if (!active) return null;
 
@@ -84,13 +86,12 @@ export const ModalConfettiBurst: React.FC<ModalConfettiBurstProps> = ({ active }
       {particlesRef.current.map((p) => {
         const translateX = anim.interpolate({
           inputRange: [0, 0.5, 1],
-          outputRange: [0, p.dx * 0.6, p.dx],
+          outputRange: [0, p.dx * 0.65, p.dx],
         });
 
-        // Downward cascade from top origin
         const translateY = anim.interpolate({
           inputRange: [0, 1],
-          outputRange: [0, p.dy],
+          outputRange: [p.startYOffset, p.dy],
         });
 
         const rotate = anim.interpolate({
@@ -99,13 +100,13 @@ export const ModalConfettiBurst: React.FC<ModalConfettiBurstProps> = ({ active }
         });
 
         const scale = anim.interpolate({
-          inputRange: [0, 0.15, 0.8, 1],
-          outputRange: [0.3, 1.1, 1, 0.4],
+          inputRange: [0, 0.12, 0.85, 1],
+          outputRange: [0.4, 1.12, 1, 0.5],
         });
 
         const opacity = anim.interpolate({
-          inputRange: [0, 0.1, 0.75, 1],
-          outputRange: [0, 1, 0.9, 0],
+          inputRange: [0, 0.08, 0.8, 1],
+          outputRange: [0, 1, 0.92, 0],
         });
 
         return (
@@ -119,7 +120,7 @@ export const ModalConfettiBurst: React.FC<ModalConfettiBurstProps> = ({ active }
                 height: p.height,
                 borderRadius: p.borderRadius,
                 left: `${p.startXPercent}%`,
-                top: 2,
+                top: 0,
                 transform: [{ translateX }, { translateY }, { rotate }, { scale }],
                 opacity,
               },
@@ -139,7 +140,8 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     overflow: 'hidden',
-    zIndex: 3,
+    zIndex: 30,
+    elevation: 24,
   },
   particle: {
     position: 'absolute',

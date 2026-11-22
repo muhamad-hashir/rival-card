@@ -222,11 +222,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                 {/* Outcome Subtitle */}
                 <Text style={styles.subtitle}>{step1Subtitle}</Text>
 
-                {/* Final Standings / Leaderboard Card with Confetti Constrained to Card Bounds */}
+                {/* Final Standings / Leaderboard Card */}
                 <View style={styles.statsContainer}>
-                  {isHumanWinner && (
-                    <ModalConfettiBurst active={visible && isHumanWinner && step === 1} />
-                  )}
                   <Text style={styles.statsHeader}>
                     {endedByTimeout ? "TIME'S UP STANDINGS" : 'FINAL STANDINGS'}
                   </Text>
@@ -263,7 +260,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                         {/* Column 2: Player Avatar & Name */}
                         <View style={styles.playerInfoColumn}>
                           {Boolean(p.avatarId) && (
-                            <AvatarIcon avatarId={p.avatarId} size={22} showCircle />
+                            <AvatarIcon avatarId={p.avatarId} size={34} showCircle />
                           )}
                           <Text
                             style={[
@@ -511,6 +508,9 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             )}
           </ScrollView>
         </View>
+        {isHumanWinner && (
+          <ModalConfettiBurst active={visible && isHumanWinner && step === 1} />
+        )}
       </View>
     </Modal>
   );

@@ -43,12 +43,14 @@ export interface HowToPlayModalProps {
   visible: boolean;
   onClose: () => void;
   initialPage?: number;
+  onStartTutorial?: () => void;
 }
 
 export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({
   visible,
   onClose,
   initialPage = 1,
+  onStartTutorial,
 }) => {
   const [currentPage, setCurrentPage] = useState<number>(initialPage);
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -181,7 +183,20 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({
               showsVerticalScrollIndicator={false}
               bounces={false}
             >
-              {currentPage === 1 && <PageOneBasics />}
+              {currentPage === 1 && (
+                <PageOneBasics
+                  onStartTutorial={
+                    onStartTutorial
+                      ? () => {
+                          hapticsService.validPlay();
+                          soundService.playCardDraw();
+                          onClose();
+                          onStartTutorial();
+                        }
+                      : undefined
+                  }
+                />
+              )}
               {currentPage === 2 && <PageTwoActionCards />}
               {currentPage === 3 && <PageThreeWildsAndRival />}
               {currentPage === 4 && <PageFourMatchTimer />}
@@ -245,12 +260,26 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({
 };
 
 // --- PAGE 1: Objective & Turn Basics ---
-const PageOneBasics: React.FC = () => {
+const PageOneBasics: React.FC<{ onStartTutorial?: () => void }> = ({ onStartTutorial }) => {
   return (
     <View style={styles.pageContainer}>
-      {/* Chapter Subtitle Badge */}
-      <View style={styles.chapterBadge}>
-        <Text style={styles.chapterBadgeText}>🎯 CHAPTER 1 • OBJECTIVE & BASICS</Text>
+      {/* Chapter Subtitle Badge + Top-Right Tutorial Launch Button */}
+      <View style={styles.pageOneHeaderRow}>
+        <View style={styles.chapterBadge}>
+          <Text style={styles.chapterBadgeText}>🎯 CHAPTER 1 • OBJECTIVE & BASICS</Text>
+        </View>
+        {Boolean(onStartTutorial) && (
+          <TouchableOpacity
+            onPress={onStartTutorial}
+            activeOpacity={0.82}
+            style={styles.pageOneTutorialBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Play Interactive Tutorial"
+            testID="rulebook-tutorial-btn"
+          >
+            <Text style={styles.pageOneTutorialBtnText}>▶ Tutorial</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Rule 1: Core Goal */}
@@ -582,15 +611,42 @@ const styles = StyleSheet.create({
   pageContainer: {
     gap: 10,
   },
+  pageOneHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 2,
+  },
+  pageOneTutorialBtn: {
+    backgroundColor: '#10B981',
+    borderWidth: 1.5,
+    borderColor: '#0F1142',
+    borderBottomWidth: 3,
+    borderRadius: 999,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  pageOneTutorialBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
   chapterBadge: {
     alignSelf: 'center',
     backgroundColor: '#FEF3C7',
     borderWidth: 1.5,
     borderColor: '#FDE68A',
     borderRadius: 999,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 4,
-    marginBottom: 2,
+    flexShrink: 1,
   },
   chapterBadgeText: {
     ...FONT_CARTOON_HEAVY,

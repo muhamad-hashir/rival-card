@@ -380,7 +380,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             <View style={styles.previewSection}>
               <AvatarIcon
                 avatarId={equippedAvatarKey}
-                size={72}
+                size={84}
                 style={{ marginBottom: 6 }}
               />
 
@@ -551,7 +551,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                       <AvatarIcon
                         avatarId={item.id}
-                        size={46}
+                        size={58}
                         dimmed={isLevelLocked}
                         style={{ marginBottom: 4 }}
                       />
@@ -736,7 +736,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <View style={styles.unlockConfirmCard}>
                 <AvatarIcon
                   avatarId={pendingUnlockAvatar.id}
-                  size={64}
+                  size={76}
                   showCircle
                   borderWidth={3}
                   style={styles.unlockPreviewAvatar}

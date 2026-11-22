@@ -861,6 +861,10 @@ describe('1v1 Action Cards & Consecutive Turn Transitions', () => {
 
     // Set turn to bot
     state.currentTurnIndex = 1;
+    state.players[0].hand = [
+      { id: 'h1', color: 'blue', value: '1', scoreValue: 1 },
+      { id: 'h2', color: 'green', value: '4', scoreValue: 4 },
+    ];
     const initialTurnCount = state.turnCount;
     const initialTimestamp = state.lastActionTimestamp || 0;
 
@@ -951,6 +955,10 @@ describe('1v1 Action Cards & Consecutive Turn Transitions', () => {
     );
 
     state.currentTurnIndex = 1;
+    state.players[0].hand = [
+      { id: 'h1', color: 'blue', value: '2', scoreValue: 2 },
+      { id: 'h2', color: 'red', value: '7', scoreValue: 7 },
+    ];
     const skipCard: Card = { id: 'bot_skip', color: 'yellow', value: 'skip', scoreValue: 20 };
     const numCard: Card = { id: 'bot_num', color: 'yellow', value: '4', scoreValue: 4 };
     state.players[1].hand = [skipCard, numCard];

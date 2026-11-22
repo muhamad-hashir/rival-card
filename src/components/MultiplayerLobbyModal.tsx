@@ -23,6 +23,7 @@ import {
   stampOnlineMatchTimer,
 } from '../services/multiplayerService';
 import { matchmakingService } from '../services/matchmakingService';
+import { QUICK_MATCH_SEARCH_TIMEOUT_SECONDS } from '../constants/quickMatchBots';
 import { createGame } from '../gameEngine';
 import {
   createInitialSeriesState,
@@ -185,7 +186,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
             Alert.alert('Matchmaking Notice', errMsg);
           },
         },
-        12 // 12-second fallback to RivalBot
+        QUICK_MATCH_SEARCH_TIMEOUT_SECONDS // 6-second live queue window before bot fallback
       );
     } catch (err: any) {
       setIsSearching(false);
@@ -361,7 +362,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
             <View style={styles.profileChip}>
               <AvatarIcon
                 avatarId={profile?.avatarId}
-                size={36}
+                size={44}
                 style={{ marginRight: 10 }}
               />
               <View style={styles.profileChipInfo}>
@@ -413,7 +414,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                     Searching for opponent... 0:{searchSeconds < 10 ? `0${searchSeconds}` : searchSeconds}
                   </Text>
                   <Text style={styles.searchingHintText}>
-                    Searching live queue • Auto-pairs RivalBot in 12s
+                    Searching live queue • Finding an opponent nearby...
                   </Text>
                   <TouchableOpacity
                     style={styles.cancelSearchBtn}
@@ -514,7 +515,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                           return (
                             <View key={p.id} style={styles.playerItemRow}>
                               <View style={styles.playerItemLeft}>
-                                <AvatarIcon avatarId={p.avatarId} size={24} showCircle />
+                                <AvatarIcon avatarId={p.avatarId} size={34} showCircle />
                                 <Text style={styles.playerItemName}>
                                   {p.name} {p.id === getResolvedPlayerId() ? '(You)' : ''}
                                 </Text>
@@ -633,7 +634,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                             return (
                               <View key={p.id} style={styles.playerItemRow}>
                                 <View style={styles.playerItemLeft}>
-                                  <AvatarIcon avatarId={p.avatarId} size={24} showCircle />
+                                  <AvatarIcon avatarId={p.avatarId} size={34} showCircle />
                                   <Text style={styles.playerItemName}>
                                     {p.name} {p.id === getResolvedPlayerId() ? '(You)' : ''}
                                   </Text>

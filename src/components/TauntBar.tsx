@@ -15,9 +15,10 @@ import { AvatarIcon } from './AvatarIcon';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
+import { TAUNT_EMOJIS } from '../utils/botEmotes';
 import type { Player } from '../types';
 
-const TAUNT_EMOJIS = ['🔥', '⚡', '😂', '😭', '😱', '👑', '🃏', '💥', '🛡️', '😈', '👋'];
+export { TAUNT_EMOJIS };
 
 export const TAUNT_TOAST_TOP_OFFSET = 36;
 
@@ -98,7 +99,7 @@ export const TauntToastBanner: React.FC<TauntToastBannerProps> = ({
       >
         <AvatarIcon
           avatarId={activeTaunt.senderAvatarId || matchedPlayer?.avatarId}
-          size={24}
+          size={32}
         />
         <Text style={styles.toastText}>
           <Text style={styles.toastSender}>{activeTaunt.senderName}</Text>

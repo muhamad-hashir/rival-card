@@ -191,16 +191,22 @@ export function isOnlineLocalPlayerTurn(
 export interface ActiveMatchSession {
   roomId: string;
   playerId: string;
+  seatIndex?: number;
   timestamp: number;
 }
 
 /**
  * Cache current active match session in persistent storage.
  */
-export async function saveActiveMatchSession(roomId: string, playerId: string): Promise<void> {
+export async function saveActiveMatchSession(
+  roomId: string,
+  playerId: string,
+  seatIndex?: number
+): Promise<void> {
   const session: ActiveMatchSession = {
     roomId,
     playerId,
+    ...(typeof seatIndex === 'number' ? { seatIndex } : {}),
     timestamp: Date.now(),
   };
   await safeStorage.setItem(ACTIVE_MATCH_STORAGE_KEY, JSON.stringify(session));
@@ -264,6 +270,9 @@ export interface MultiplayerCallbacks {
   onRivalCalled?: (event: RivalCalloutEvent) => void;
   onSeriesNextMatch?: (nextState: GameState, isNewSeries: boolean) => void;
   onPlayerLeft?: (playerId: string, playerName: string) => void;
+  onPeerDisconnected?: (playerId: string) => void;
+  onPeerReconnected?: (playerId: string) => void;
+  onControlReclaimed?: (playerId: string) => void;
   onError?: (errorMessage: string) => void;
   onReconnecting?: (attempt: number) => void;
   onReconnected?: () => void;
@@ -295,6 +304,42 @@ export class MultiplayerService {
   private reconnectAttempts: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isExplicitlyLeaving: boolean = false;
+  private onlinePresenceIds: Set<string> = new Set();
+
+  public getOnlinePresenceIds(): string[] {
+    return Array.from(this.onlinePresenceIds);
+  }
+
+  /**
+   * Checks Supabase `rooms` to confirm whether an active session's room is still playing.
+   * Fail-open for Realtime-only private rooms where a row might not exist, fail-closed on explicit `'finished'`.
+   */
+  public async isRoomStillPlaying(
+    roomCode: string
+  ): Promise<{ isPlaying: boolean; reason?: 'finished' | 'missing' | 'unknown' }> {
+    const cleanCode = roomCode?.trim();
+    if (!cleanCode) return { isPlaying: false, reason: 'missing' };
+
+    const res: any = await runWithRoomTimeout(
+      supabase
+        .from('rooms')
+        .select('code, status, players')
+        .eq('code', cleanCode)
+        .maybeSingle(),
+      1200
+    );
+
+    if (!res || res.error) {
+      return { isPlaying: true, reason: 'unknown' };
+    }
+    if (!res.data) {
+      return { isPlaying: true, reason: 'unknown' };
+    }
+    if (res.data.status === 'finished') {
+      return { isPlaying: false, reason: 'finished' };
+    }
+    return { isPlaying: true };
+  }
 
   public getRoomCode(): string | null {
     return this.currentRoomCode;
@@ -351,7 +396,7 @@ export class MultiplayerService {
     this.isExplicitlyLeaving = false;
 
     // Cache active session
-    await saveActiveMatchSession(code, playerInfo.id);
+    await saveActiveMatchSession(code, playerInfo.id, 0);
 
     // Opportunistic throttled sweep of stale/finished rooms (>2h old) without blocking lobby start
     cleanupStaleRooms().catch(() => {});
@@ -405,6 +450,7 @@ export class MultiplayerService {
 
     this.channel = supabase.channel(channelName, {
       config: {
+        presence: { key: this.myPlayer?.id || `anon_${Date.now()}` },
         broadcast: { self: false },
       },
     });
@@ -545,8 +591,38 @@ export class MultiplayerService {
       const playerName = payload?.playerName as string;
       if (playerId) {
         this.roomPlayers = this.roomPlayers.filter((p) => p.id !== playerId);
+        this.onlinePresenceIds.delete(playerId);
         this.callbacks.onRoomPlayersUpdate?.(this.roomPlayers);
         this.callbacks.onPlayerLeft?.(playerId, playerName);
+      }
+    });
+
+    // 8b. Returning Player Reclaimed Manual Control from AI Bot Takeover
+    this.channel.on('broadcast', { event: 'reclaim_control' }, ({ payload }) => {
+      const playerId = payload?.playerId as string;
+      if (playerId) {
+        this.onlinePresenceIds.add(playerId);
+        this.callbacks.onControlReclaimed?.(playerId);
+      }
+    });
+
+    // 8c. Realtime Presence Sync / Leave / Join monitoring for disconnected peer detection
+    this.channel.on('presence', { event: 'sync' }, () => {
+      if (!this.channel || typeof this.channel.presenceState !== 'function') return;
+      const state = this.channel.presenceState() || {};
+      const nextOnline = new Set<string>(Object.keys(state).filter(Boolean));
+      for (const id of nextOnline) {
+        if (!this.onlinePresenceIds.has(id) && id !== this.myPlayer?.id) {
+          this.callbacks.onPeerReconnected?.(id);
+        }
+      }
+      this.onlinePresenceIds = nextOnline;
+    });
+
+    this.channel.on('presence', { event: 'leave' }, ({ key }: any) => {
+      if (key && key !== this.myPlayer?.id && !this.isExplicitlyLeaving) {
+        this.onlinePresenceIds.delete(key);
+        this.callbacks.onPeerDisconnected?.(key);
       }
     });
 
@@ -557,7 +633,26 @@ export class MultiplayerService {
         const wasReconnecting = this.isReconnecting;
         this.isReconnecting = false;
         this.reconnectAttempts = 0;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.callbacks.onRoomPlayersUpdate?.(this.roomPlayers);
+
+        if (this.myPlayer) {
+          this.onlinePresenceIds.add(this.myPlayer.id);
+          try {
+            Promise.resolve(
+              this.channel?.track({
+                id: this.myPlayer.id,
+                name: this.myPlayer.name,
+                onlineAt: Date.now(),
+              })
+            ).catch(() => {});
+          } catch {
+            // ignore track errors in test environment
+          }
+        }
 
         // If guest just joined, announce arrival to host
         if (!isHost && this.myPlayer) {
@@ -568,20 +663,23 @@ export class MultiplayerService {
           });
         }
 
-        // If recovering from connection drop, announce reconnected and request snapshot
+        // If recovering from connection drop, announce reconnected, reclaim control, and request snapshot
         if (wasReconnecting) {
           this.callbacks.onReconnected?.();
+          if (this.myPlayer?.id) {
+            this.broadcastReclaimControl(this.myPlayer.id).catch(() => {});
+          }
           this.requestStateSnapshot();
         }
       } else if (status === 'CLOSED') {
         this.setStatus('disconnected');
         if (!this.isExplicitlyLeaving && this.currentRoomCode) {
-          this.triggerReconnect();
+          this.triggerReconnect(true);
         }
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         this.setStatus('error');
         if (!this.isExplicitlyLeaving && this.currentRoomCode) {
-          this.triggerReconnect();
+          this.triggerReconnect(true);
         }
       }
     });
@@ -589,9 +687,12 @@ export class MultiplayerService {
 
   /**
    * Triggers automatic reconnection with exponential backoff (1s, 2s, 4s).
+   * Pass `forceRetry = true` when a previous reconnect attempt's channel failed so backoff continues.
    */
-  public triggerReconnect(): void {
-    if (!this.currentRoomCode || this.isExplicitlyLeaving || this.isReconnecting) return;
+  public triggerReconnect(forceRetry: boolean = false): void {
+    if (!this.currentRoomCode || this.isExplicitlyLeaving) return;
+    if (this.isReconnecting && !forceRetry) return;
+    if (forceRetry && this.reconnectTimer) return;
 
     this.isReconnecting = true;
     this.callbacks.onReconnecting?.(this.reconnectAttempts + 1);
@@ -604,6 +705,7 @@ export class MultiplayerService {
     }
 
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       this.reconnectAttempts += 1;
       await this.reconnect();
     }, delay);
@@ -810,6 +912,23 @@ export class MultiplayerService {
   }
 
   /**
+   * Broadcasts that a previously disconnected player has reconnected and reclaimed manual control.
+   */
+  public async broadcastReclaimControl(playerId: string): Promise<void> {
+    if (!this.channel || this.connectionStatus !== 'connected' || !playerId) return;
+
+    try {
+      await this.channel.send({
+        type: 'broadcast',
+        event: 'reclaim_control',
+        payload: { playerId, timestamp: Date.now() },
+      });
+    } catch (err: any) {
+      console.warn('Failed to broadcast reclaim_control:', err?.message || err);
+    }
+  }
+
+  /**
    * Cleans up the current room record once a match concludes.
    */
   public async cleanupFinishedRoom(): Promise<void> {
@@ -828,6 +947,7 @@ export class MultiplayerService {
     }
     this.reconnectAttempts = 0;
     this.isReconnecting = false;
+    this.onlinePresenceIds.clear();
     this.setStatus('disconnected');
 
     const activeChannel = this.channel;

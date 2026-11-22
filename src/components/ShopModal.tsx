@@ -614,7 +614,7 @@ const ItemPreviewBox: React.FC<{ item: ShopItem }> = ({ item }) => {
       return (
         <AvatarIcon
           avatarId={knownAvatarKey}
-          size={62}
+          size={72}
           style={{ marginBottom: 8 }}
         />
       );

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   isEligibleCareerStatMatch,
   playerProfileService,
+  resolveMatchRewardType,
   AVATAR_OPTIONS,
   getAvatarConfig,
 } from '../services/playerProfileService';
@@ -215,20 +216,46 @@ describe('Player Profile Service (Guest Profile System)', () => {
       false
     );
 
-    // Excluded: Matchmaking fallback vs Bot even if marked isQuickMatch
+    // Included: Quick Match vs any of the 20 human-named undercover bots increments Career Stats & Win Streak
     assert.strictEqual(
       isEligibleCareerStatMatch({
-        gameMode: 'multiplayer',
+        gameMode: 'vs_bot',
         isQuickMatch: true,
         isPrivateSeries: false,
         localPlayerId: 'user_1',
         players: [
           { id: 'user_1', isBot: false },
-          { id: 'bot_rival', isBot: true },
+          { id: 'qm_bot_hamza', name: 'Hamza_OP', isBot: true, countsTowardCareerStats: true },
         ],
       }),
-      false
+      true
     );
+
+    // Excluded: Quick Match every-3rd/4th rotation vs 3 named signature bots (NovaBot, CyberBot, EchoBot)
+    // leaves Career Stats untouched while still earning online_ranked XP & Coins
+    for (const sigBot of [
+      { id: 'bot_nova', name: 'NovaBot', isBot: true, countsTowardCareerStats: false },
+      { id: 'bot_cyber', name: 'CyberBot', isBot: true, countsTowardCareerStats: false },
+      { id: 'bot_echo', name: 'EchoBot', isBot: true, countsTowardCareerStats: false },
+    ]) {
+      assert.strictEqual(
+        isEligibleCareerStatMatch({
+          gameMode: 'vs_bot',
+          isQuickMatch: true,
+          isPrivateSeries: false,
+          localPlayerId: 'user_1',
+          players: [{ id: 'user_1', isBot: false }, sigBot],
+        }),
+        false
+      );
+    }
+
+    // Identical online_ranked reward tier across human, undercover bot, and signature bot Quick Matches
+    assert.strictEqual(resolveMatchRewardType({ gameMode: 'multiplayer', isQuickMatch: true }), 'online_ranked');
+    assert.strictEqual(resolveMatchRewardType({ gameMode: 'vs_bot', isQuickMatch: true }), 'online_ranked');
+    assert.strictEqual(resolveMatchRewardType({ gameMode: 'vs_bot', isQuickMatch: false }), 'bot');
+    assert.strictEqual(resolveMatchRewardType({ gameMode: 'multiplayer', isQuickMatch: false }), 'custom_private');
+    assert.strictEqual(resolveMatchRewardType({ gameMode: 'pass_and_play', isQuickMatch: false }), 'pass_and_play');
 
     // Excluded: Local Pass & Play
     assert.strictEqual(
@@ -244,5 +271,85 @@ describe('Player Profile Service (Guest Profile System)', () => {
       }),
       false
     );
+  });
+
+  it('Quick Match rewards vs undercover bot update stats+streak, while signature bot awards Coins/XP only', async () => {
+    // 1. Win vs undercover Quick Match bot -> increments gamesPlayed, wins, winStreak AND awards 100 XP + 50 Coins
+    const undercoverEligible = isEligibleCareerStatMatch({
+      gameMode: 'vs_bot',
+      isQuickMatch: true,
+      isPrivateSeries: false,
+      localPlayerId: 'local_p1',
+      players: [
+        { id: 'local_p1', isBot: false },
+        { id: 'qm_bot_aarav', name: 'Aarav_OP', isBot: true, countsTowardCareerStats: true },
+      ],
+    });
+    assert.strictEqual(undercoverEligible, true);
+    await playerProfileService.recordMatchResult(true, { matchId: 'qm_undercover_1' });
+    await playerProfileService.awardMatchRewards(
+      true,
+      8,
+      resolveMatchRewardType({ gameMode: 'vs_bot', isQuickMatch: true })
+    );
+
+    let profile = await playerProfileService.getProfile();
+    assert.strictEqual(profile.stats.gamesPlayed, 1);
+    assert.strictEqual(profile.stats.wins, 1);
+    assert.strictEqual(profile.stats.winStreak, 1);
+    assert.strictEqual(profile.coins, 400); // 250 + 50 match + 100 level-up bonus
+
+    // 2. Win vs named signature bot (NovaBot) in Quick Match -> awards online_ranked Coins/XP, stats & winStreak unchanged
+    const novaEligible = isEligibleCareerStatMatch({
+      gameMode: 'vs_bot',
+      isQuickMatch: true,
+      isPrivateSeries: false,
+      localPlayerId: 'local_p1',
+      players: [
+        { id: 'local_p1', isBot: false },
+        { id: 'bot_nova', name: 'NovaBot', isBot: true, countsTowardCareerStats: false },
+      ],
+    });
+    assert.strictEqual(novaEligible, false);
+    if (novaEligible) {
+      await playerProfileService.recordMatchResult(true, { matchId: 'qm_nova_2' });
+    }
+    const novaRewards = await playerProfileService.awardMatchRewards(
+      true,
+      10,
+      resolveMatchRewardType({ gameMode: 'vs_bot', isQuickMatch: true })
+    );
+    assert.strictEqual(novaRewards.earnedXp, 100);
+    assert.strictEqual(novaRewards.earnedCoins, 50);
+
+    profile = await playerProfileService.getProfile();
+    assert.strictEqual(profile.stats.gamesPlayed, 1, 'NovaBot must not increment gamesPlayed');
+    assert.strictEqual(profile.stats.wins, 1, 'NovaBot must not increment wins');
+    assert.strictEqual(profile.stats.winStreak, 1, 'NovaBot must not alter winStreak');
+    assert.strictEqual(profile.coins, 450, 'NovaBot Quick Match win still awards +50 Coins');
+
+    // 3. Loss vs signature bot (EchoBot) -> awards online_ranked loss Coins/XP (+25 XP, +10 Coins), preserves winStreak=1
+    const echoEligible = isEligibleCareerStatMatch({
+      gameMode: 'vs_bot',
+      isQuickMatch: true,
+      isPrivateSeries: false,
+      localPlayerId: 'local_p1',
+      players: [
+        { id: 'local_p1', isBot: false },
+        { id: 'bot_echo', name: 'EchoBot', isBot: true, countsTowardCareerStats: false },
+      ],
+    });
+    assert.strictEqual(echoEligible, false);
+    await playerProfileService.awardMatchRewards(
+      false,
+      12,
+      resolveMatchRewardType({ gameMode: 'vs_bot', isQuickMatch: true })
+    );
+
+    profile = await playerProfileService.getProfile();
+    assert.strictEqual(profile.stats.gamesPlayed, 1);
+    assert.strictEqual(profile.stats.wins, 1);
+    assert.strictEqual(profile.stats.winStreak, 1, 'Signature bot loss must not reset winStreak');
+    assert.strictEqual(profile.coins, 460, 'Signature bot Quick Match loss awards +10 Coins');
   });
 });

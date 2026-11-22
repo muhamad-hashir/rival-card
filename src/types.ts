@@ -42,6 +42,13 @@ export interface Player {
   mutedRoundsRemaining: number;
   hasDeclaredRival: boolean;
   avatarId?: string;
+  level?: number;
+  countsTowardCareerStats?: boolean;
+  consecutiveMissedTurns?: number;
+  isBotControlled?: boolean;
+  isDisconnected?: boolean;
+  hasForfeited?: boolean;
+  teamId?: 'A' | 'B';
 }
 
 export type TurnDirection = 1 | -1;
@@ -180,4 +187,7 @@ export interface GameState {
   endedByTimeout?: boolean;
   timeoutUsedTieBreaker?: boolean;
   timeoutStandings?: TimeoutStandingBreakdown[];
+  is2v2?: boolean;
+  forfeitedByPlayerId?: string;
+  disconnectOutcomeReason?: string;
 }

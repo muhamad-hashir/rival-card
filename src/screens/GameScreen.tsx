@@ -66,6 +66,7 @@ import { errorToastService } from '../services/errorToastService';
 import { ModesModal } from '../components/ModesModal';
 import { SettingsModal } from '../components/SettingsModal';
 import { HowToPlayModal } from '../components/HowToPlayModal';
+import { TutorialCompleteModal } from '../components/TutorialCompleteModal';
 import { TauntBar, TauntToastBanner } from '../components/TauntBar';
 import { TurnTimerBadge } from '../components/TurnTimerBadge';
 import { MatchTimerBadge } from '../components/MatchTimerBadge';
@@ -76,10 +77,15 @@ import { audioService } from '../services/audioService';
 import {
   isEligibleCareerStatMatch,
   playerProfileService,
+  resolveMatchRewardType,
   getAvatarConfig,
   AwardRewardsResult,
   PlayerProfile,
 } from '../services/playerProfileService';
+import {
+  getQuickMatchBotThinkingDelayMs,
+  selectNextQuickMatchBot,
+} from '../constants/quickMatchBots';
 import { shopService, ShopItem } from '../services/shopService';
 import { settingsService, UserSettings, DEFAULT_SETTINGS } from '../services/settingsService';
 import {
@@ -100,6 +106,35 @@ import {
   createNextSeriesMatchState,
   recordSeriesRoundResult,
 } from '../utils/seriesEngine';
+import {
+  ONLINE_BOT_TAKEOVER_DELAY_MS,
+  activateBotTakeover,
+  executeSafeBotFallbackTurn,
+  handleOnlineTurnTimeout,
+  isTwoPlayerOnlineMatch,
+  reclaimHumanControl,
+  resetMissedTurnsOnManualMove,
+  shouldClientDriveBotTakeoverTurn,
+} from '../utils/onlineDisconnectEngine';
+import {
+  BotEmoteEvent,
+  classifyBotPlayedCardEmoteEvent,
+  evaluateBotEmoteTrigger,
+  isUndercoverEmoteEligible,
+} from '../utils/botEmotes';
+import {
+  createTutorialGameState,
+  executeTutorialBotStep,
+  getDefenseBannerDurationMs,
+  getTutorialDefenseOutcomeExplanation,
+  getTutorialStepGuide,
+  isTutorialRivalCallAllowed,
+  TutorialDefenseOutcomeExplanation,
+} from '../constants/tutorialScenario';
+import {
+  tutorialService,
+  TutorialRewardResult,
+} from '../services/tutorialService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
@@ -186,6 +221,7 @@ export interface GameScreenProps {
   initialOnlineRoomCode?: string | null;
   initialLocalOnlinePlayerId?: string | null;
   isQuickMatch?: boolean;
+  isTutorial?: boolean;
   onGoHome?: () => void;
 }
 
@@ -195,16 +231,31 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   initialOnlineRoomCode = null,
   initialLocalOnlinePlayerId = null,
   isQuickMatch = false,
+  isTutorial = false,
   onGoHome,
 }) => {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [currentPresetKey, setCurrentPresetKey] = useState<SetupPreset>(initialPresetKey);
-  const [gameState, setGameState] = useState<GameState>(() =>
-    initialGameState ||
-    createGame(getPresetPlayers(initialPresetKey), PRESETS[initialPresetKey].mode, {
-      allowStacking: true,
-    })
-  );
+  const [tutorialRewardResult, setTutorialRewardResult] = useState<TutorialRewardResult | null>(null);
+  const [tutorialDefenseNotice, setTutorialDefenseNotice] = useState<TutorialDefenseOutcomeExplanation | null>(null);
+  const dismissTutorialDefenseNotice = useCallback(() => {
+    setTutorialDefenseNotice(null);
+  }, []);
+  const [gameState, setGameState] = useState<GameState>(() => {
+    if (isTutorial) {
+      const cached = playerProfileService.getCachedProfile();
+      return createTutorialGameState(
+        cached?.nickname || 'You',
+        cached?.avatarId || 'fox'
+      );
+    }
+    return (
+      initialGameState ||
+      createGame(getPresetPlayers(initialPresetKey), PRESETS[initialPresetKey].mode, {
+        allowStacking: true,
+      })
+    );
+  });
 
   // Sound mute state
   const [isAudioMuted, setIsAudioMuted] = useState<boolean>(soundService.getMuted());
@@ -559,6 +610,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     !gameState.isGameOver &&
     !isReconnecting &&
     !gameState.pendingDefense;
+  const tutorialGuide = isTutorial ? getTutorialStepGuide(gameState) : null;
 
   // Play audible Rival callout SFX when any opponent (remote player or AI bot) calls RIVAL!, deduplicated cleanly
   const playOpponentRivalCue = useCallback(
@@ -598,11 +650,33 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   useEffect(() => {
     if (gameState.isGameOver && !hasRecordedResultRef.current) {
       hasRecordedResultRef.current = true;
+      const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
+
+      if (isTutorial) {
+        if (isWinner) {
+          tutorialService
+            .completeTutorialAndClaimReward()
+            .then((res) => {
+              setTutorialRewardResult(res);
+            })
+            .catch(() => {
+              setTutorialRewardResult({ awarded: false, coinsAwarded: 0, gemsAwarded: 0 });
+            });
+        }
+        return;
+      }
+
       clearActiveMatchSession().catch(() => {});
       if (isOnlineMode && !gameState.seriesState?.isPrivateSeries) {
         multiplayerService.cleanupFinishedRoom().catch(() => {});
       }
-      const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
+      if (isOnlineMode && gameState.forfeitedByPlayerId) {
+        if (gameState.forfeitedByPlayerId === myPlayer.id) {
+          showQuickBanner('Disconnected for 2 turns — Match Forfeited');
+        } else {
+          showQuickBanner('Opponent disconnected — You Win!');
+        }
+      }
       const turns = gameState.turnCount;
 
       if (
@@ -610,6 +684,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           gameMode: gameState.gameMode,
           isQuickMatch: activeIsQuickMatch,
           isPrivateSeries: Boolean(gameState.seriesState?.isPrivateSeries),
+          isTutorial: false,
           players: gameState.players,
           localPlayerId: myPlayer.id,
         })
@@ -626,16 +701,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
       // Rewards Balance according to game mode:
       // - Pass & Play & Custom Private Rooms: Completely disabled (0 XP, 0 Coins)
-      // - Bot Match (Play vs CPU): Strictly 10% of standard rewards
-      // - Online Ranked (Quick Match): 100% full rewards
-      let matchType: 'online_ranked' | 'bot' | 'custom_private' | 'pass_and_play' = 'bot';
-      if (isOnlineMode) {
-        matchType = activeIsQuickMatch ? 'online_ranked' : 'custom_private';
-      } else if (gameState.gameMode === 'pass_and_play') {
-        matchType = 'pass_and_play';
-      } else {
-        matchType = 'bot';
-      }
+      // - Solo Bot Match (Play vs CPU): Standard bot rewards
+      // - Quick Match (against real players, undercover bots, or 3 signature bots): 100% online_ranked rewards
+      const matchType = resolveMatchRewardType({
+        gameMode: gameState.gameMode,
+        isQuickMatch: activeIsQuickMatch,
+      });
 
       playerProfileService
         .awardMatchRewards(isWinner, turns, matchType)
@@ -658,8 +729,104 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     myPlayer.id,
     isOnlineMode,
     activeIsQuickMatch,
+    isTutorial,
     gameState.gameMode,
   ]);
+
+  // =========================================================================
+  // PURELY LOCAL AI BOT SITUATIONAL EMOJI REACTIONS (ZERO SUPABASE WRITES)
+  // =========================================================================
+  const botEmoteCooldownRef = useRef<Record<string, number>>({});
+  const botEmoteTimersRef = useRef<NodeJS.Timeout[]>([]);
+  const prevGameStateForEmotesRef = useRef<GameState>(gameState);
+  const slowTurnEmoteCheckedTurnRef = useRef<number>(-1);
+
+  const scheduleBotEmoteReaction = useCallback((botPlayer: Player | undefined, event: BotEmoteEvent) => {
+    if (!botPlayer || !isUndercoverEmoteEligible(botPlayer)) return;
+
+    const triggered = evaluateBotEmoteTrigger({
+      botId: botPlayer.id,
+      botName: botPlayer.name,
+      botAvatarId: botPlayer.avatarId,
+      isAiSeat: Boolean(botPlayer.isBot),
+      countsTowardCareerStats: botPlayer.countsTowardCareerStats,
+      event,
+      lastEmoteAtByBot: botEmoteCooldownRef.current,
+    });
+    if (!triggered) return;
+
+    const timer = setTimeout(() => {
+      botEmoteTimersRef.current = botEmoteTimersRef.current.filter((t) => t !== timer);
+      setActiveTaunt(triggered.taunt);
+    }, triggered.delayMs);
+    botEmoteTimersRef.current.push(timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of botEmoteTimersRef.current) {
+        clearTimeout(timer);
+      }
+      botEmoteTimersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    const prev = prevGameStateForEmotesRef.current;
+    prevGameStateForEmotesRef.current = gameState;
+    if (prev === gameState || isDealing) return;
+
+    if (!prev.isGameOver && gameState.isGameOver) {
+      const aiOpponent = gameState.players.find(
+        (p) => p.id !== myPlayer.id && (p.isBot || p.isBotControlled)
+      );
+      scheduleBotEmoteReaction(aiOpponent, 'match_end');
+      return;
+    }
+
+    const prevTopId = prev.discardPile[prev.discardPile.length - 1]?.id;
+    const currTop = gameState.discardPile[gameState.discardPile.length - 1];
+    if (!currTop || currTop.id === prevTopId) return;
+
+    const prevActor = prev.players[prev.currentTurnIndex];
+    const currActor = prevActor
+      ? gameState.players.find((p) => p.id === prevActor.id)
+      : undefined;
+
+    if (
+      prevActor &&
+      currActor &&
+      (currActor.isBot || currActor.isBotControlled) &&
+      currActor.hand.length < prevActor.hand.length
+    ) {
+      if (currActor.hand.length === 1) {
+        scheduleBotEmoteReaction(currActor, 'bot_one_card');
+      } else {
+        const actionEvent = classifyBotPlayedCardEmoteEvent(currTop.value);
+        if (actionEvent) {
+          scheduleBotEmoteReaction(currActor, actionEvent);
+        }
+      }
+      return;
+    }
+
+    if (
+      prevActor &&
+      prevActor.id === myPlayer.id &&
+      (currTop.value === 'draw2' || currTop.value === 'wild_draw4')
+    ) {
+      const targetIndex = calculateNextPlayerIndex(
+        prev.currentTurnIndex,
+        prev.direction,
+        prev.players.length,
+        1
+      );
+      const victim = gameState.players[targetIndex];
+      if (victim && victim.id !== myPlayer.id && (victim.isBot || victim.isBotControlled)) {
+        scheduleBotEmoteReaction(victim, 'bot_hit_draw');
+      }
+    }
+  }, [gameState, isDealing, myPlayer.id, scheduleBotEmoteReaction]);
 
   // Pulsing animation for floating "CATCH RIVAL!" button
   useEffect(() => {
@@ -712,8 +879,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           catchTimerRef.current = null;
         }, 2500);
 
-        // If human player dropped to 1 card without calling Rival, bots react with random delay
-        if (player.id === myPlayer.id) {
+        // If human player dropped to 1 card without calling Rival, bots react with random delay (disabled during Tutorial)
+        if (player.id === myPlayer.id && !isTutorial) {
           const activeBots = gameState.players.filter((p) => p.isBot && p.id !== player.id);
           if (activeBots.length > 0) {
             const reactiveBot = activeBots[Math.floor(Math.random() * activeBots.length)];
@@ -810,19 +977,50 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   };
 
   // Broadcast state changes in multiplayer mode (recording Private Room Series standings on round end)
-  const commitGameState = useCallback((nextState: GameState, actionDescription: string) => {
-    const finalizedState =
-      nextState.isGameOver && nextState.seriesState?.isPrivateSeries
-        ? recordSeriesRoundResult(nextState)
-        : nextState;
-    lastTopDiscardIdRef.current =
-      finalizedState.discardPile[finalizedState.discardPile.length - 1]?.id ?? null;
-    lastPendingColorChoiceRef.current = Boolean(finalizedState.pendingColorChoice);
-    setGameState(finalizedState);
-    if (finalizedState.gameMode === 'multiplayer') {
-      multiplayerService.broadcastGameState(finalizedState, actionDescription);
+  const commitGameState = useCallback(
+    (
+      nextState: GameState,
+      actionDescription: string,
+      options?: { isBotOrTimeoutAction?: boolean }
+    ) => {
+      const normalizedState =
+        !options?.isBotOrTimeoutAction &&
+        nextState.gameMode === 'multiplayer' &&
+        resolvedOnlineUserId
+          ? resetMissedTurnsOnManualMove(nextState, resolvedOnlineUserId)
+          : nextState;
+
+      const finalizedState =
+        normalizedState.isGameOver && normalizedState.seriesState?.isPrivateSeries
+          ? recordSeriesRoundResult(normalizedState)
+          : normalizedState;
+      lastTopDiscardIdRef.current =
+        finalizedState.discardPile[finalizedState.discardPile.length - 1]?.id ?? null;
+      lastPendingColorChoiceRef.current = Boolean(finalizedState.pendingColorChoice);
+      setGameState(finalizedState);
+      if (finalizedState.gameMode === 'multiplayer') {
+        multiplayerService.broadcastGameState(finalizedState, actionDescription);
+      }
+    },
+    [resolvedOnlineUserId]
+  );
+
+  // Keep active online session metadata persisted while match is actively playing
+  useEffect(() => {
+    if (
+      isOnlineMode &&
+      !gameState.isGameOver &&
+      onlineRoomCode &&
+      onlineRoomCode !== 'BOT_MATCH' &&
+      resolvedOnlineUserId
+    ) {
+      saveActiveMatchSession(
+        onlineRoomCode,
+        resolvedOnlineUserId,
+        myPlayerIndex >= 0 ? myPlayerIndex : 0
+      ).catch(() => {});
     }
-  }, []);
+  }, [isOnlineMode, gameState.isGameOver, onlineRoomCode, resolvedOnlineUserId, myPlayerIndex]);
 
   // =========================================================================
   // 3-MINUTE MATCH TIMER (ALL MODES) & TIMEOUT TIE-BREAKER
@@ -853,8 +1051,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     audioService.resetGameplayBgmIntensity();
   }, []);
 
-  // Pause match timer cleanly when dealing, game over, or local Pause/Settings/Rulebook/Leave modals are open
+  // Pause match timer cleanly when dealing, game over, tutorial, or local Pause/Settings/Rulebook/Leave modals are open
   const isMatchTimerPaused =
+    isTutorial ||
     gameState.isGameOver ||
     isDealing ||
     (!isOnlineMode &&
@@ -963,6 +1162,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Conditions that pause the turn countdown
   const isTimerPaused =
+    isTutorial ||
     gameState.isGameOver ||
     isDealing ||
     isColorPickerOpen ||
@@ -1017,76 +1217,132 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     };
   }, [isTimerPaused, isHumanTurn]);
 
-  // AFK Timeout Fallback Action (Auto-Play / Auto-Draw & Pass)
+  // AFK Timeout Fallback Action (1v1 2-Missed-Turn Forfeit, 3-4P/2v2 AI Bot Takeover, or Offline AFK Auto-Play)
   const handleTimeoutFallback = useCallback(() => {
     if (gameState.isGameOver || isDealing || gameState.privacyMask.isActive) return;
 
     const timedOutPlayer = gameState.players[gameState.currentTurnIndex];
     if (!timedOutPlayer) return;
 
-    // Private rooms never auto-play human slots, and online clients may only submit moves for their own turn.
     if (isOnlineMode) {
-      if (!activeIsQuickMatch) {
+      const isLocalTimedOut = Boolean(resolvedOnlineUserId && timedOutPlayer.id === resolvedOnlineUserId);
+      const isHostClient = Boolean(multiplayerService.getMyPlayer()?.isHost);
+      const fallbackDriver =
+        gameState.players.find((p) => !p.isBot && !p.isBotControlled && !p.isDisconnected) ??
+        gameState.players.find((p) => !p.isBot && !p.isBotControlled);
+      const isElectedRemoteDriver =
+        isTwoPlayerOnlineMatch(gameState) ||
+        isHostClient ||
+        fallbackDriver?.id === resolvedOnlineUserId;
+
+      if (!isLocalTimedOut && !isElectedRemoteDriver) {
         return;
       }
-      if (!resolvedOnlineUserId || timedOutPlayer.id !== resolvedOnlineUserId) {
-        return;
+
+      const result = handleOnlineTurnTimeout(gameState, timedOutPlayer.id);
+      if (result.outcome === 'noop') return;
+
+      if (result.outcome === 'forfeit_win') {
+        soundService.playWinChime();
+        hapticsService.victory();
+      } else {
+        soundService.playCardSnap();
+        hapticsService.cardSnap();
+        if (result.outcome === 'missed_turn_1') {
+          showQuickBanner(`${timedOutPlayer.name} missed turn (1/2) — auto-moved`);
+        } else if (result.outcome === 'bot_takeover_turn') {
+          showQuickBanner(`🤖 AI took over for ${timedOutPlayer.name}`);
+        }
       }
+
+      commitGameState(result.nextState, result.actionDescription, { isBotOrTimeoutAction: true });
+      return;
     }
 
-    // Check if player has any playable cards in hand
-    const playableCards = timedOutPlayer.hand.filter((c) =>
-      isValidMove(c, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0)
+    // Offline modes (Solo vs Bot / Pass & Play): Auto-Play or Auto-Draw & Pass
+    const { nextState, actionDescription, cardPlayed } = executeSafeBotFallbackTurn(
+      gameState,
+      timedOutPlayer.id
     );
-
-    if (playableCards.length > 0) {
-      // 1. Playable card exists: Auto-play first valid card
-      const cardToPlay = playableCards[0];
-      const isWild = isWildCard(cardToPlay);
-      const chosenColor = isWild
-        ? getDominantColor(timedOutPlayer.hand.filter((c) => c.id !== cardToPlay.id))
-        : undefined;
-
-      const nextState = playCard(gameState, timedOutPlayer.id, cardToPlay.id, { chosenColor });
+    if (cardPlayed) {
       soundService.playCardSnap();
       hapticsService.cardSnap();
-      triggerCardActionSfx(cardToPlay.value, Boolean(chosenColor));
+      triggerCardActionSfx(cardPlayed.value, isWildCard(cardPlayed));
       showQuickBanner(`Time's up! ${timedOutPlayer.name} auto-played.`);
-      commitGameState(
-        nextState,
-        `Time's up! ${timedOutPlayer.name} auto-played ${cardToPlay.color} ${cardToPlay.value}`
-      );
     } else {
-      // 2. No playable card exists (or player hasn't drawn): Auto-draw and pass turn
-      const drawnState = gameState.hasDrawnThisTurn
-        ? gameState
-        : playerDrawCard(gameState, timedOutPlayer.id);
-      const passedState = playerPassTurn(drawnState, timedOutPlayer.id);
       soundService.playCardDraw();
       hapticsService.cardSnap();
       showQuickBanner(`Time's up! ${timedOutPlayer.name} auto-draw passed.`);
-      commitGameState(
-        passedState,
-        `Time's up! ${timedOutPlayer.name} auto-draw passed`
-      );
     }
+    commitGameState(nextState, actionDescription, { isBotOrTimeoutAction: true });
   }, [
     gameState,
     isDealing,
     isOnlineMode,
-    activeIsQuickMatch,
     resolvedOnlineUserId,
-    topDiscardCard,
+    commitGameState,
+    triggerCardActionSfx,
     showQuickBanner,
   ]);
 
-  // Watch for Turn Timeout trigger at 0s
+  // Human slow-turn impatient/watchful reaction near end of 15s turn clock
   useEffect(() => {
-    if (turnTimeRemaining === 0 && !hasExecutedTimeoutRef.current && !isTimerPaused) {
-      hasExecutedTimeoutRef.current = true;
-      handleTimeoutFallback();
+    if (
+      !isHumanTurn ||
+      isDealing ||
+      gameState.isGameOver ||
+      turnTimeRemaining !== 4 ||
+      slowTurnEmoteCheckedTurnRef.current === gameState.turnCount
+    ) {
+      return;
     }
-  }, [turnTimeRemaining, isTimerPaused, handleTimeoutFallback]);
+    slowTurnEmoteCheckedTurnRef.current = gameState.turnCount;
+    const aiOpponent = gameState.players.find(
+      (p) => p.id !== myPlayer.id && (p.isBot || p.isBotControlled)
+    );
+    scheduleBotEmoteReaction(aiOpponent, 'human_slow_turn');
+  }, [
+    isHumanTurn,
+    isDealing,
+    gameState.isGameOver,
+    gameState.turnCount,
+    gameState.players,
+    turnTimeRemaining,
+    myPlayer.id,
+    scheduleBotEmoteReaction,
+  ]);
+
+  // Watch for Turn Timeout trigger at 0s (immediate for local turn; 850ms grace for remote online turns)
+  useEffect(() => {
+    if (turnTimeRemaining !== 0 || hasExecutedTimeoutRef.current || isTimerPaused) {
+      return;
+    }
+
+    const activeTurnPlayer = gameState.players[gameState.currentTurnIndex];
+    const isRemoteOnlineTurn =
+      isOnlineMode && Boolean(activeTurnPlayer && activeTurnPlayer.id !== resolvedOnlineUserId);
+
+    if (isRemoteOnlineTurn) {
+      const remoteGraceTimer = setTimeout(() => {
+        if (!hasExecutedTimeoutRef.current && !isTimerPaused) {
+          hasExecutedTimeoutRef.current = true;
+          handleTimeoutFallback();
+        }
+      }, 850);
+      return () => clearTimeout(remoteGraceTimer);
+    }
+
+    hasExecutedTimeoutRef.current = true;
+    handleTimeoutFallback();
+  }, [
+    turnTimeRemaining,
+    isTimerPaused,
+    isOnlineMode,
+    gameState.players,
+    gameState.currentTurnIndex,
+    resolvedOnlineUserId,
+    handleTimeoutFallback,
+  ]);
 
   // Browser testing hooks for turn timer and AFK verification
   useEffect(() => {
@@ -1197,10 +1453,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }, totalDuration);
   }, [triggerFlyingCard]);
 
-  // Trigger dealing animation on initial match mount
+  // Trigger dealing animation on initial match mount (Tutorial shows scripted starting hand immediately)
   useEffect(() => {
+    if (isTutorial) {
+      setIsDealing(false);
+      return;
+    }
     runDealingAnimation(initialGameState?.players || getPresetPlayers(initialPresetKey));
-  }, [initialPresetKey, initialGameState, runDealingAnimation]);
+  }, [isTutorial, initialPresetKey, initialGameState, runDealingAnimation]);
 
   // Restart match with current or new preset
   const handleStartGame = useCallback((presetKey: SetupPreset) => {
@@ -1283,6 +1543,39 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         console.warn('Failed to broadcast fresh match state:', err);
       }
       runDealingAnimation(playerConfigs);
+    } else if (activeIsQuickMatch) {
+      const nextBot = await selectNextQuickMatchBot({
+        excludeBotId: gameState.players.find((p) => p.isBot)?.id,
+      });
+      const cached = playerProfile || playerProfileService.getCachedProfile();
+      const humanPlayer = gameState.players.find((p) => !p.isBot) || myPlayer;
+      const rematchPlayers = [
+        {
+          id: humanPlayer.id,
+          name: cached?.nickname || humanPlayer.name || 'Player',
+          isBot: false,
+          avatarId: cached?.avatarId || humanPlayer.avatarId || 'fox',
+        },
+        {
+          id: nextBot.id,
+          name: nextBot.name,
+          isBot: true,
+          avatarId: nextBot.avatarId,
+          level: nextBot.level,
+          countsTowardCareerStats: nextBot.countsTowardCareerStats,
+        },
+      ];
+      const freshState = createGame(rematchPlayers, 'vs_bot', { allowStacking: true });
+      lastTopDiscardIdRef.current =
+        freshState.discardPile[freshState.discardPile.length - 1]?.id ?? null;
+      lastPendingColorChoiceRef.current = Boolean(freshState.pendingColorChoice);
+      setGameState(freshState);
+      setOnlineRoomCode('BOT_MATCH');
+      setLocalOnlinePlayerId(humanPlayer.id);
+      setActiveIsQuickMatch(true);
+      resetMatchTrackingIds('BOT_MATCH');
+      resetMatchCountdown(MATCH_DURATION_MS);
+      runDealingAnimation(rematchPlayers);
     } else {
       handleStartGame(currentPresetKey);
     }
@@ -1575,7 +1868,40 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       onReconnected: () => {
         stopDisconnectionCountdown();
         setIsReconnecting(false);
+        if (resolvedOnlineUserId) {
+          setGameState((prev) => reclaimHumanControl(prev, resolvedOnlineUserId));
+          multiplayerService.broadcastReclaimControl(resolvedOnlineUserId).catch(() => {});
+        }
         showQuickBanner('Reconnected to match!');
+      },
+      onPeerDisconnected: (peerId) => {
+        setGameState((prev) => {
+          if (prev.isGameOver || isTwoPlayerOnlineMatch(prev)) {
+            return prev;
+          }
+          const target = prev.players.find((p) => p.id === peerId);
+          if (!target || target.isBotControlled) return prev;
+          showQuickBanner(`🤖 AI took over for ${target.name}`);
+          return activateBotTakeover(prev, peerId);
+        });
+      },
+      onPeerReconnected: (peerId) => {
+        setGameState((prev) => {
+          const target = prev.players.find((p) => p.id === peerId);
+          if (target?.isBotControlled) {
+            showQuickBanner(`✅ ${target.name} reconnected!`);
+          }
+          return reclaimHumanControl(prev, peerId);
+        });
+      },
+      onControlReclaimed: (peerId) => {
+        setGameState((prev) => {
+          const target = prev.players.find((p) => p.id === peerId);
+          if (target?.isBotControlled) {
+            showQuickBanner(`✅ ${target.name} resumed control!`);
+          }
+          return reclaimHumanControl(prev, peerId);
+        });
       },
       onStateSnapshotRequested: (requesterId) => {
         if (isOnlineMode && (multiplayerService.getMyPlayer()?.isHost || myPlayer.id !== requesterId)) {
@@ -1584,32 +1910,39 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       },
       onStateSnapshotReceived: (syncedState) => {
         stopDisconnectionCountdown();
-        if (syncedState.lastRivalCalledBy && syncedState.lastRivalCallTimestamp) {
+        const recoveredState =
+          !syncedState.isGameOver && resolvedOnlineUserId
+            ? reclaimHumanControl(syncedState, resolvedOnlineUserId)
+            : syncedState;
+        if (recoveredState.lastRivalCalledBy && recoveredState.lastRivalCallTimestamp) {
           lastHandledRivalCallRef.current = {
-            playerId: syncedState.lastRivalCalledBy,
-            timestamp: syncedState.lastRivalCallTimestamp,
+            playerId: recoveredState.lastRivalCalledBy,
+            timestamp: recoveredState.lastRivalCallTimestamp,
           };
         }
         lastTopDiscardIdRef.current =
-          syncedState.discardPile[syncedState.discardPile.length - 1]?.id ?? null;
-        lastPendingColorChoiceRef.current = Boolean(syncedState.pendingColorChoice);
-        lastHandledDefenseBannerIdRef.current = syncedState.lastDefenseBanner?.id ?? null;
-        if (syncedState.isGameOver) {
+          recoveredState.discardPile[recoveredState.discardPile.length - 1]?.id ?? null;
+        lastPendingColorChoiceRef.current = Boolean(recoveredState.pendingColorChoice);
+        lastHandledDefenseBannerIdRef.current = recoveredState.lastDefenseBanner?.id ?? null;
+        if (recoveredState.isGameOver) {
           hasTriggeredMatchTimeoutRef.current = true;
-          if (syncedState.endedByTimeout) {
+          if (recoveredState.endedByTimeout) {
             matchRemainingRef.current = 0;
             setMatchRemainingMs(0);
           }
-        } else if (syncedState.matchStartedAt) {
+        } else if (recoveredState.matchStartedAt) {
           resetMatchCountdown(
             computeRemainingMsFromStart(
-              syncedState.matchStartedAt,
+              recoveredState.matchStartedAt,
               Date.now(),
-              (syncedState.matchDurationSeconds ?? 180) * 1000
+              (recoveredState.matchDurationSeconds ?? 180) * 1000
             )
           );
+          if (resolvedOnlineUserId) {
+            multiplayerService.broadcastReclaimControl(resolvedOnlineUserId).catch(() => {});
+          }
         }
-        setGameState(syncedState);
+        setGameState(recoveredState);
         setIsReconnecting(false);
         showQuickBanner('Match state synchronized!');
       },
@@ -1708,8 +2041,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   }, [isOnlineMode]);
 
 
-  // 3-second RIVAL! alert countdown when human player has 1 card without declaring
+  // 3-second RIVAL! alert countdown when human player has 1 card without declaring (paused during Tutorial)
   useEffect(() => {
+    if (isTutorial) {
+      if (rivalTimerRef.current) {
+        clearInterval(rivalTimerRef.current);
+        rivalTimerRef.current = null;
+      }
+      setRivalCountdown(null);
+      return;
+    }
+
     if (
       isHumanTurn &&
       myPlayer.hand.length === 1 &&
@@ -1754,8 +2096,23 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       audioService.playMirrorReflectSfx();
       hapticsService.rivalCallout();
     }
-    showQuickBanner(banner.message, 3200);
-  }, [gameState.lastDefenseBanner, showQuickBanner]);
+
+    if (isTutorial) {
+      setTutorialDefenseNotice(getTutorialDefenseOutcomeExplanation(banner.type));
+      return;
+    }
+
+    showQuickBanner(banner.message, getDefenseBannerDurationMs(false));
+  }, [gameState.lastDefenseBanner, isTutorial, showQuickBanner]);
+
+  // Hold tutorial Shield / Mirror explanation open for 12s (or until tapped "Got it / Next ->")
+  useEffect(() => {
+    if (!isTutorial || !tutorialDefenseNotice) return;
+    const autoDismissTimer = setTimeout(() => {
+      setTutorialDefenseNotice(null);
+    }, getDefenseBannerDurationMs(true));
+    return () => clearTimeout(autoDismissTimer);
+  }, [isTutorial, tutorialDefenseNotice]);
 
   // 3-Second Reactive Shield & Mirror Defense Timer / Bot Decision Driver
   useEffect(() => {
@@ -1766,21 +2123,34 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     const defenseAttacker = gameState.players[defense.attackerIndex];
     if (!defenseTarget) return;
 
-    // Offline Bot Defense: resolve cleanly after a natural 650ms reaction beat
-    if (!isOnlineMode && defenseTarget.isBot) {
+    // Offline Bot Defense OR Online AI Takeover Defense: resolve cleanly after a natural 650ms reaction beat
+    const isOnlineTakeoverTarget =
+      isOnlineMode &&
+      Boolean(defenseTarget.isBotControlled) &&
+      !isTwoPlayerOnlineMatch(gameState) &&
+      (Boolean(multiplayerService.getMyPlayer()?.isHost) ||
+        gameState.players.find((p) => !p.isBot && !p.isBotControlled && !p.isDisconnected)?.id ===
+          resolvedOnlineUserId);
+
+    if ((!isOnlineMode && defenseTarget.isBot) || isOnlineTakeoverTarget) {
       const botDefenseTimer = setTimeout(() => {
         try {
-          const nextState = resolveBotPendingDefense(gameState);
-          commitGameState(nextState, `${defenseTarget.name} reacted to ${defense.attackType}`);
+          const nextState = isTutorial
+            ? resolveDefenseTakeHit(gameState, defenseTarget.id)
+            : resolveBotPendingDefense(gameState);
+          commitGameState(nextState, `${defenseTarget.name} reacted to ${defense.attackType}`, {
+            isBotOrTimeoutAction: true,
+          });
         } catch (err) {
           console.error('Error during bot defense reaction:', err);
         }
-      }, settings.fastBots ? 350 : 650);
+      }, settings.fastBots ? 750 : 1300);
       return () => clearTimeout(botDefenseTimer);
     }
 
     const isLocalTarget = !isOnlineMode || defenseTarget.id === myPlayer.id;
     if (isLocalTarget) {
+      if (isTutorial) return;
       const remainingMs = Math.max(50, defense.expiresAt - Date.now());
       const expiryTimer = setTimeout(() => {
         try {
@@ -1849,7 +2219,70 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   };
 
-  // Automated Bot Turn Handling with organic, casual pacing
+  // Online 3-4P / 2v2 Seamless AI Bot Takeover Driver (host / elected connected client avoids race conditions)
+  useEffect(() => {
+    if (
+      !isOnlineMode ||
+      gameState.isGameOver ||
+      isDealing ||
+      isBotProcessing ||
+      Boolean(gameState.pendingDefense) ||
+      !currentPlayer?.isBotControlled
+    ) {
+      return;
+    }
+
+    const canDriveTakeover = shouldClientDriveBotTakeoverTurn(
+      gameState,
+      resolvedOnlineUserId,
+      Boolean(multiplayerService.getMyPlayer()?.isHost)
+    );
+    if (!canDriveTakeover) {
+      return;
+    }
+
+    const takeoverTimer = setTimeout(() => {
+      setIsBotProcessing(true);
+      try {
+        const { nextState, actionDescription, cardPlayed } = executeSafeBotFallbackTurn(
+          gameState,
+          currentPlayer.id
+        );
+        const preservedPlayers = nextState.players.map((p) =>
+          p.id === currentPlayer.id
+            ? { ...p, isBotControlled: true, isDisconnected: true }
+            : p
+        );
+        const finalState = { ...nextState, players: preservedPlayers };
+        if (finalState.isGameOver) {
+          soundService.playWinChime();
+        } else {
+          soundService.playCardSnap();
+        }
+        if (cardPlayed) {
+          triggerCardActionSfx(cardPlayed.value, isWildCard(cardPlayed));
+        }
+        commitGameState(finalState, actionDescription, { isBotOrTimeoutAction: true });
+      } catch (err) {
+        console.warn('Error during online AI takeover turn:', err);
+      } finally {
+        setIsBotProcessing(false);
+      }
+    }, ONLINE_BOT_TAKEOVER_DELAY_MS);
+
+    return () => clearTimeout(takeoverTimer);
+  }, [
+    isOnlineMode,
+    gameState,
+    isDealing,
+    isBotProcessing,
+    currentPlayer,
+    resolvedOnlineUserId,
+    commitGameState,
+    triggerCardActionSfx,
+  ]);
+
+  // Automated Bot Turn Handling with organic, casual pacing (and scripted step execution in Tutorial)
   useEffect(() => {
     if (
       isOnlineMode ||
@@ -1857,15 +2290,40 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       gameState.isGameOver ||
       gameState.privacyMask.isActive ||
       Boolean(gameState.pendingDefense) ||
+      Boolean(tutorialDefenseNotice) ||
       isDealing ||
       isBotProcessing
     ) {
       return;
     }
 
+    if (isTutorial) {
+      const tutorialBotTimer = setTimeout(() => {
+        setIsBotProcessing(true);
+        try {
+          const nextState = executeTutorialBotStep(gameState);
+          if (nextState !== gameState) {
+            soundService.playCardSnap();
+            const playedTop = nextState.discardPile[nextState.discardPile.length - 1];
+            if (playedTop) {
+              triggerCardActionSfx(playedTop.value, playedTop.color === 'wild');
+            }
+            commitGameState(nextState, `${currentPlayer.name} responded in tutorial`, {
+              isBotOrTimeoutAction: true,
+            });
+          }
+        } catch (err) {
+          console.warn('Tutorial bot step error:', err);
+        } finally {
+          setIsBotProcessing(false);
+        }
+      }, 1450);
+      return () => clearTimeout(tutorialBotTimer);
+    }
+
     // Step 2: If bot has already drawn this turn, pause to deliberate before playing or passing
     if (gameState.hasDrawnThisTurn) {
-      const postDrawDelay = settings.fastBots ? 300 : 800;
+      const postDrawDelay = settings.fastBots ? 750 : 1400;
       const postDrawTimer = setTimeout(() => {
         setIsBotProcessing(true);
         try {
@@ -1905,8 +2363,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       return () => clearTimeout(postDrawTimer);
     }
 
-    // Step 1: Initial "thinking" delay so the player clearly sees "RivalBot's turn..."
-    const thinkingDelay = settings.fastBots ? 400 : 1400;
+    // Step 1: Initial "thinking" delay (relaxed human-like pacing so every bot play is easy to follow)
+    const thinkingDelay = activeIsQuickMatch
+      ? getQuickMatchBotThinkingDelayMs(settings.fastBots)
+      : settings.fastBots
+      ? 1050
+      : 2400;
     const thinkingTimer = setTimeout(() => {
       setIsBotProcessing(true);
       try {
@@ -2126,6 +2588,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     isBotProcessing,
     triggerFlyingCard,
     settings.fastBots,
+    activeIsQuickMatch,
   ]);
 
   // Execute Single Card Play
@@ -2290,6 +2753,20 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Card Play Handler (invoked via tap or drag-and-drop)
   const handleCardPress = (card: Card) => {
     if (!isHumanTurn) return;
+
+    if (isTutorial && tutorialGuide) {
+      if (tutorialDefenseNotice) {
+        return;
+      }
+      if (tutorialGuide.targetControl !== 'card' || tutorialGuide.highlightedCardId !== card.id) {
+        hapticsService.cardSelection();
+        showQuickBanner(tutorialGuide.instruction, 2400);
+        return;
+      }
+      setPendingPairPlay(null);
+      executeSinglePlay(card);
+      return;
+    }
 
     if (!isValidMove(card, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0)) {
       hapticsService.invalidMove();
@@ -2637,18 +3114,25 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     });
   };
 
-  // Declare RIVAL! (Strictly restricted to 2 cards left on active human turn)
+  // Declare RIVAL! (Strictly restricted to 2 cards left in standard matches; allows 1 card in Tutorial Step 10/11)
   const handleDeclareRival = () => {
     if (!myPlayer || myPlayer.isBot) return;
-    if (
-      !canPlayerCallRival(
-        myPlayer.hand.length,
-        myPlayer.hasDeclaredRival,
-        isHumanTurn,
-        isDealing,
-        gameState.isGameOver
-      )
-    ) {
+    const isAllowed = isTutorial
+      ? isTutorialRivalCallAllowed(
+          myPlayer.hand.length,
+          myPlayer.hasDeclaredRival,
+          isHumanTurn,
+          isDealing,
+          gameState.isGameOver
+        )
+      : canPlayerCallRival(
+          myPlayer.hand.length,
+          myPlayer.hasDeclaredRival,
+          isHumanTurn,
+          isDealing,
+          gameState.isGameOver
+        );
+    if (!isAllowed) {
       return;
     }
     const nextState = declareRival(gameState, myPlayer.id);
@@ -2660,6 +3144,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       multiplayerService.broadcastRivalCallout(myPlayer.id, myPlayer.name);
     }
     commitGameState(nextState, `${myPlayer.name} declared RIVAL!`);
+    if (isTutorial) {
+      showQuickBanner('⚡ RIVAL Called! Now play your second-to-last card!', 3500);
+    }
 
     if (catchTimerRef.current) {
       clearTimeout(catchTimerRef.current);
@@ -2713,12 +3200,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           <View style={styles.sideOpponentInfo}>
             <AvatarIcon
               avatarId={opp.avatarId}
-              size={22}
-              style={{ marginRight: 3 }}
+              size={32}
+              style={{ marginBottom: 2 }}
             />
             <Text style={styles.sideOpponentName} numberOfLines={1}>
               {opp.name}
             </Text>
+            {opp.isBotControlled && (
+              <View style={styles.botTakeoverBadge}>
+                <Text style={styles.botTakeoverText}>BOT</Text>
+              </View>
+            )}
             {isOppTurn && !gameState.isGameOver && !isDealing && (
               <View style={styles.miniTurnBadge}>
                 <View style={styles.miniTurnDot} />
@@ -2821,12 +3313,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         <View style={styles.opponentTopRow}>
           <AvatarIcon
             avatarId={opp.avatarId}
-            size={22}
-            style={{ marginRight: 3 }}
+            size={34}
+            style={{ marginRight: 5 }}
           />
           <Text style={styles.opponentName} numberOfLines={1}>
             {opp.name}
           </Text>
+          {opp.isBotControlled && (
+            <View style={styles.botTakeoverBadge}>
+              <Text style={styles.botTakeoverText}>BOT</Text>
+            </View>
+          )}
           {isOppTurn && !gameState.isGameOver && !isDealing && (
             <View style={styles.miniTurnBadge}>
               <View style={styles.miniTurnDot} />
@@ -2939,65 +3436,89 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             {/* ================================================================= */}
             <View style={styles.header}>
               <View style={styles.headerLeft}>
-                {Boolean(onGoHome) && (
-                  <TouchableOpacity
-                    activeOpacity={0.75}
-                    onPress={() => {
-                      hapticsService.cardSnap();
-                      setIsLeaveModalOpen(true);
-                    }}
-                    style={styles.leaveHeaderBtn}
-                  >
-                    <Text style={styles.leaveHeaderIcon}>🏠</Text>
-                    <Text style={styles.leaveHeaderText}>Leave</Text>
-                  </TouchableOpacity>
-                )}
+                <View style={styles.headerLeftTopRow}>
+                  {Boolean(onGoHome) && !isTutorial && (
+                    <TouchableOpacity
+                      activeOpacity={0.75}
+                      onPress={() => {
+                        hapticsService.cardSnap();
+                        setIsLeaveModalOpen(true);
+                      }}
+                      style={styles.leaveHeaderBtn}
+                    >
+                      <Text style={styles.leaveHeaderIcon}>🏠</Text>
+                      <Text style={styles.leaveHeaderText}>Leave</Text>
+                    </TouchableOpacity>
+                  )}
 
-                {/* Skinned Logo Image replacing text header */}
-                <Image
-                  source={require('../../assets/logo.png')}
-                  resizeMode="contain"
-                  style={styles.headerLogo}
-                />
+                  {/* Compact Game Logo tucked cleanly on the far left side */}
+                  <Image
+                    source={require('../../assets/logo.png')}
+                    resizeMode="contain"
+                    style={styles.headerLogo}
+                  />
+                </View>
 
-                {isOnlineMode && onlineRoomCode && (
-                  <View style={styles.onlineRoomBadge}>
-                    <View style={styles.liveDot} />
-                    <Text style={styles.onlineRoomText}>#{onlineRoomCode}</Text>
+                {(isOnlineMode && onlineRoomCode) || (isPrivateSeriesRoom && gameState.seriesState) ? (
+                  <View style={styles.headerLeftMetaRow}>
+                    {isOnlineMode && onlineRoomCode && (
+                      <View style={styles.onlineRoomBadge}>
+                        <View style={styles.liveDot} />
+                        <Text style={styles.onlineRoomText}>#{onlineRoomCode}</Text>
+                      </View>
+                    )}
+
+                    {isPrivateSeriesRoom && gameState.seriesState && (
+                      <View style={styles.seriesRoundBadge}>
+                        <Text style={styles.seriesRoundBadgeText}>
+                          Match {gameState.seriesState.currentMatchNumber}/{gameState.seriesState.totalMatches}
+                        </Text>
+                      </View>
+                    )}
                   </View>
-                )}
-
-                {isPrivateSeriesRoom && gameState.seriesState && (
-                  <View style={styles.seriesRoundBadge}>
-                    <Text style={styles.seriesRoundBadgeText}>
-                      Match {gameState.seriesState.currentMatchNumber}/{gameState.seriesState.totalMatches}
-                    </Text>
-                  </View>
-                )}
+                ) : null}
               </View>
 
               <View style={styles.headerRight}>
-                {/* 3-Minute Match Countdown Pill */}
-                <MatchTimerBadge remainingMs={matchRemainingMs} isPaused={isMatchTimerPaused} />
+                {isTutorial ? (
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      hapticsService.cardSnap();
+                      handleExitToHome();
+                    }}
+                    style={styles.exitTutorialBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Exit Tutorial"
+                    testID="exit-tutorial-btn"
+                  >
+                    <Text style={styles.exitTutorialBtnText}>✕ Exit Tutorial</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <>
+                    {/* 3-Minute Match Countdown Pill */}
+                    <MatchTimerBadge remainingMs={matchRemainingMs} isPaused={isMatchTimerPaused} />
 
-                {/* Real-time Quick Taunt Bar Button */}
-                <TauntBar
-                  activeTaunt={activeTaunt}
-                  hideToast={true}
-                  onSendTaunt={(emoji) => {
-                    if (isOnlineMode) {
-                      multiplayerService.broadcastTaunt(emoji);
-                    }
-                    setActiveTaunt({
-                      id: Date.now().toString(),
-                      emoji,
-                      senderId: myPlayer.id,
-                      senderName: myPlayer.name,
-                      senderAvatarId: myPlayer.avatarId,
-                      timestamp: Date.now(),
-                    });
-                  }}
-                />
+                    {/* Real-time Quick Taunt Bar Button */}
+                    <TauntBar
+                      activeTaunt={activeTaunt}
+                      hideToast={true}
+                      onSendTaunt={(emoji) => {
+                        if (isOnlineMode) {
+                          multiplayerService.broadcastTaunt(emoji);
+                        }
+                        setActiveTaunt({
+                          id: Date.now().toString(),
+                          emoji,
+                          senderId: myPlayer.id,
+                          senderName: myPlayer.name,
+                          senderAvatarId: myPlayer.avatarId,
+                          timestamp: Date.now(),
+                        });
+                      }}
+                    />
+                  </>
+                )}
 
                 {/* Audio Toggle */}
                 <TouchableOpacity
@@ -3025,6 +3546,48 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </TouchableOpacity>
               </View>
             </View>
+
+        {/* Tutorial Interactive Coach-Mark Tooltip Banner (or paused Shield/Mirror Explanation Callout) */}
+        {isTutorial && tutorialGuide && !gameState.isGameOver && !isDealing && (
+          <View
+            style={styles.tutorialCoachOverlay}
+            pointerEvents={tutorialDefenseNotice ? 'box-none' : 'none'}
+          >
+            {tutorialDefenseNotice ? (
+              <View style={[styles.tutorialCoachCard, styles.tutorialDefenseCard]}>
+                <View style={styles.tutorialCoachTopRow}>
+                  <View style={styles.tutorialStepPill}>
+                    <Text style={styles.tutorialStepPillText}>{tutorialDefenseNotice.badge}</Text>
+                  </View>
+                  <Text style={styles.tutorialCoachTitle}>{tutorialDefenseNotice.title}</Text>
+                </View>
+                <Text style={styles.tutorialCoachText}>{tutorialDefenseNotice.explanation}</Text>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={dismissTutorialDefenseNotice}
+                  style={styles.tutorialContinueBtn}
+                  testID="tutorial-defense-continue-btn"
+                  accessibilityRole="button"
+                  accessibilityLabel="Got it, continue tutorial"
+                >
+                  <Text style={styles.tutorialContinueBtnText}>Got it / Next →</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.tutorialCoachCard}>
+                <View style={styles.tutorialCoachTopRow}>
+                  <View style={styles.tutorialStepPill}>
+                    <Text style={styles.tutorialStepPillText}>
+                      STEP {tutorialGuide.stepNumber}/{tutorialGuide.totalSteps}
+                    </Text>
+                  </View>
+                  <Text style={styles.tutorialCoachTitle}>{tutorialGuide.title}</Text>
+                </View>
+                <Text style={styles.tutorialCoachText}>{tutorialGuide.instruction}</Text>
+              </View>
+            )}
+          </View>
+        )}
 
         {/* Board-Level Auto-Sizing Active Taunt Banner (cleanly below header, never clips usernames) */}
         <TauntToastBanner activeTaunt={activeTaunt} players={gameState.players} />
@@ -3133,10 +3696,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={handleDrawCard}
-                disabled={!isHumanTurn || gameState.hasDrawnThisTurn}
+                disabled={!isHumanTurn || gameState.hasDrawnThisTurn || isTutorial}
                 style={[
                   styles.deckTouchArea,
-                  (!isHumanTurn || gameState.hasDrawnThisTurn) && styles.drawDeckDisabled,
+                  (!isHumanTurn || gameState.hasDrawnThisTurn || isTutorial) && styles.drawDeckDisabled,
                 ]}
                 accessibilityRole="button"
                 accessibilityLabel="Draw Card"
@@ -3268,12 +3831,23 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             : pendingPenaltyCount[myPlayer.id]
             ? myPlayer.hand.slice(0, Math.max(0, myPlayer.hand.length - pendingPenaltyCount[myPlayer.id]))
             : myPlayer.hand;
-          const canCallRival = canPlayerCallRival(
-            visiblePlayerHand.length,
-            myPlayer.hasDeclaredRival,
-            isHumanTurn,
-            isDealing,
-            gameState.isGameOver
+          const canCallRival = isTutorial
+            ? isTutorialRivalCallAllowed(
+                visiblePlayerHand.length,
+                myPlayer.hasDeclaredRival,
+                isHumanTurn,
+                isDealing,
+                gameState.isGameOver
+              )
+            : canPlayerCallRival(
+                visiblePlayerHand.length,
+                myPlayer.hasDeclaredRival,
+                isHumanTurn,
+                isDealing,
+                gameState.isGameOver
+              );
+          const isTutorialRivalHighlight = Boolean(
+            isTutorial && tutorialGuide?.targetControl === 'call_rival' && canCallRival
           );
 
           return (
@@ -3285,7 +3859,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   isMyTurn && !gameState.isGameOver && !isDealing && styles.playerBottomLeftBadgeActive,
                 ]}
               >
-                <AvatarIcon avatarId={myPlayer.avatarId} size={30} />
+                <AvatarIcon avatarId={myPlayer.avatarId} size={42} />
                 <View style={styles.playerInfoColumn}>
                   <View style={styles.playerNameCoinsRow}>
                     <Text style={styles.playerBottomName} numberOfLines={1}>
@@ -3335,9 +3909,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   activeOpacity={0.85}
                   onPress={handleDeclareRival}
                   disabled={!canCallRival}
+                  testID="rival-call-button"
                   style={[
                     styles.rivalBuzzerBtn,
                     canCallRival && styles.rivalBuzzerActive,
+                    isTutorialRivalHighlight && styles.rivalBuzzerTutorialHighlight,
                     !canCallRival && styles.rivalBuzzerDisabled,
                   ]}
                   accessibilityRole="button"
@@ -3411,9 +3987,22 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   contentContainerStyle={styles.handScrollList}
                 >
                   {visiblePlayerHand.map((item, index) => {
+                    const isTutorialCardHighlighted = Boolean(
+                      isTutorial &&
+                        !tutorialDefenseNotice &&
+                        tutorialGuide?.targetControl === 'card' &&
+                        tutorialGuide.highlightedCardId === item.id
+                    );
+                    const isTutorialBlocked = Boolean(
+                      isTutorial &&
+                        (Boolean(tutorialDefenseNotice) ||
+                          !isTutorialCardHighlighted ||
+                          tutorialGuide?.targetControl !== 'card')
+                    );
                     const playable =
                       isHumanTurn &&
                       !isDealing &&
+                      !isTutorialBlocked &&
                       isValidMove(item, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0);
                     const overlapMargin =
                       index === 0 ? 0 : getCardOverlapMargin(visiblePlayerHand.length, windowWidth);
@@ -3427,8 +4016,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                         key={item.id}
                         card={item}
                         isPlayable={playable}
-                        disabled={!isHumanTurn || isDealing}
+                        disabled={!isHumanTurn || isDealing || isTutorialBlocked}
                         isSelected={isPairSelected}
+                        isTutorialHighlighted={isTutorialCardHighlighted}
                         zIndex={index + 1}
                         overlapMargin={overlapMargin}
                         onPlay={handleCardPress}
@@ -3514,7 +4104,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
         {/* Game Over Victory Screen (Solo / Pass & Play / Quick Match) */}
         <GameOverModal
-          visible={gameState.isGameOver && !isPrivateSeriesRoom}
+          visible={gameState.isGameOver && !isPrivateSeriesRoom && !isTutorial}
           winner={gameState.winner}
           turnCount={gameState.turnCount}
           players={gameState.players}
@@ -3532,6 +4122,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           onPlay1v1={() => handleStartGame('vs_bot_2p')}
           onSelectPreset={(preset) => handleStartGame(preset)}
           onMainMenu={handleExitToHome}
+        />
+
+        {/* Celebratory Tutorial Completion Modal (+100 Coins & +3 Gems on first completion) */}
+        <TutorialCompleteModal
+          visible={Boolean(isTutorial && gameState.isGameOver)}
+          rewardResult={tutorialRewardResult}
+          onContinueHome={handleExitToHome}
         />
 
         {/* Private Room 5-Match Series Modal (Between-Round & Final Scorecard) */}
@@ -3602,6 +4199,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   defense.mirrorBounceCount
                 )}
                 canUseMirror={canDefendWithMirror(myPlayer.hand, defense.mirrorBounceCount)}
+                tutorialAllowedAction={
+                  isTutorial
+                    ? tutorialGuide?.targetControl === 'defense_shield'
+                      ? 'shield'
+                      : tutorialGuide?.targetControl === 'defense_mirror'
+                      ? 'mirror'
+                      : null
+                    : null
+                }
                 onUseShield={handleDefenseUseShield}
                 onUseMirror={handleDefenseUseMirror}
                 onTakeHit={handleDefenseTakeHit}
@@ -3625,12 +4231,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           return null;
         })()}
 
-        {/* Network Reconnecting Amber Banner */}
+        {/* Network Reconnecting Alert Banner */}
         {isReconnecting && isOnlineMode && (
           <View style={styles.reconnectingBannerOverlay} pointerEvents="none">
             <View style={styles.reconnectingBannerBadge}>
               <ActivityIndicator size="small" color="#B45309" />
-              <Text style={styles.reconnectingBannerText}>Reconnecting to match...</Text>
+              <Text style={styles.reconnectingBannerText}>Connection lost — Reconnecting...</Text>
             </View>
           </View>
         )}
@@ -3684,18 +4290,29 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 5,
+    alignItems: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
     backgroundColor: 'transparent',
     borderBottomWidth: 0,
     zIndex: 60,
     overflow: 'visible',
   },
   headerLeft: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 4,
+    maxWidth: '34%',
+  },
+  headerLeftTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+  },
+  headerLeftMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
   },
   leaveHeaderBtn: {
     flexDirection: 'row',
@@ -3716,6 +4333,93 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 12,
     letterSpacing: 0.4,
+  },
+  exitTutorialBtn: {
+    backgroundColor: '#EF4444',
+    borderWidth: 2,
+    borderColor: '#0F1142',
+    borderBottomWidth: 3.5,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  exitTutorialBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    letterSpacing: 0.3,
+  },
+  tutorialCoachOverlay: {
+    position: 'absolute',
+    top: 48,
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+    zIndex: 960,
+  },
+  tutorialCoachCard: {
+    maxWidth: 440,
+    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#FACC15',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  tutorialCoachTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 3,
+  },
+  tutorialStepPill: {
+    backgroundColor: '#FACC15',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  tutorialStepPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#0F172A',
+    letterSpacing: 0.4,
+  },
+  tutorialCoachTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 13,
+    color: '#FDE68A',
+  },
+  tutorialCoachText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#F8FAFC',
+  },
+  tutorialDefenseCard: {
+    borderColor: '#38BDF8',
+    paddingBottom: 10,
+  },
+  tutorialContinueBtn: {
+    marginTop: 8,
+    alignSelf: 'flex-end',
+    backgroundColor: '#FACC15',
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderBottomWidth: 3,
+    borderColor: '#A16207',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+  },
+  tutorialContinueBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11.5,
+    color: '#0F172A',
+    letterSpacing: 0.3,
   },
   reconnectingBannerOverlay: {
     position: 'absolute',
@@ -3821,8 +4525,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   headerLogo: {
-    width: 92,
-    height: 28,
+    width: 68,
+    height: 22,
   },
   onlineRoomBadge: {
     flexDirection: 'row',
@@ -3974,9 +4678,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   opponentCardSingle: {
-    minWidth: 115,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    minWidth: 132,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
   opponentCardActive: {
     borderColor: '#10B981',
@@ -4009,10 +4713,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   opponentName: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
     color: '#F8FAFC',
-    maxWidth: 75,
+    maxWidth: 92,
   },
   opponentCountBadge: {
     backgroundColor: 'rgba(255, 255, 255, 0.15)',
@@ -4112,7 +4816,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 0,
-    marginTop: 14,
+    marginTop: 36,
     zIndex: 10,
   },
   arenaSectionCentered: {
@@ -4136,9 +4840,9 @@ const styles = StyleSheet.create({
   },
   sideOpponentCard: {
     backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    borderRadius: 10,
-    padding: 4,
-    width: 82,
+    borderRadius: 12,
+    padding: 5,
+    width: 86,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.15)',
     shadowColor: '#000',
@@ -4155,10 +4859,10 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   sideOpponentName: {
-    fontSize: 9.5,
+    fontSize: 10,
     fontWeight: '700',
     color: '#F8FAFC',
-    maxWidth: 72,
+    maxWidth: 78,
     textAlign: 'center',
   },
   sideOpponentFanContainer: {
@@ -4471,6 +5175,21 @@ const styles = StyleSheet.create({
     color: '#34D399',
     letterSpacing: 0.4,
   },
+  botTakeoverBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    marginLeft: 2,
+  },
+  botTakeoverText: {
+    fontSize: 8.5,
+    fontWeight: '900',
+    color: '#FCD34D',
+    letterSpacing: 0.5,
+  },
   playerAvatarCircle: {
     width: 28,
     height: 28,
@@ -4555,6 +5274,16 @@ const styles = StyleSheet.create({
     borderColor: '#B45309',
     shadowColor: '#F59E0B',
     transform: [{ scale: 1.05 }],
+  },
+  rivalBuzzerTutorialHighlight: {
+    backgroundColor: '#F59E0B',
+    borderColor: '#FEF08A',
+    borderWidth: 3.5,
+    shadowColor: '#FACC15',
+    shadowOpacity: 0.95,
+    shadowRadius: 12,
+    elevation: 14,
+    transform: [{ scale: 1.14 }],
   },
   rivalBuzzerDisabled: {
     opacity: 0.45,
