@@ -64,8 +64,10 @@ export const DraggableCard: React.FC<DraggableCardProps> = ({
   }, [isTutorialHighlighted]);
 
   useEffect(() => {
-    if (isSelected || isTutorialHighlighted) {
-      liftY.value = withSpring(-16, { damping: 15, stiffness: 220 });
+    if (isSelected) {
+      liftY.value = withSpring(-14, { damping: 15, stiffness: 220 });
+    } else if (isTutorialHighlighted) {
+      liftY.value = withSpring(-10, { damping: 15, stiffness: 220 });
     } else if (!isPressed.value && !isDragging.value) {
       liftY.value = withSpring(0, { damping: 15, stiffness: 220 });
     }
@@ -205,6 +207,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.95,
     shadowRadius: 12,
-    elevation: 12,
+    elevation: 24,
   },
 });

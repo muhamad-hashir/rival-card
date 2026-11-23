@@ -28,6 +28,7 @@ export type TutorialStepId =
   | 'mute_rival'
   | 'call_rival'
   | 'final_card'
+  | 'wait_bot'
   | 'finished';
 
 export interface TutorialStepGuide {
@@ -248,6 +249,19 @@ export function getTutorialStepGuide(state: GameState): TutorialStepGuide {
     }
   }
 
+  // While CoachBot is resolving a reactive defense (e.g. accepting Rival Swap in Step 3),
+  // hold on a clean CoachBot Turn indicator so subsequent hand-length steps never flash early.
+  if (defense && defense.targetIndex === 1) {
+    return {
+      id: 'wait_bot',
+      stepNumber: 0,
+      totalSteps: TUTORIAL_TOTAL_STEPS,
+      title: 'CoachBot Turn',
+      instruction: 'CoachBot is responding to your Rival Swap...',
+      targetControl: 'wait_bot',
+    };
+  }
+
   if (state.pendingColorChoice) {
     return {
       id: 'wild_color',
@@ -262,8 +276,8 @@ export function getTutorialStepGuide(state: GameState): TutorialStepGuide {
   const currentPlayer = state.players[state.currentTurnIndex];
   if (!currentPlayer || currentPlayer.id !== TUTORIAL_PLAYER_ID) {
     return {
-      id: 'match_color',
-      stepNumber: 1,
+      id: 'wait_bot',
+      stepNumber: 0,
       totalSteps: TUTORIAL_TOTAL_STEPS,
       title: 'CoachBot Turn',
       instruction: 'Watch how CoachBot responds...',

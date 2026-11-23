@@ -3547,7 +3547,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               </View>
             </View>
 
-        {/* Tutorial Interactive Coach-Mark Tooltip Banner (or paused Shield/Mirror Explanation Callout) */}
+        {/* Tutorial Side-Wing Guide Card (Left Flank — keeps center table & CoachBot completely clear) */}
         {isTutorial && tutorialGuide && !gameState.isGameOver && !isDealing && (
           <View
             style={styles.tutorialCoachOverlay}
@@ -3555,8 +3555,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           >
             {tutorialDefenseNotice ? (
               <View style={[styles.tutorialCoachCard, styles.tutorialDefenseCard]}>
-                <View style={styles.tutorialCoachTopRow}>
-                  <View style={styles.tutorialStepPill}>
+                <View style={styles.tutorialCoachHeader}>
+                  <View style={[styles.tutorialStepPill, styles.tutorialDefensePill]}>
                     <Text style={styles.tutorialStepPillText}>{tutorialDefenseNotice.badge}</Text>
                   </View>
                   <Text style={styles.tutorialCoachTitle}>{tutorialDefenseNotice.title}</Text>
@@ -3574,13 +3574,24 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </TouchableOpacity>
               </View>
             ) : (
-              <View style={styles.tutorialCoachCard}>
-                <View style={styles.tutorialCoachTopRow}>
-                  <View style={styles.tutorialStepPill}>
-                    <Text style={styles.tutorialStepPillText}>
-                      STEP {tutorialGuide.stepNumber}/{tutorialGuide.totalSteps}
-                    </Text>
-                  </View>
+              <View
+                style={[
+                  styles.tutorialCoachCard,
+                  tutorialGuide.targetControl === 'wait_bot' && styles.tutorialBotCard,
+                ]}
+              >
+                <View style={styles.tutorialCoachHeader}>
+                  {tutorialGuide.targetControl === 'wait_bot' || tutorialGuide.stepNumber <= 0 ? (
+                    <View style={[styles.tutorialStepPill, styles.tutorialBotPill]}>
+                      <Text style={styles.tutorialBotPillText}>🤖 COACHBOT</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.tutorialStepPill}>
+                      <Text style={styles.tutorialStepPillText}>
+                        STEP {tutorialGuide.stepNumber}/{tutorialGuide.totalSteps}
+                      </Text>
+                    </View>
+                  )}
                   <Text style={styles.tutorialCoachTitle}>{tutorialGuide.title}</Text>
                 </View>
                 <Text style={styles.tutorialCoachText}>{tutorialGuide.instruction}</Text>
@@ -3889,46 +3900,6 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                 </View>
               </View>
 
-              {/* CALL RIVAL! Buzzer button & Pass Turn pinned to bottom-right */}
-              <View style={styles.playerBottomRightControls}>
-                {/* Pass Turn Button (Available after drawing a card) */}
-                {isHumanTurn && gameState.hasDrawnThisTurn && !isDealing && (
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={handlePassTurn}
-                    style={styles.passTurnBtn}
-                    accessibilityRole="button"
-                    accessibilityLabel="Pass Turn"
-                  >
-                    <Text style={styles.passTurnBtnText}>Pass ➔</Text>
-                  </TouchableOpacity>
-                )}
-
-                {/* Large 3D Circular CALL RIVAL! Buzzer Button */}
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={handleDeclareRival}
-                  disabled={!canCallRival}
-                  testID="rival-call-button"
-                  style={[
-                    styles.rivalBuzzerBtn,
-                    canCallRival && styles.rivalBuzzerActive,
-                    isTutorialRivalHighlight && styles.rivalBuzzerTutorialHighlight,
-                    !canCallRival && styles.rivalBuzzerDisabled,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Call Rival"
-                  accessibilityState={{ disabled: !canCallRival }}
-                >
-                  <View style={styles.rivalBuzzerInner}>
-                    <Text style={styles.rivalBuzzerIcon}>⚡</Text>
-                    <Text style={styles.rivalBuzzerText}>
-                      {rivalCountdown !== null ? `${rivalCountdown}s` : 'RIVAL!'}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-
               {/* Dedicated Arcade Action Button: TAKE +X CARDS (Voluntary Draw Option) */}
               {isHumanTurn && !isDealing && !gameState.isGameOver && (gameState.pendingDrawCount || 0) > 0 && !pendingPairPlay && (
                 <View style={styles.takePenaltyContainer}>
@@ -3979,7 +3950,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               )}
 
               {/* Hand anchored strictly centered in bottom slot regardless of card count */}
-              <View style={styles.handTrayWrapper}>
+              <View style={styles.handTrayWrapper} pointerEvents="box-none">
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -4005,7 +3976,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                       !isTutorialBlocked &&
                       isValidMove(item, topDiscardCard, gameState.activeColor, gameState.pendingDrawCount || 0);
                     const overlapMargin =
-                      index === 0 ? 0 : getCardOverlapMargin(visiblePlayerHand.length, windowWidth);
+                      index === 0
+                        ? 0
+                        : isTutorial
+                        ? visiblePlayerHand.length <= 5
+                          ? -8
+                          : -20
+                        : getCardOverlapMargin(visiblePlayerHand.length, windowWidth);
                     const isPairSelected = Boolean(
                       pendingPairPlay &&
                         (item.id === pendingPairPlay.card1.id || item.id === pendingPairPlay.card2.id)
@@ -4026,6 +4003,46 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                     );
                   })}
                 </ScrollView>
+              </View>
+
+              {/* CALL RIVAL! Buzzer button & Pass Turn pinned to bottom-right strictly above hand tray */}
+              <View style={styles.playerBottomRightControls} pointerEvents="box-none">
+                {/* Pass Turn Button (Available after drawing a card) */}
+                {isHumanTurn && gameState.hasDrawnThisTurn && !isDealing && (
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={handlePassTurn}
+                    style={styles.passTurnBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Pass Turn"
+                  >
+                    <Text style={styles.passTurnBtnText}>Pass ➔</Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* Large 3D Circular CALL RIVAL! Buzzer Button */}
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={handleDeclareRival}
+                  disabled={!canCallRival}
+                  testID="rival-call-button"
+                  style={[
+                    styles.rivalBuzzerBtn,
+                    canCallRival && styles.rivalBuzzerActive,
+                    isTutorialRivalHighlight && styles.rivalBuzzerTutorialHighlight,
+                    !canCallRival && styles.rivalBuzzerDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Call Rival"
+                  accessibilityState={{ disabled: !canCallRival }}
+                >
+                  <View style={styles.rivalBuzzerInner}>
+                    <Text style={styles.rivalBuzzerIcon}>⚡</Text>
+                    <Text style={styles.rivalBuzzerText}>
+                      {rivalCountdown !== null ? `${rivalCountdown}s` : 'RIVAL!'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
               </View>
             </View>
           );
@@ -4352,30 +4369,31 @@ const styles = StyleSheet.create({
   tutorialCoachOverlay: {
     position: 'absolute',
     top: 48,
-    left: 16,
-    right: 16,
-    alignItems: 'center',
+    left: 12,
+    width: 214,
+    maxWidth: '31%',
+    alignItems: 'flex-start',
     zIndex: 960,
   },
   tutorialCoachCard: {
-    maxWidth: 440,
-    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+    width: '100%',
+    backgroundColor: 'rgba(11, 18, 38, 0.94)',
     borderRadius: 16,
-    borderWidth: 2,
+    borderWidth: 1.8,
     borderColor: '#FACC15',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
     elevation: 10,
   },
-  tutorialCoachTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 3,
+  tutorialCoachHeader: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 5,
+    marginBottom: 4,
   },
   tutorialStepPill: {
     backgroundColor: '#FACC15',
@@ -4385,19 +4403,37 @@ const styles = StyleSheet.create({
   },
   tutorialStepPillText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 10,
+    fontSize: 9.5,
     color: '#0F172A',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
+  },
+  tutorialBotCard: {
+    borderColor: '#818CF8',
+  },
+  tutorialBotPill: {
+    backgroundColor: '#312E81',
+    borderWidth: 1,
+    borderColor: '#818CF8',
+  },
+  tutorialBotPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 9.5,
+    color: '#E0E7FF',
+    letterSpacing: 0.5,
+  },
+  tutorialDefensePill: {
+    backgroundColor: '#38BDF8',
   },
   tutorialCoachTitle: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 13,
+    fontSize: 12.5,
+    lineHeight: 15.5,
     color: '#FDE68A',
   },
   tutorialCoachText: {
     ...FONT_CARTOON_BOLD,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 11.5,
+    lineHeight: 15.5,
     color: '#F8FAFC',
   },
   tutorialDefenseCard: {
@@ -5251,7 +5287,8 @@ const styles = StyleSheet.create({
     right: 8,
     alignItems: 'center',
     gap: 5,
-    zIndex: 35,
+    zIndex: 60,
+    elevation: 18,
   },
   rivalBuzzerBtn: {
     width: 74,
@@ -5327,6 +5364,8 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
     justifyContent: 'center',
+    overflow: 'visible',
+    zIndex: 36,
   },
   handScrollView: {
     width: '100%',
@@ -5336,8 +5375,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: HAND_HORIZONTAL_PADDING,
-    paddingTop: 2,
-    paddingBottom: 0,
+    paddingTop: 18,
+    paddingBottom: 2,
   },
   catchRivalFloatingContainer: {
     position: 'absolute',

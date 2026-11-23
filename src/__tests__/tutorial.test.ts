@@ -65,8 +65,16 @@ describe('Interactive Tutorial Progression, One-Time Reward & Stat Isolation', (
     assert.strictEqual(guide.stepNumber, 3);
     assert.strictEqual(guide.highlightedCardId, TUTORIAL_CARDS.pSwap.id);
     state = playCard(state, TUTORIAL_PLAYER_ID, TUTORIAL_CARDS.pSwap.id, { chosenColor: 'blue' });
+    // While CoachBot's swap defense reaction is pending, never flash Step 9/11 ("call_rival")!
+    const swapWaitGuide = getTutorialStepGuide(state);
+    assert.strictEqual(swapWaitGuide.targetControl, 'wait_bot');
+    assert.strictEqual(swapWaitGuide.stepNumber, 0);
+    assert.strictEqual(swapWaitGuide.title, 'CoachBot Turn');
     state = executeTutorialBotStep(state); // CoachBot declines defense -> Swap executes cleanly!
-    state = executeTutorialBotStep(state); // CoachBot attacks with Wild +4 -> triggers Shield defense!
+    const botWaitGuide = getTutorialStepGuide(state);
+    assert.strictEqual(botWaitGuide.targetControl, 'wait_bot');
+    assert.strictEqual(botWaitGuide.stepNumber, 0);
+    state = executeTutorialBotStep(state); // CoachBot attacks with +2 -> triggers Shield defense!
 
     // Step 4: Special Card #2 - Shield reactive block vs Draw Two (+2)
     guide = getTutorialStepGuide(state);
