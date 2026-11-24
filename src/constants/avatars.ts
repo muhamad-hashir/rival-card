@@ -129,7 +129,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     requiredLevel: 1,
     coinCost: 0,
   },
-  // Level + Coin Unlockable Ladder (3–4 Level Gaps)
+  // Level + Coin Unlockable Ladder (Early starters below Lv. 10, stretched up to Level 40)
   {
     id: 'panda',
     legacyId: 'avatar_4',
@@ -158,7 +158,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     bgColor: '#FEF08A',
     accentColor: '#D97706',
     requiredLevel: 10,
-    coinCost: 1400,
+    coinCost: 2000,
   },
   {
     id: 'wolf',
@@ -167,8 +167,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Wolf',
     bgColor: '#CBD5E1',
     accentColor: '#475569',
-    requiredLevel: 14,
-    coinCost: 2000,
+    requiredLevel: 15,
+    coinCost: 3200,
   },
   {
     id: 'rival',
@@ -177,8 +177,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Rival',
     bgColor: '#DDD6FE',
     accentColor: '#7C3AED',
-    requiredLevel: 17,
-    coinCost: 2700,
+    requiredLevel: 20,
+    coinCost: 4500,
   },
   {
     id: 'ninja',
@@ -187,8 +187,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Ninja',
     bgColor: '#FECACA',
     accentColor: '#DC2626',
-    requiredLevel: 20,
-    coinCost: 3500,
+    requiredLevel: 25,
+    coinCost: 6000,
   },
   {
     id: 'jester',
@@ -197,8 +197,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Jester',
     bgColor: '#FDE68A',
     accentColor: '#B91C1C',
-    requiredLevel: 24,
-    coinCost: 4300,
+    requiredLevel: 30,
+    coinCost: 7500,
   },
   {
     id: 'flame',
@@ -207,8 +207,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Flame',
     bgColor: '#FFEDD5',
     accentColor: '#EA580C',
-    requiredLevel: 27,
-    coinCost: 5100,
+    requiredLevel: 35,
+    coinCost: 9000,
   },
   {
     id: 'champ',
@@ -217,8 +217,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Champ',
     bgColor: '#FEF3C7',
     accentColor: '#D97706',
-    requiredLevel: 30,
-    coinCost: 5800,
+    requiredLevel: 38,
+    coinCost: 11000,
   },
   {
     id: 'dragon',
@@ -227,8 +227,8 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     label: 'Dragon',
     bgColor: '#FCE7F3',
     accentColor: '#BE123C',
-    requiredLevel: 33,
-    coinCost: 6500,
+    requiredLevel: 40,
+    coinCost: 13500,
   },
 ] as const;
 

@@ -1,6 +1,7 @@
 // src/components/GameOverModal.tsx - Displays 2-step paginated victory/defeat, standings, and rewards flow
 import React, { useState, useEffect } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   ScrollView,
   StyleSheet,
@@ -22,6 +23,13 @@ import { AvatarIcon } from './AvatarIcon';
 import { ModalConfettiBurst } from './ModalConfettiBurst';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import {
+  adService,
+  formatCooldownRemaining,
+  MAX_REWARDED_ADS_PER_DAY,
+  REWARDED_AD_COIN_PAYOUT,
+  RewardedAdCooldownStatus,
+} from '../services/adService';
 
 export interface GameOverModalProps {
   visible: boolean;
@@ -74,10 +82,26 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
 }) => {
   // Step 1: "Victory & Standings" | Step 2: "Rewards & Level Up"
   const [step, setStep] = useState<1 | 2>(1);
+  const [isWatchingAd, setIsWatchingAd] = useState(false);
+  const [adRewardClaimed, setAdRewardClaimed] = useState(false);
+  const [adFeedbackMessage, setAdFeedbackMessage] = useState<string | null>(null);
+  const [adCooldown, setAdCooldown] = useState<RewardedAdCooldownStatus>({
+    placement: 'post_match',
+    canWatch: true,
+    watchedToday: 0,
+    remainingWatches: MAX_REWARDED_ADS_PER_DAY,
+    maxPerDay: MAX_REWARDED_ADS_PER_DAY,
+    nextAvailableInMs: 0,
+  });
 
   useEffect(() => {
     if (visible) {
       setStep(1);
+      setIsWatchingAd(false);
+      setAdRewardClaimed(false);
+      setAdFeedbackMessage(null);
+      adService.getRewardedAdCooldownStatus('post_match').then(setAdCooldown).catch(() => {});
+      adService.preloadRewardedAd();
     }
   }, [visible]);
 
@@ -150,6 +174,30 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     hapticsService.cardSelection();
     soundService.playCardSnap();
     (onMainMenu || onQuitRoom)?.();
+  };
+
+  const handleWatchRewardedAd = async () => {
+    if (isWatchingAd || adRewardClaimed) return;
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    setIsWatchingAd(true);
+    setAdFeedbackMessage(null);
+    try {
+      const result = await adService.showRewardedAdForCoins('post_match');
+      setAdCooldown(result.cooldownStatus);
+      setAdFeedbackMessage(result.message);
+      if (result.rewarded) {
+        setAdRewardClaimed(true);
+        hapticsService.victory();
+        soundService.playWinChime();
+      } else {
+        hapticsService.cardSnap();
+      }
+    } catch {
+      setAdFeedbackMessage('No ad available right now. Please try again later.');
+    } finally {
+      setIsWatchingAd(false);
+    }
   };
 
   return (
@@ -387,6 +435,38 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                     </View>
                   </View>
                 )}
+
+                {/* Optional Rewarded Ad Bonus (+100 Coins, max 5/day) */}
+                <View style={styles.rewardedAdContainer}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    disabled={isWatchingAd || adRewardClaimed}
+                    onPress={handleWatchRewardedAd}
+                    style={[
+                      styles.rewardedAdBtn,
+                      adRewardClaimed && styles.rewardedAdBtnClaimed,
+                      !adRewardClaimed && !adCooldown.canWatch && styles.rewardedAdBtnCooldown,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Watch Ad for +${REWARDED_AD_COIN_PAYOUT} Coins`}
+                    testID="gameover-watch-ad-btn"
+                  >
+                    {isWatchingAd ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.rewardedAdBtnText}>
+                        {adRewardClaimed
+                          ? `✓ +${REWARDED_AD_COIN_PAYOUT} Bonus Coins Claimed!`
+                          : adCooldown.canWatch
+                          ? `🎬 Watch Ad for +${REWARDED_AD_COIN_PAYOUT} Coins (${adCooldown.remainingWatches}/${adCooldown.maxPerDay} left today)`
+                          : `🎬 Daily Limit Reached (${formatCooldownRemaining(adCooldown.nextAvailableInMs)})`}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  {Boolean(adFeedbackMessage) && (
+                    <Text style={styles.rewardedAdFeedback}>{adFeedbackMessage}</Text>
+                  )}
+                </View>
 
                 {/* Screen 2 Action Buttons (Bottom) */}
                 {/* 1. Primary Emerald Green "Play Again" */}
@@ -926,6 +1006,48 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_BOLD,
     fontSize: 11,
     color: '#15803D',
+  },
+  rewardedAdContainer: {
+    width: '100%',
+    marginBottom: 10,
+    alignItems: 'center',
+  },
+  rewardedAdBtn: {
+    width: '100%',
+    backgroundColor: '#F59E0B',
+    borderBottomWidth: 4,
+    borderColor: '#B45309',
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#D97706',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  rewardedAdBtnClaimed: {
+    backgroundColor: '#16A34A',
+    borderColor: '#15803D',
+  },
+  rewardedAdBtnCooldown: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+  },
+  rewardedAdBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    letterSpacing: 0.3,
+  },
+  rewardedAdFeedback: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#92400E',
+    marginTop: 5,
+    textAlign: 'center',
   },
   playAgainBtn: {
     width: '100%',

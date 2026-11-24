@@ -135,11 +135,15 @@ export function selectQuickMatchBotForMatchNumber(
   options?: {
     signatureInterval?: 3 | 4;
     enableUndercover?: boolean;
+    forceUndercover?: boolean;
     excludeBotId?: string;
     rng?: () => number;
   }
 ): QuickMatchBotProfile {
   const rng = options?.rng ?? Math.random;
+  if (options?.forceUndercover) {
+    return pickRandomFromPool(UNDERCOVER_QUICK_MATCH_BOTS, rng, options?.excludeBotId);
+  }
   const enableUndercover = options?.enableUndercover ?? ENABLE_UNDERCOVER_QUICK_MATCH_BOTS;
   const interval = options?.signatureInterval ?? 4;
 
@@ -155,13 +159,19 @@ export function selectQuickMatchBotForMatchNumber(
 /**
  * Persistently increments the Quick Match bot counter and returns the next bot opponent,
  * scheduling a named signature bot every 3rd or 4th bot-matched Quick Match.
+ * When `forceUndercover` is true (e.g. 2-loss recovery match), always selects one of the
+ * 20 human-named undercover bots without exposing a signature bot.
  */
 export async function selectNextQuickMatchBot(options?: {
   enableUndercover?: boolean;
+  forceUndercover?: boolean;
   excludeBotId?: string;
   rng?: () => number;
 }): Promise<QuickMatchBotProfile> {
   const rng = options?.rng ?? Math.random;
+  if (options?.forceUndercover) {
+    return pickRandomFromPool(UNDERCOVER_QUICK_MATCH_BOTS, rng, options?.excludeBotId);
+  }
   const enableUndercover = options?.enableUndercover ?? ENABLE_UNDERCOVER_QUICK_MATCH_BOTS;
 
   let state: PersistedBotCounterState = {

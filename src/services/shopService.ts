@@ -101,7 +101,7 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
     id: 'card_back_crimson',
     name: 'Crimson Flame',
     category: 'card_backs',
-    price: { currency: 'coins', amount: 5000 },
+    price: { currency: 'coins', amount: 8000 },
     image: STORE_ITEM_IMAGES.card_back_crimson,
     previewStyle: {
       primaryColor: '#DC2626',
@@ -114,7 +114,7 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
     id: 'card_back_golden',
     name: 'Golden Rim',
     category: 'card_backs',
-    price: { currency: 'coins', amount: 7500 },
+    price: { currency: 'coins', amount: 12000 },
     image: STORE_ITEM_IMAGES.card_back_golden,
     previewStyle: {
       primaryColor: '#CA8A04',
@@ -196,7 +196,7 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
     id: 'emote_oops',
     name: 'Oops!',
     category: 'emotes',
-    price: { currency: 'coins', amount: 1500 },
+    price: { currency: 'coins', amount: 2000 },
     previewStyle: {
       primaryColor: '#EF4444',
       borderColor: '#B91C1C',
@@ -209,7 +209,7 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
     id: 'emote_gg',
     name: 'GG!',
     category: 'emotes',
-    price: { currency: 'coins', amount: 2000 },
+    price: { currency: 'coins', amount: 3200 },
     previewStyle: {
       primaryColor: '#22C55E',
       borderColor: '#15803D',
@@ -222,7 +222,7 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
     id: 'emote_nice_try',
     name: 'Nice Try!',
     category: 'emotes',
-    price: { currency: 'coins', amount: 2500 },
+    price: { currency: 'coins', amount: 4500 },
     previewStyle: {
       primaryColor: '#F59E0B',
       borderColor: '#D97706',

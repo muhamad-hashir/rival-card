@@ -478,10 +478,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               )}
             </View>
 
-            {/* Choose Avatar Grid (12 Cartoon-Arcade Avatars with Level + Coin Progression) */}
+            {/* Choose Avatar Grid (12 Cartoon-Arcade Avatars with Level 1–40 + Coin Progression) */}
             <View style={styles.avatarSection}>
               <View style={styles.avatarSectionHeader}>
-                <Text style={styles.sectionLabel}>CHOOSE AVATAR</Text>
+                <Text style={styles.sectionLabel}>CHOOSE AVATAR (LV. 1–40)</Text>
                 <View style={styles.avatarCountPill}>
                   <Text style={styles.avatarCountText}>
                     {unlockedCount}/{AVATAR_OPTIONS.length} UNLOCKED

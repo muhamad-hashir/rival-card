@@ -1,6 +1,7 @@
 // src/components/ShopModal.tsx - Interactive Cosmetics & Currency Shop Modal for Rival Card
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Image,
   Modal,
@@ -36,6 +37,13 @@ import {
 } from '../styles/typography';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import {
+  adService,
+  formatCooldownRemaining,
+  MAX_REWARDED_ADS_PER_DAY,
+  REWARDED_AD_COIN_PAYOUT,
+  RewardedAdCooldownStatus,
+} from '../services/adService';
 
 interface TactileButtonProps extends TouchableOpacityProps {
   scaleTo?: number;
@@ -100,16 +108,27 @@ export const ShopModal: React.FC<ShopModalProps> = ({
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isWatchingAd, setIsWatchingAd] = useState(false);
+  const [adCooldown, setAdCooldown] = useState<RewardedAdCooldownStatus>({
+    placement: 'shop',
+    canWatch: true,
+    watchedToday: 0,
+    remainingWatches: MAX_REWARDED_ADS_PER_DAY,
+    maxPerDay: MAX_REWARDED_ADS_PER_DAY,
+    nextAvailableInMs: 0,
+  });
 
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const toastFadeAnim = useRef(new Animated.Value(0)).current;
 
-  // Sync inventory and profile on open and listen to changes
+  // Sync inventory, profile, and rewarded ad cooldown on open and listen to changes
   useEffect(() => {
     if (visible) {
       setSelectedCategory(initialCategory);
       shopService.getInventory().then(setInventory);
       playerProfileService.getProfile().then(setProfile);
+      adService.getRewardedAdCooldownStatus('shop').then(setAdCooldown).catch(() => {});
+      adService.preloadRewardedAd();
     }
   }, [visible, initialCategory]);
 
@@ -247,6 +266,32 @@ export const ShopModal: React.FC<ShopModalProps> = ({
     }
   };
 
+  const handleWatchRewardedAd = async () => {
+    if (isWatchingAd) return;
+    hapticsService.cardSelection();
+    soundService.playCardSnap();
+    setIsWatchingAd(true);
+    try {
+      const result = await adService.showRewardedAdForCoins('shop');
+      setAdCooldown(result.cooldownStatus);
+      if (result.rewarded) {
+        if (result.profile) {
+          setProfile(result.profile);
+        }
+        hapticsService.victory();
+        soundService.playWinChime();
+        showToast(result.message);
+      } else {
+        hapticsService.cardSnap();
+        showToast(result.message);
+      }
+    } catch {
+      showToast('No ad available right now. Please try again later.');
+    } finally {
+      setIsWatchingAd(false);
+    }
+  };
+
   const handleClose = () => {
     hapticsService.cardSelection();
     soundService.playCardSnap();
@@ -367,6 +412,47 @@ export const ShopModal: React.FC<ShopModalProps> = ({
             </ScrollView>
           </View>
 
+          {/* Non-Intrusive Rewarded Ad Banner (+100 Coins, max 5/day) */}
+          <TactileButton
+            onPress={handleWatchRewardedAd}
+            disabled={isWatchingAd}
+            style={[
+              styles.rewardedAdBanner,
+              !adCooldown.canWatch && styles.rewardedAdBannerCooldown,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Watch Ad for +${REWARDED_AD_COIN_PAYOUT} Coins`}
+            testID="shop-watch-ad-btn"
+          >
+            <View style={styles.rewardedAdLeft}>
+              <Text style={styles.rewardedAdIcon}>🎬</Text>
+              <View style={styles.rewardedAdTextCol}>
+                <Text style={styles.rewardedAdTitle} numberOfLines={1}>
+                  Watch Ad for +{REWARDED_AD_COIN_PAYOUT} Coins
+                </Text>
+                <Text style={styles.rewardedAdSub} numberOfLines={1}>
+                  {adCooldown.canWatch
+                    ? `Free Coins • ${adCooldown.remainingWatches}/${adCooldown.maxPerDay} left today`
+                    : `Daily limit reached • Resets in ${formatCooldownRemaining(adCooldown.nextAvailableInMs)}`}
+                </Text>
+              </View>
+            </View>
+            <View
+              style={[
+                styles.rewardedAdActionPill,
+                !adCooldown.canWatch && styles.rewardedAdActionPillCooldown,
+              ]}
+            >
+              {isWatchingAd ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.rewardedAdActionText}>
+                  {adCooldown.canWatch ? '🪙 +100' : 'WAIT'}
+                </Text>
+              )}
+            </View>
+          </TactileButton>
+
           {/* Store Items Scroll Container */}
           <ScrollView
             style={styles.itemsScrollContainer}
@@ -424,7 +510,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                 <View style={[styles.sectionHeaderRow, { marginTop: 10 }]}>
                   <Text style={styles.sectionHeaderTitle}>🪙 LEVEL + COIN AVATARS</Text>
                   <View style={styles.levelHeaderPill}>
-                    <Text style={styles.levelHeaderPillText}>LVL {currentLevel}</Text>
+                    <Text style={styles.levelHeaderPillText}>LVL {currentLevel} / 40</Text>
                   </View>
                 </View>
 
@@ -974,6 +1060,67 @@ const styles = StyleSheet.create({
   },
   categoryLabelActive: {
     color: '#FFFFFF',
+  },
+  rewardedAdBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFBEB',
+    borderWidth: 2,
+    borderBottomWidth: 3.5,
+    borderColor: '#F59E0B',
+    borderRadius: 16,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    marginBottom: 10,
+    gap: 8,
+  },
+  rewardedAdBannerCooldown: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5E1',
+  },
+  rewardedAdLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 8,
+  },
+  rewardedAdIcon: {
+    fontSize: 20,
+  },
+  rewardedAdTextCol: {
+    flex: 1,
+  },
+  rewardedAdTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 12.5,
+    color: '#92400E',
+  },
+  rewardedAdSub: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 10,
+    color: '#B45309',
+  },
+  rewardedAdActionPill: {
+    backgroundColor: '#10B981',
+    borderBottomWidth: 2.5,
+    borderColor: '#059669',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    minWidth: 66,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rewardedAdActionPillCooldown: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+  },
+  rewardedAdActionText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
   itemsScrollContainer: {
     maxHeight: 380,

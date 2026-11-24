@@ -12,25 +12,144 @@ export type BotEmoteEvent =
   | 'human_slow_turn'
   | 'match_end';
 
-export const BOT_EMOTE_PROBABILITY = 0.4;
-export const BOT_EMOTE_COOLDOWN_MS = 15_000;
-export const BOT_EMOTE_DELAY_MIN_MS = 600;
-export const BOT_EMOTE_DELAY_MAX_MS = 1200;
+export type BotEmotePersonaStyle = 'quiet' | 'friendly' | 'cheeky' | 'dramatic' | 'expressive';
+
+export interface BotEmotePersona {
+  style: BotEmotePersonaStyle;
+  probability: number;
+  cooldownMs: number;
+  maxEmotesPerMatch: number;
+}
+
+export const BOT_EMOTE_PROBABILITY = 0.25;
+export const BOT_EMOTE_COOLDOWN_MS = 26_000;
+export const BOT_EMOTE_DELAY_MIN_MS = 900;
+export const BOT_EMOTE_DELAY_MAX_MS = 2200;
+export const MAX_BOT_EMOTES_PER_MATCH = 6;
+
+export const EXPRESSIVE_PERSONA_BOT_IDS: ReadonlySet<string> = new Set([
+  'qm_bot_bilal',
+  'qm_bot_priya',
+  'qm_bot_gojo',
+]);
 
 export const TAUNT_EMOJIS = [
   '😎', '😈', '😂', '😱',
   '😭', '😤', '🔥', '😉',
   '👀', '⏳', '👏', '🤝',
   '⚡', '👑', '🛡️', '👋',
+  '😏', '😄', '🙌', '💀',
+  '🤯', '👍', '🥳', '😅',
 ] as const;
 
 export const BOT_EMOTE_POOLS: Readonly<Record<BotEmoteEvent, readonly string[]>> = {
-  bot_action_card: ['😎', '😈', '😂'],
-  bot_hit_draw: ['😱', '😭', '😤'],
-  bot_one_card: ['🔥', '😉'],
-  human_slow_turn: ['👀', '⏳'],
-  match_end: ['👏', '🤝'],
+  bot_action_card: ['😎', '😈', '😏', '🔥', '⚡', '😉'],
+  bot_hit_draw: ['😱', '😭', '😤', '💀', '🤯', '😅'],
+  bot_one_card: ['🔥', '😉', '👑', '⚡', '😎'],
+  human_slow_turn: ['👀', '⏳', '😅', '👋'],
+  match_end: ['👏', '🤝', '😄', '🙌', '👍', '🥳'],
 } as const;
+
+const PERSONA_CONFIGS: Readonly<Record<BotEmotePersonaStyle, BotEmotePersona>> = {
+  quiet: {
+    style: 'quiet',
+    probability: 0.14,
+    cooldownMs: 36_000,
+    maxEmotesPerMatch: 2,
+  },
+  friendly: {
+    style: 'friendly',
+    probability: 0.24,
+    cooldownMs: 28_000,
+    maxEmotesPerMatch: 3,
+  },
+  cheeky: {
+    style: 'cheeky',
+    probability: 0.28,
+    cooldownMs: 24_000,
+    maxEmotesPerMatch: 3,
+  },
+  dramatic: {
+    style: 'dramatic',
+    probability: 0.32,
+    cooldownMs: 22_000,
+    maxEmotesPerMatch: 3,
+  },
+  expressive: {
+    style: 'expressive',
+    probability: 0.5,
+    cooldownMs: 12_000,
+    maxEmotesPerMatch: 6,
+  },
+};
+
+const PERSONA_STYLES: readonly BotEmotePersonaStyle[] = [
+  'quiet',
+  'friendly',
+  'cheeky',
+  'dramatic',
+] as const;
+
+const PERSONA_PREFERRED_EMOJIS: Readonly<
+  Record<BotEmotePersonaStyle, Readonly<Record<BotEmoteEvent, readonly string[]>>>
+> = {
+  quiet: {
+    bot_action_card: ['😎', '⚡', '😉'],
+    bot_hit_draw: ['😤', '😅', '😱'],
+    bot_one_card: ['⚡', '🔥'],
+    human_slow_turn: ['👀', '⏳'],
+    match_end: ['🤝', '👍', '👏'],
+  },
+  friendly: {
+    bot_action_card: ['😉', '😎', '🔥'],
+    bot_hit_draw: ['😅', '😭', '😱'],
+    bot_one_card: ['😉', '🔥', '👑'],
+    human_slow_turn: ['👋', '😅', '👀'],
+    match_end: ['👏', '🤝', '😄', '🙌', '🥳'],
+  },
+  cheeky: {
+    bot_action_card: ['😏', '😈', '😎', '🔥'],
+    bot_hit_draw: ['😤', '💀', '😱'],
+    bot_one_card: ['👑', '😎', '🔥'],
+    human_slow_turn: ['⏳', '👀'],
+    match_end: ['🤝', '👏', '👍'],
+  },
+  dramatic: {
+    bot_action_card: ['😈', '🔥', '⚡', '😎'],
+    bot_hit_draw: ['💀', '🤯', '😭', '😱'],
+    bot_one_card: ['🔥', '⚡', '👑'],
+    human_slow_turn: ['👀', '⏳', '😅'],
+    match_end: ['🙌', '🥳', '😄', '👏'],
+  },
+  expressive: {
+    bot_action_card: ['😈', '😏', '🔥', '😎', '⚡'],
+    bot_hit_draw: ['😱', '😭', '💀', '🤯', '😅'],
+    bot_one_card: ['🔥', '👑', '😉', '⚡'],
+    human_slow_turn: ['👀', '⏳', '👋', '😅'],
+    match_end: ['🥳', '🙌', '👏', '😄', '🤝'],
+  },
+};
+
+function hashBotId(botId: string): number {
+  let hash = 0;
+  for (let i = 0; i < botId.length; i++) {
+    hash = (hash * 31 + botId.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+/**
+ * Returns a consistent, per-bot emote persona so different undercover bots do not share
+ * identical reaction frequencies, cooldowns, or emoji habits.
+ */
+export function getBotEmotePersona(botId: string): BotEmotePersona {
+  if (EXPRESSIVE_PERSONA_BOT_IDS.has(botId)) {
+    return PERSONA_CONFIGS.expressive;
+  }
+  const hash = hashBotId(botId || 'default');
+  const style = PERSONA_STYLES[hash % PERSONA_STYLES.length];
+  return PERSONA_CONFIGS[style];
+}
 
 export interface LocalBotTauntMessage {
   id: string;
@@ -49,10 +168,13 @@ export interface BotEmoteTriggerInput {
   countsTowardCareerStats?: boolean;
   event: BotEmoteEvent;
   lastEmoteAtByBot: Record<string, number>;
+  emoteCountByBot?: Record<string, number>;
+  lastEmojiByBot?: Record<string, string>;
   nowMs?: number;
   rng?: () => number;
   probability?: number;
   cooldownMs?: number;
+  maxEmotesPerMatch?: number;
 }
 
 const UNDERCOVER_BOT_ID_SET = new Set(UNDERCOVER_QUICK_MATCH_BOTS.map((b) => b.id));
@@ -130,20 +252,36 @@ export function classifyBotPlayedCardEmoteEvent(cardValue: CardValue): BotEmoteE
 }
 
 /**
- * Picks a fitting emoji from the situational event pool.
+ * Picks a fitting emoji from the bot's persona-customized situational pool while avoiding
+ * repeating the exact same emoji back-to-back.
  */
 export function pickBotEmoteForEvent(
   event: BotEmoteEvent,
-  rng: () => number = Math.random
+  rng: () => number = Math.random,
+  options?: { botId?: string; lastEmoji?: string }
 ): string {
-  const pool = BOT_EMOTE_POOLS[event];
+  const persona = options?.botId ? getBotEmotePersona(options.botId) : null;
+  const basePool = persona
+    ? PERSONA_PREFERRED_EMOJIS[persona.style][event]
+    : BOT_EMOTE_POOLS[event];
+
+  // Rotate starting subset deterministically by botId so two bots with the same persona
+  // still favor different emojis first.
+  const offset = options?.botId ? hashBotId(options.botId + ':' + event) % basePool.length : 0;
+  const rotatedPool = [...basePool.slice(offset), ...basePool.slice(0, offset)];
+
+  const filteredPool =
+    options?.lastEmoji && rotatedPool.length > 1
+      ? rotatedPool.filter((e) => e !== options.lastEmoji)
+      : rotatedPool;
+
   const clamped = Math.min(0.999999, Math.max(0, rng()));
-  const index = Math.floor(clamped * pool.length);
-  return pool[index];
+  const index = Math.floor(clamped * filteredPool.length);
+  return filteredPool[index];
 }
 
 /**
- * Computes a natural human-like reaction delay between 600ms and 1200ms.
+ * Computes a natural human-like reaction delay between 900ms and 2200ms.
  */
 export function getBotEmoteDelayMs(rng: () => number = Math.random): number {
   const clamped = Math.min(0.999999, Math.max(0, rng()));
@@ -154,8 +292,9 @@ export function getBotEmoteDelayMs(rng: () => number = Math.random): number {
 }
 
 /**
- * Evaluates anti-spam guardrails (AI-seat check, 15s per-bot cooldown, ~40% probability)
- * and builds a strictly local TauntMessage when triggered (zero Supabase DB writes).
+ * Evaluates anti-spam guardrails (AI-seat check, per-bot persona cooldown & probability,
+ * per-match max cap, and no back-to-back duplicate emoji) and builds a strictly local
+ * TauntMessage when triggered (zero Supabase DB writes).
  */
 export function evaluateBotEmoteTrigger(
   input: BotEmoteTriggerInput
@@ -172,10 +311,19 @@ export function evaluateBotEmoteTrigger(
     return null;
   }
 
+  const persona = getBotEmotePersona(input.botId);
   const nowMs = input.nowMs ?? Date.now();
-  const cooldownMs = input.cooldownMs ?? BOT_EMOTE_COOLDOWN_MS;
-  const probability = input.probability ?? BOT_EMOTE_PROBABILITY;
+  const cooldownMs = input.cooldownMs ?? persona.cooldownMs;
+  const probability = input.probability ?? persona.probability;
+  const maxEmotesPerMatch = input.maxEmotesPerMatch ?? persona.maxEmotesPerMatch;
   const rng = input.rng ?? Math.random;
+
+  if (input.emoteCountByBot) {
+    const usedCount = input.emoteCountByBot[input.botId] ?? 0;
+    if (usedCount >= maxEmotesPerMatch) {
+      return null;
+    }
+  }
 
   const lastEmoteAt = input.lastEmoteAtByBot[input.botId];
   if (typeof lastEmoteAt === 'number' && nowMs - lastEmoteAt < cooldownMs) {
@@ -186,10 +334,20 @@ export function evaluateBotEmoteTrigger(
     return null;
   }
 
-  const emoji = pickBotEmoteForEvent(input.event, rng);
+  const lastEmoji = input.lastEmojiByBot?.[input.botId];
+  const emoji = pickBotEmoteForEvent(input.event, rng, {
+    botId: input.botId,
+    lastEmoji,
+  });
   const delayMs = getBotEmoteDelayMs(rng);
 
   input.lastEmoteAtByBot[input.botId] = nowMs;
+  if (input.emoteCountByBot) {
+    input.emoteCountByBot[input.botId] = (input.emoteCountByBot[input.botId] ?? 0) + 1;
+  }
+  if (input.lastEmojiByBot) {
+    input.lastEmojiByBot[input.botId] = emoji;
+  }
 
   return {
     taunt: {

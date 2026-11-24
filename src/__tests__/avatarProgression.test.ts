@@ -63,14 +63,14 @@ describe('12-Avatar Level + Coin Progression System', () => {
       ['bot', 'Bot', 1, 0],
       ['panda', 'Panda', 3, 500],
       ['shield', 'Shield', 7, 900],
-      ['tiger', 'Tiger', 10, 1400],
-      ['wolf', 'Wolf', 14, 2000],
-      ['rival', 'Rival', 17, 2700],
-      ['ninja', 'Ninja', 20, 3500],
-      ['jester', 'Jester', 24, 4300],
-      ['flame', 'Flame', 27, 5100],
-      ['champ', 'Champ', 30, 5800],
-      ['dragon', 'Dragon', 33, 6500],
+      ['tiger', 'Tiger', 10, 2000],
+      ['wolf', 'Wolf', 15, 3200],
+      ['rival', 'Rival', 20, 4500],
+      ['ninja', 'Ninja', 25, 6000],
+      ['jester', 'Jester', 30, 7500],
+      ['flame', 'Flame', 35, 9000],
+      ['champ', 'Champ', 38, 11000],
+      ['dragon', 'Dragon', 40, 13500],
     ];
 
     expected.forEach(([id, label, requiredLevel, coinCost], idx) => {
@@ -130,19 +130,19 @@ describe('12-Avatar Level + Coin Progression System', () => {
   test('unlockAvatar deducts coins, permanently unlocks, equips, and persists when level and coins are met', async () => {
     seedStoredProfile({
       ...(await playerProfileService.getProfile()),
-      level: 33,
-      coins: 8000,
+      level: 40,
+      coins: 15000,
     });
     await playerProfileService.getProfile(true);
 
     // Unlock Panda (Lv. 3 / 500 coins)
     const pandaUnlock = await playerProfileService.unlockAvatar('panda');
     assert.strictEqual(pandaUnlock.success, true);
-    assert.strictEqual(pandaUnlock.profile.coins, 7500);
+    assert.strictEqual(pandaUnlock.profile.coins, 14500);
     assert.strictEqual(pandaUnlock.profile.avatarId, 'panda');
     assert.ok(pandaUnlock.profile.unlockedAvatars.includes('panda'));
 
-    // Unlock Dragon (Lv. 33 / 6500 coins)
+    // Unlock Dragon (Lv. 40 / 13500 coins)
     const dragonUnlock = await playerProfileService.unlockAvatar('dragon');
     assert.strictEqual(dragonUnlock.success, true);
     assert.strictEqual(dragonUnlock.profile.coins, 1000);

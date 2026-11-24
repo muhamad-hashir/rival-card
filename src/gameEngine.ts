@@ -1291,6 +1291,15 @@ export function resolveBotPendingDefense(state: GameState): GameState {
   const bot = state.players[defense.targetIndex];
   if (!bot || !bot.isBot) return state;
 
+  if (bot.botDifficulty === 'soft') {
+    const humanOpponents = state.players.filter((p) => !p.isBot && p.id !== bot.id);
+    const maxHumanHand = humanOpponents.reduce((max, p) => Math.max(max, p.hand.length), 0);
+    // In mid-game (3+ cards), soft bots defend naturally; in endgame they let attacks land
+    if (bot.hand.length <= 2 || maxHumanHand <= 2) {
+      return resolveDefenseTakeHit(state, bot.id);
+    }
+  }
+
   if (defense.mirrorBounceCount === 1) {
     if (canDefendWithMirror(bot.hand, 1)) {
       return resolveDefenseWithMirror(state, bot.id);
@@ -1339,6 +1348,7 @@ export interface PlayerConfig {
   avatarId?: string;
   level?: number;
   countsTowardCareerStats?: boolean;
+  botDifficulty?: 'normal' | 'soft';
 }
 
 export interface CreateGameOptions {
@@ -1380,6 +1390,7 @@ export function createGame(
       ...(typeof config.countsTowardCareerStats === 'boolean'
         ? { countsTowardCareerStats: config.countsTowardCareerStats }
         : {}),
+      ...(config.botDifficulty ? { botDifficulty: config.botDifficulty } : {}),
     };
   });
 
@@ -2447,12 +2458,22 @@ export function makeBotMove(state: GameState): GameState {
   }
 
   let currentState = state;
+  const isSoftBot = botPlayer.botDifficulty === 'soft';
+  const humanOpponents = currentState.players.filter((p) => !p.isBot && p.id !== botPlayer.id);
+  const minHumanHand =
+    humanOpponents.length > 0
+      ? humanOpponents.reduce((min, p) => Math.min(min, p.hand.length), Infinity)
+      : Infinity;
+  const isSoftEndgame = isSoftBot && (botPlayer.hand.length <= 2 || minHumanHand <= 2);
 
   // 1. Opportunistic Catch: Catch any opponent who has 1 card without declaring RIVAL!
-  for (const opponent of currentState.players) {
-    if (opponent.id !== botPlayer.id && opponent.hand.length === 1 && !opponent.hasDeclaredRival) {
-      currentState = catchRival(currentState, botPlayer.id, opponent.id);
-      break;
+  // Soft recovery bots refrain from catching in endgame so the human isn't punished at the finish line.
+  if (!isSoftEndgame) {
+    for (const opponent of currentState.players) {
+      if (opponent.id !== botPlayer.id && opponent.hand.length === 1 && !opponent.hasDeclaredRival) {
+        currentState = catchRival(currentState, botPlayer.id, opponent.id);
+        break;
+      }
     }
   }
 
@@ -2465,8 +2486,8 @@ export function makeBotMove(state: GameState): GameState {
       isValidMove(c, topCard, currentState.activeColor, currentState.pendingDrawCount)
     );
 
-    // AI Bot Stacking Logic: Prioritize playing stackable card with 85-90% probability
-    const shouldStack = stackableCards.length > 0 && Math.random() < 0.88;
+    // Normal bots & mid-game soft bots stack competitively; in endgame soft bots concede the stack.
+    const shouldStack = !isSoftEndgame && stackableCards.length > 0 && Math.random() < 0.88;
 
     if (shouldStack) {
       const cardToStack = stackableCards[0];
@@ -2492,14 +2513,23 @@ export function makeBotMove(state: GameState): GameState {
 
   const activeColor = currentState.activeColor;
   const playableCards = botPlayer.hand.filter((c) => isValidMove(c, topCard, activeColor));
+  const cardsAvailableToDraw =
+    currentState.deck.length + Math.max(0, currentState.discardPile.length - 1);
 
-  // If bot has 2 cards and will play 1, declare RIVAL! ahead of time
-  if (botPlayer.hand.length === 2 && playableCards.length > 0) {
-    currentState = declareRival(currentState, botPlayer.id);
-  }
+  // Soft bots play normally while holding 3+ cards. Only when down to their final 1 card
+  // (where any play would immediately win) do they draw instead so they don't beat the human.
+  const softMustDrawToAvoidWinning =
+    isSoftBot && botPlayer.hand.length <= 1 && cardsAvailableToDraw > 0;
 
-  if (playableCards.length > 0) {
-    const chosenCard = pickBestBotCard(playableCards, currentState, botPlayer);
+  if (playableCards.length > 0 && !softMustDrawToAvoidWinning) {
+    // If bot has 2 cards and will play 1, declare RIVAL! ahead of time (soft bots sometimes forget in endgame)
+    if (botPlayer.hand.length === 2 && (!isSoftBot || Math.random() < 0.5)) {
+      currentState = declareRival(currentState, botPlayer.id);
+    }
+
+    const chosenCard = isSoftEndgame
+      ? pickSoftBotCard(playableCards)
+      : pickBestBotCard(playableCards, currentState, botPlayer);
     const chosenColor = isWildCard(chosenCard)
       ? getDominantColor(botPlayer.hand.filter((c) => c.id !== chosenCard.id))
       : undefined;
@@ -2507,12 +2537,19 @@ export function makeBotMove(state: GameState): GameState {
     return playCard(currentState, botPlayer.id, chosenCard.id, { chosenColor });
   }
 
-  // No playable cards in hand: Draw from deck
+  // No playable cards in hand (or soft bot holding back on its final winning card): Draw from deck
   const drawnState = playerDrawCard(currentState, botPlayer.id);
   const drawnCard = drawnState.drawnCard;
+  const drawnBotHandLen = drawnState.players[drawnState.currentTurnIndex]?.hand.length ?? 0;
 
-  if (drawnCard && isValidMove(drawnCard, topCard, drawnState.activeColor)) {
-    // If the freshly drawn card is playable, play it immediately!
+  if (
+    drawnCard &&
+    !softMustDrawToAvoidWinning &&
+    isValidMove(drawnCard, topCard, drawnState.activeColor) &&
+    !(isSoftBot && drawnBotHandLen <= 1) &&
+    !(isSoftEndgame && SOFT_ENDGAME_BRUTAL_VALUES.has(drawnCard.value))
+  ) {
+    // If the freshly drawn card is playable (and won't win/crush in soft endgame), play it immediately!
     const chosenColor = isWildCard(drawnCard)
       ? getDominantColor(drawnState.players[drawnState.currentTurnIndex].hand.filter((c) => c.id !== drawnCard.id))
       : undefined;
@@ -2520,8 +2557,35 @@ export function makeBotMove(state: GameState): GameState {
     return playCard(drawnState, botPlayer.id, drawnCard.id, { chosenColor });
   }
 
-  // Drawn card not playable: pass turn
+  // Drawn card not playable (or held back in soft endgame): pass turn
   return playerPassTurn(drawnState, botPlayer.id);
+}
+
+const SOFT_ENDGAME_BRUTAL_VALUES: ReadonlySet<CardValue> = new Set([
+  'wild_draw4',
+  'rival_swap',
+  'draw2',
+  'mute',
+]);
+
+/**
+ * Endgame gentle card selection for recovery bots (used when bot or human has <= 2 cards):
+ * avoids brutal +4 / Rival Swap / +2 / Mute combos when any non-brutal card is playable.
+ */
+export function pickSoftBotCard(playableCards: readonly Card[]): Card {
+  const nonDisruptiveNumbers = playableCards.filter(
+    (c) => isNumberCard(c) && !SOFT_ENDGAME_BRUTAL_VALUES.has(c.value)
+  );
+  if (nonDisruptiveNumbers.length > 0) {
+    return nonDisruptiveNumbers[0];
+  }
+
+  const gentleNonAttacks = playableCards.filter((c) => !SOFT_ENDGAME_BRUTAL_VALUES.has(c.value));
+  if (gentleNonAttacks.length > 0) {
+    return gentleNonAttacks[0];
+  }
+
+  return playableCards[0];
 }
 
 /**

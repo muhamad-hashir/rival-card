@@ -44,6 +44,7 @@ export interface Player {
   avatarId?: string;
   level?: number;
   countsTowardCareerStats?: boolean;
+  botDifficulty?: 'normal' | 'soft';
   consecutiveMissedTurns?: number;
   isBotControlled?: boolean;
   isDisconnected?: boolean;
@@ -188,6 +189,7 @@ export interface GameState {
   timeoutUsedTieBreaker?: boolean;
   timeoutStandings?: TimeoutStandingBreakdown[];
   is2v2?: boolean;
+  isRecoveryMatch?: boolean;
   forfeitedByPlayerId?: string;
   disconnectOutcomeReason?: string;
 }

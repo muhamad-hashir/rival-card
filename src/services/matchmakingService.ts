@@ -10,6 +10,7 @@ import {
   QUICK_MATCH_SEARCH_TIMEOUT_SECONDS,
   selectNextQuickMatchBot,
 } from '../constants/quickMatchBots';
+import { adService } from './adService';
 import { createGame } from '../gameEngine';
 import type { GameState } from '../types';
 
@@ -24,6 +25,7 @@ export interface MatchFoundResult {
   myPlayerId: string;
   roomCode: string;
   isBotMatch: boolean;
+  isRecoveryMatch?: boolean;
   opponentName: string;
   opponentAvatarId: string;
   opponentLevel?: number;
@@ -131,20 +133,36 @@ export class MatchmakingService {
       this.callbacks.onTick?.(this.elapsedSeconds);
     }, 1000);
 
-    // 2. 5-7s (default 6s) Zero-Empty-Lobby Fallback Timer
+    // 2. Check if player is on a 2+ consecutive loss streak -> silently route to a
+    //    natural-paced soft human-named undercover bot so they regain momentum & win.
+    const shouldForceRecoveryBot = await adService.shouldTriggerRecoveryBotMatch().catch(() => false);
+    if (this.searchEpoch !== myEpoch || this.status !== 'searching') {
+      return;
+    }
+
+    if (shouldForceRecoveryBot) {
+      const recoveryDelaySeconds = Math.min(Math.max(0.05, timeoutSeconds), 2.2);
+      this.timer = setTimeout(() => {
+        if (this.searchEpoch !== myEpoch || this.status !== 'searching') return;
+        void this.handleBotFallback(myEpoch, { forceRecoverySoftBot: true });
+      }, recoveryDelaySeconds * 1000);
+      return;
+    }
+
+    // 3. 5-7s (default 6s) Zero-Empty-Lobby Fallback Timer
     this.timer = setTimeout(() => {
       if (this.searchEpoch !== myEpoch || this.status !== 'searching') return;
       void this.handleBotFallback(myEpoch);
     }, Math.max(0.05, timeoutSeconds) * 1000);
 
-    // 3. Connect to Supabase Realtime Presence channel
+    // 4. Connect to Supabase Realtime Presence channel
     try {
       this.setupChannel(player, myEpoch);
     } catch (err: any) {
       console.warn('Matchmaking channel setup warning:', err?.message || err);
     }
 
-    // 4. Search Supabase `rooms` for a waiting human opponent (or publish a clean waiting row)
+    // 5. Search Supabase `rooms` for a waiting human opponent (or publish a clean waiting row)
     void this.tryJoinOrPublishWaitingRoom(player, myEpoch);
   }
 
@@ -588,7 +606,10 @@ export class MatchmakingService {
    * 6-Second Zero-Empty-Lobby Fallback: deletes any empty waiting room in Supabase
    * and launches a Quick Match seeded from the smart undercover / signature bot rotation.
    */
-  public async handleBotFallback(expectedEpoch?: number): Promise<void> {
+  public async handleBotFallback(
+    expectedEpoch?: number,
+    options?: { forceRecoverySoftBot?: boolean }
+  ): Promise<void> {
     const epoch = expectedEpoch ?? this.searchEpoch;
     if (
       this.searchEpoch !== epoch ||
@@ -608,8 +629,13 @@ export class MatchmakingService {
     this.cleanupChannel().catch(() => {});
     this.cleanupWaitingRoom().catch(() => {});
 
+    const isRecoveryMatch =
+      options?.forceRecoverySoftBot ??
+      (await adService.shouldTriggerRecoveryBotMatch().catch(() => false));
+
     const botProfile = await selectNextQuickMatchBot({
       excludeBotId: this.lastBotId ?? undefined,
+      forceUndercover: isRecoveryMatch,
     });
     if (this.searchEpoch !== epoch) return;
 
@@ -623,6 +649,7 @@ export class MatchmakingService {
       avatarId: botProfile.avatarId,
       level: botProfile.level,
       countsTowardCareerStats: botProfile.countsTowardCareerStats,
+      ...(isRecoveryMatch ? { botDifficulty: 'soft' as const } : {}),
     };
 
     const initialState = createGame(
@@ -632,12 +659,16 @@ export class MatchmakingService {
       ],
       'vs_bot'
     );
+    if (isRecoveryMatch) {
+      initialState.isRecoveryMatch = true;
+    }
 
     activeCallbacks.onMatchFound?.({
       initialState,
       myPlayerId: player.id,
       roomCode: 'BOT_MATCH',
       isBotMatch: true,
+      isRecoveryMatch,
       opponentName: botOpponent.name,
       opponentAvatarId: botOpponent.avatarId,
       opponentLevel: botProfile.level,

@@ -17,9 +17,12 @@ import {
   selectQuickMatchBotForMatchNumber,
 } from '../constants/quickMatchBots';
 import { supabase } from '../services/supabase';
+import { adService } from '../services/adService';
+import { makeBotMove } from '../gameEngine';
 
 beforeEach(async () => {
   await resetQuickMatchBotCounter();
+  await adService.resetForTesting();
 });
 
 after(async () => {
@@ -280,5 +283,117 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
     await service.cancelMatchmaking();
     assert.strictEqual(service.getActiveWaitingRoomCode(), null);
     assert.strictEqual(service.getStatus(), 'idle');
+  });
+
+  test('2-loss recovery routes player to a soft human-named undercover bot (never a signature bot) that avoids aggressive wins', async () => {
+    // Simulate 2 consecutive losses
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: false });
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: false });
+    assert.strictEqual(await adService.shouldTriggerRecoveryBotMatch(), true);
+
+    const service = new MatchmakingService();
+    const player: QueuedPlayer = {
+      id: 'human_recovery',
+      name: 'ComebackKid',
+      avatarId: 'fox',
+    };
+
+    const matchResult = await new Promise<any>((resolve) => {
+      service.startMatchmaking(
+        player,
+        {
+          onMatchFound: (res) => resolve(res),
+        },
+        0.05
+      );
+    });
+
+    assert.strictEqual(matchResult.isBotMatch, true);
+    assert.strictEqual(matchResult.isRecoveryMatch, true);
+    assert.strictEqual(matchResult.initialState.isRecoveryMatch, true);
+    assert.ok(
+      UNDERCOVER_QUICK_MATCH_BOTS.some((b) => b.name === matchResult.opponentName),
+      `Recovery opponent "${matchResult.opponentName}" must be one of the 20 human-named undercover bots`
+    );
+    assert.strictEqual(
+      SIGNATURE_QUICK_MATCH_BOTS.some((s) => s.name === matchResult.opponentName),
+      false,
+      'Recovery match must NEVER pair against a named signature bot'
+    );
+
+    const botSeat = matchResult.initialState.players[1];
+    assert.strictEqual(botSeat.botDifficulty, 'soft');
+
+    // 1. Mid-game (bot holds 3+ cards, human holds 5+ cards): plays competitively including tactical +2 / Shield
+    const midGameState = {
+      ...matchResult.initialState,
+      currentTurnIndex: 1,
+      activeColor: 'red' as const,
+      discardPile: [{ id: 'top_red_5', color: 'red' as const, value: '5' as const, scoreValue: 5 }],
+      players: [
+        { ...matchResult.initialState.players[0] }, // 7 cards
+        {
+          ...botSeat,
+          hand: [
+            { id: 'bot_mid_draw2', color: 'red' as const, value: 'draw2' as const, scoreValue: 20 },
+            { id: 'bot_mid_blue_1', color: 'blue' as const, value: '1' as const, scoreValue: 1 },
+            { id: 'bot_mid_yellow_4', color: 'yellow' as const, value: '4' as const, scoreValue: 4 },
+          ],
+        },
+      ],
+    };
+    const afterMidTurn = makeBotMove(midGameState);
+    assert.strictEqual(
+      afterMidTurn.discardPile[afterMidTurn.discardPile.length - 1].value,
+      'draw2',
+      'Soft recovery bot should still play valid action cards naturally in mid-game (3+ cards)'
+    );
+
+    // 2. Endgame (2 cards, non-winning safe card playable): plays the safe card instead of endlessly drawing
+    const endgameSafePlayState = {
+      ...matchResult.initialState,
+      currentTurnIndex: 1,
+      activeColor: 'red' as const,
+      discardPile: [{ id: 'top_red_5', color: 'red' as const, value: '5' as const, scoreValue: 5 }],
+      players: [
+        { ...matchResult.initialState.players[0] },
+        {
+          ...botSeat,
+          hand: [
+            { id: 'bot_end_red_3', color: 'red' as const, value: '3' as const, scoreValue: 3 },
+            { id: 'bot_end_wild4', color: 'wild' as const, value: 'wild_draw4' as const, scoreValue: 50 },
+          ],
+        },
+      ],
+    };
+    const afterEndgameSafe = makeBotMove(endgameSafePlayState);
+    assert.strictEqual(afterEndgameSafe.isGameOver, false);
+    assert.strictEqual(
+      afterEndgameSafe.discardPile[afterEndgameSafe.discardPile.length - 1].id,
+      'bot_end_red_3',
+      'Soft bot at 2 cards plays safe non-winning card instead of drawing endlessly or dropping +4'
+    );
+    assert.strictEqual(afterEndgameSafe.players[1].hand.length, 1);
+
+    // 3. Final card (1 card left): avoids playing a winning final card and draws naturally
+    const almostWinState = {
+      ...matchResult.initialState,
+      currentTurnIndex: 1,
+      activeColor: 'red' as const,
+      discardPile: [{ id: 'top_red_5', color: 'red' as const, value: '5' as const, scoreValue: 5 }],
+      players: [
+        { ...matchResult.initialState.players[0] },
+        {
+          ...botSeat,
+          hand: [{ id: 'bot_last_red_7', color: 'red' as const, value: '7' as const, scoreValue: 7 }],
+        },
+      ],
+    };
+
+    const afterSoftTurn = makeBotMove(almostWinState);
+    assert.strictEqual(afterSoftTurn.isGameOver, false, 'Soft recovery bot must yield instead of winning');
+    assert.ok(afterSoftTurn.players[1].hand.length >= 2, 'Soft recovery bot drew instead of emptying its hand');
+
+    await service.cancelMatchmaking();
   });
 });

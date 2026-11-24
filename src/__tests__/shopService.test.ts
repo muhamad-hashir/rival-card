@@ -88,9 +88,9 @@ describe('Streamlined Shop Catalog, Card Backs, Emotes & Currency Packs', () => 
 
     const expectedEmotes = [
       { id: 'emote_thinking', name: 'Thinking...', amount: 1200 },
-      { id: 'emote_oops', name: 'Oops!', amount: 1500 },
-      { id: 'emote_gg', name: 'GG!', amount: 2000 },
-      { id: 'emote_nice_try', name: 'Nice Try!', amount: 2500 },
+      { id: 'emote_oops', name: 'Oops!', amount: 2000 },
+      { id: 'emote_gg', name: 'GG!', amount: 3200 },
+      { id: 'emote_nice_try', name: 'Nice Try!', amount: 4500 },
     ];
 
     for (const expected of expectedEmotes) {
@@ -116,7 +116,11 @@ describe('Streamlined Shop Catalog, Card Backs, Emotes & Currency Packs', () => 
     assert.strictEqual(equipped.name, 'Classic Slate');
   });
 
-  test('Card Backs can be purchased with Coins/Gems and equipped for gameplay', async () => {
+  test('Card Backs reflect rebalanced pricing and can be purchased with Coins/Gems and equipped for gameplay', async () => {
+    assert.strictEqual(shopService.getItemById('card_back_crimson')?.price.amount, 8000);
+    assert.strictEqual(shopService.getItemById('card_back_golden')?.price.amount, 12000);
+    assert.strictEqual(shopService.getItemById('card_back_cyber')?.price.amount, 50);
+
     await playerProfileService.addCurrency(15000, 60);
 
     const crimsonRes = await shopService.buyItem('card_back_crimson');
@@ -131,7 +135,7 @@ describe('Streamlined Shop Catalog, Card Backs, Emotes & Currency Packs', () => 
     assert.strictEqual(equipped.id, 'card_back_cyber');
 
     const profileAfter = await playerProfileService.getProfile();
-    assert.strictEqual(profileAfter.coins, 10250); // 250 + 15000 - 5000
+    assert.strictEqual(profileAfter.coins, 7250); // 250 + 15000 - 8000
     assert.strictEqual(profileAfter.gems, 20); // 10 + 60 - 50
   });
 
@@ -160,7 +164,7 @@ describe('Streamlined Shop Catalog, Card Backs, Emotes & Currency Packs', () => 
   });
 
   test('Equipping an owned item updates equipped state and rejects unowned items', async () => {
-    await playerProfileService.addCurrency(3500, 0);
+    await playerProfileService.addCurrency(4500, 0);
     await shopService.buyItem('emote_thinking');
     await shopService.buyItem('emote_gg');
 

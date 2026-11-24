@@ -7,10 +7,13 @@ import {
   BOT_EMOTE_DELAY_MIN_MS,
   BOT_EMOTE_POOLS,
   BOT_EMOTE_PROBABILITY,
+  EXPRESSIVE_PERSONA_BOT_IDS,
+  MAX_BOT_EMOTES_PER_MATCH,
   TAUNT_EMOJIS,
   classifyBotPlayedCardEmoteEvent,
   evaluateBotEmoteTrigger,
   getBotEmoteDelayMs,
+  getBotEmotePersona,
   isUndercoverEmoteEligible,
   pickBotEmoteForEvent,
 } from '../utils/botEmotes';
@@ -42,7 +45,7 @@ describe('Bot Situational Emoji Reactions Engine', () => {
 
     for (const ev of events) {
       const pool = BOT_EMOTE_POOLS[ev];
-      assert.ok(pool.length >= 2, `Pool for ${ev} should have varied emojis`);
+      assert.ok(pool.length >= 4, `Pool for ${ev} should have varied emojis`);
 
       const first = pickBotEmoteForEvent(ev, () => 0);
       const last = pickBotEmoteForEvent(ev, () => 0.9999);
@@ -58,10 +61,109 @@ describe('Bot Situational Emoji Reactions Engine', () => {
     }
   });
 
-  test('enforces ~40% probability guardrail and never triggers for non-AI human seats', () => {
+  test('undercover bots have varied personas, distinct emoji picks, and non-spammy match caps', () => {
+    const personas = new Set(
+      UNDERCOVER_QUICK_MATCH_BOTS.map((b) => getBotEmotePersona(b.id).style)
+    );
+    assert.ok(
+      personas.size >= 3,
+      '20 undercover bots must span multiple distinct emote personalities'
+    );
+
+    // Distinct bots do not all pick the exact same emoji sequence
+    const firstActionEmojis = new Set(
+      UNDERCOVER_QUICK_MATCH_BOTS.map((b) =>
+        pickBotEmoteForEvent('bot_action_card', () => 0, { botId: b.id })
+      )
+    );
+    assert.ok(
+      firstActionEmojis.size >= 3,
+      'Different undercover bots must favor varied emojis rather than all using the same one'
+    );
+
+    // Anti-spam: bots cannot repeat the same emoji back-to-back or exceed per-match cap
+    const cooldowns: Record<string, number> = {};
+    const counts: Record<string, number> = {};
+    const lastEmoji: Record<string, string> = {};
+    const persona = getBotEmotePersona('qm_bot_hamza');
+
+    const emitted: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const res = evaluateBotEmoteTrigger({
+        botId: 'qm_bot_hamza',
+        botName: 'Hamza_OP',
+        isAiSeat: true,
+        event: 'bot_action_card',
+        lastEmoteAtByBot: cooldowns,
+        emoteCountByBot: counts,
+        lastEmojiByBot: lastEmoji,
+        nowMs: 100_000 + i * 60_000,
+        rng: () => 0.01,
+      });
+      if (res) {
+        emitted.push(res.taunt.emoji);
+      }
+    }
+
+    assert.strictEqual(emitted.length, persona.maxEmotesPerMatch);
+    assert.ok(emitted.length <= 3, 'Balanced undercover bot caps at 2-3 emotes per match');
+    for (let i = 1; i < emitted.length; i++) {
+      assert.notStrictEqual(
+        emitted[i],
+        emitted[i - 1],
+        'Bot must not repeat the exact same emoji back-to-back'
+      );
+    }
+  });
+
+  test('2-3 specific undercover bots have an expressive chatty persona (45-55% chance, 10-14s cooldown, 5-6 cap)', () => {
+    assert.ok(
+      EXPRESSIVE_PERSONA_BOT_IDS.size >= 2 && EXPRESSIVE_PERSONA_BOT_IDS.size <= 3,
+      'Must have 2-3 expressive undercover bots'
+    );
+
+    const expressiveBotId = Array.from(EXPRESSIVE_PERSONA_BOT_IDS)[0];
+    const persona = getBotEmotePersona(expressiveBotId);
+    assert.strictEqual(persona.style, 'expressive');
+    assert.ok(persona.probability >= 0.45 && persona.probability <= 0.55);
+    assert.ok(persona.cooldownMs >= 10_000 && persona.cooldownMs <= 14_000);
+    assert.ok(persona.maxEmotesPerMatch >= 5 && persona.maxEmotesPerMatch <= MAX_BOT_EMOTES_PER_MATCH);
+
+    const cooldowns: Record<string, number> = {};
+    const counts: Record<string, number> = {};
+    const lastEmoji: Record<string, string> = {};
+    const emitted: string[] = [];
+
+    for (let i = 0; i < 10; i++) {
+      const res = evaluateBotEmoteTrigger({
+        botId: expressiveBotId,
+        botName: 'Bilal_King',
+        isAiSeat: true,
+        event: 'bot_action_card',
+        lastEmoteAtByBot: cooldowns,
+        emoteCountByBot: counts,
+        lastEmojiByBot: lastEmoji,
+        nowMs: 100_000 + i * persona.cooldownMs,
+        rng: () => 0.48, // Higher than balanced bots (~0.14-0.32) yet passes expressive ~0.50!
+      });
+      if (res) {
+        emitted.push(res.taunt.emoji);
+      }
+    }
+
+    assert.strictEqual(emitted.length, persona.maxEmotesPerMatch);
+    for (let i = 1; i < emitted.length; i++) {
+      assert.notStrictEqual(
+        emitted[i],
+        emitted[i - 1],
+        'Expressive bot must still never repeat the exact same emoji back-to-back'
+      );
+    }
+  });
+
+  test('enforces conservative probability guardrail and never triggers for non-AI human seats', () => {
     const cooldowns: Record<string, number> = {};
 
-    // Non-AI human seat is never auto-emoted
     const humanRes = evaluateBotEmoteTrigger({
       botId: 'human_1',
       botName: 'Human',
@@ -69,12 +171,11 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       event: 'bot_action_card',
       lastEmoteAtByBot: cooldowns,
       nowMs: 100_000,
-      rng: () => 0.1,
+      rng: () => 0.05,
     });
     assert.strictEqual(humanRes, null);
 
-    // Probability check: rng() < 0.4 triggers, rng() >= 0.4 skips
-    assert.strictEqual(BOT_EMOTE_PROBABILITY, 0.4);
+    assert.ok(BOT_EMOTE_PROBABILITY <= 0.3);
 
     const skipped = evaluateBotEmoteTrigger({
       botId: 'qm_bot_hamza',
@@ -83,7 +184,7 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       event: 'bot_action_card',
       lastEmoteAtByBot: cooldowns,
       nowMs: 100_000,
-      rng: () => 0.45,
+      rng: () => 0.5,
     });
     assert.strictEqual(skipped, null);
 
@@ -95,10 +196,10 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       event: 'bot_action_card',
       lastEmoteAtByBot: cooldowns,
       nowMs: 100_000,
-      rng: () => 0.2,
+      rng: () => 0.05,
     });
     assert.ok(triggered);
-    assert.ok(BOT_EMOTE_POOLS.bot_action_card.includes(triggered.taunt.emoji));
+    assert.ok((TAUNT_EMOJIS as readonly string[]).includes(triggered.taunt.emoji));
     assert.strictEqual(triggered.taunt.senderId, 'qm_bot_hamza');
     assert.strictEqual(triggered.taunt.senderName, 'Hamza_OP');
     assert.ok(
@@ -146,7 +247,6 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       assert.strictEqual(sigResult, null, `${sBot.name} evaluateBotEmoteTrigger must always return null`);
     }
 
-    // Also block Solo RivalBot and humans
     assert.strictEqual(
       isUndercoverEmoteEligible({ id: 'bot1', name: 'RivalBot', isBot: true }),
       false
@@ -157,8 +257,10 @@ describe('Bot Situational Emoji Reactions Engine', () => {
     );
   });
 
-  test('enforces per-bot 15-second cooldown while allowing distinct undercover bots to emote independently', () => {
+  test('enforces per-bot persona cooldown while allowing distinct undercover bots to emote independently', () => {
     const cooldowns: Record<string, number> = {};
+    const aaravPersona = getBotEmotePersona('qm_bot_aarav');
+    assert.ok(BOT_EMOTE_COOLDOWN_MS >= 20_000);
 
     // Undercover Bot A emotes at t = 50,000ms
     const first = evaluateBotEmoteTrigger({
@@ -169,11 +271,11 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       event: 'bot_hit_draw',
       lastEmoteAtByBot: cooldowns,
       nowMs: 50_000,
-      rng: () => 0.1,
+      rng: () => 0.05,
     });
     assert.ok(first);
 
-    // Undercover Bot A blocked at +10s (< 15s cooldown)
+    // Undercover Bot A blocked before its cooldown expires
     const blocked = evaluateBotEmoteTrigger({
       botId: 'qm_bot_aarav',
       botName: 'Aarav_OP',
@@ -181,8 +283,8 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       countsTowardCareerStats: true,
       event: 'bot_one_card',
       lastEmoteAtByBot: cooldowns,
-      nowMs: 50_000 + 10_000,
-      rng: () => 0.1,
+      nowMs: 50_000 + aaravPersona.cooldownMs - 1000,
+      rng: () => 0.05,
     });
     assert.strictEqual(blocked, null);
 
@@ -195,12 +297,12 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       event: 'human_slow_turn',
       lastEmoteAtByBot: cooldowns,
       nowMs: 50_000 + 2_000,
-      rng: () => 0.1,
+      rng: () => 0.05,
     });
     assert.ok(otherBot);
-    assert.ok(BOT_EMOTE_POOLS.human_slow_turn.includes(otherBot.taunt.emoji));
+    assert.ok((TAUNT_EMOJIS as readonly string[]).includes(otherBot.taunt.emoji));
 
-    // Undercover Bot A allowed again once >= 15s elapsed
+    // Undercover Bot A allowed again once cooldown elapsed
     const afterCooldown = evaluateBotEmoteTrigger({
       botId: 'qm_bot_aarav',
       botName: 'Aarav_OP',
@@ -208,15 +310,15 @@ describe('Bot Situational Emoji Reactions Engine', () => {
       countsTowardCareerStats: true,
       event: 'match_end',
       lastEmoteAtByBot: cooldowns,
-      nowMs: 50_000 + BOT_EMOTE_COOLDOWN_MS,
-      rng: () => 0.1,
+      nowMs: 50_000 + aaravPersona.cooldownMs,
+      rng: () => 0.05,
     });
     assert.ok(afterCooldown);
-    assert.ok(BOT_EMOTE_POOLS.match_end.includes(afterCooldown.taunt.emoji));
+    assert.ok((TAUNT_EMOJIS as readonly string[]).includes(afterCooldown.taunt.emoji));
   });
 
-  test('natural reaction delay stays within 600ms-1200ms', () => {
-    assert.strictEqual(getBotEmoteDelayMs(() => 0), 600);
-    assert.strictEqual(getBotEmoteDelayMs(() => 0.9999), 1200);
+  test('natural reaction delay stays within 900ms-2200ms', () => {
+    assert.strictEqual(getBotEmoteDelayMs(() => 0), 900);
+    assert.strictEqual(getBotEmoteDelayMs(() => 0.9999), 2200);
   });
 });

@@ -39,6 +39,7 @@ import {
   makeBotMove,
   MATCH_DURATION_MS,
   pickBestBotCard,
+  pickSoftBotCard,
   playCard,
   playPairCards,
   playerDrawCard,
@@ -135,6 +136,7 @@ import {
   tutorialService,
   TutorialRewardResult,
 } from '../services/tutorialService';
+import { adService } from '../services/adService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
@@ -505,6 +507,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Handle returning to home screen with portrait orientation lock
   const handleExitToHome = async () => {
     try {
+      if (!isTutorial && gameState.isGameOver) {
+        await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+      }
       if (disconnectCountdownRef.current) {
         clearInterval(disconnectCountdownRef.current);
         disconnectCountdownRef.current = null;
@@ -670,6 +675,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       }
 
       clearActiveMatchSession().catch(() => {});
+      // Smart Post-Match Interstitial tracking (every 3rd completed non-tutorial match,
+      // direct ad after winning a 2-loss recovery match, and never after 3+ consecutive losses)
+      adService
+        .recordCompletedMatch({
+          isTutorial: false,
+          isWinner,
+          wasRecoveryBotMatch: Boolean(gameState.isRecoveryMatch),
+        })
+        .catch(() => {});
       if (isOnlineMode && !gameState.seriesState?.isPrivateSeries) {
         multiplayerService.cleanupFinishedRoom().catch(() => {});
       }
@@ -740,6 +754,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // PURELY LOCAL AI BOT SITUATIONAL EMOJI REACTIONS (ZERO SUPABASE WRITES)
   // =========================================================================
   const botEmoteCooldownRef = useRef<Record<string, number>>({});
+  const botEmoteCountRef = useRef<Record<string, number>>({});
+  const botLastEmojiRef = useRef<Record<string, string>>({});
   const botEmoteTimersRef = useRef<NodeJS.Timeout[]>([]);
   const prevGameStateForEmotesRef = useRef<GameState>(gameState);
   const slowTurnEmoteCheckedTurnRef = useRef<number>(-1);
@@ -755,6 +771,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       countsTowardCareerStats: botPlayer.countsTowardCareerStats,
       event,
       lastEmoteAtByBot: botEmoteCooldownRef.current,
+      emoteCountByBot: botEmoteCountRef.current,
+      lastEmojiByBot: botLastEmojiRef.current,
     });
     if (!triggered) return;
 
@@ -882,9 +900,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           catchTimerRef.current = null;
         }, 2500);
 
-        // If human player dropped to 1 card without calling Rival, bots react with random delay (disabled during Tutorial)
+        // If human player dropped to 1 card without calling Rival, bots react with random delay (disabled during Tutorial and for soft recovery bots)
         if (player.id === myPlayer.id && !isTutorial) {
-          const activeBots = gameState.players.filter((p) => p.isBot && p.id !== player.id);
+          const activeBots = gameState.players.filter(
+            (p) => p.isBot && p.id !== player.id && p.botDifficulty !== 'soft'
+          );
           if (activeBots.length > 0) {
             const reactiveBot = activeBots[Math.floor(Math.random() * activeBots.length)];
             const reactionDelay = 1200 + Math.random() * 1000; // 1.2s - 2.2s
@@ -1499,12 +1519,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     resetMatchCountdown(MATCH_DURATION_MS);
     setSeriesNextCountdown(null);
     setRivalCountdown(null);
+    botEmoteCountRef.current = {};
+    botLastEmojiRef.current = {};
     runDealingAnimation(players);
   }, [runDealingAnimation, resetMatchTrackingIds, resetMatchCountdown]);
 
   // Handle post-game "Play Again" action
   const handlePlayAgain = async () => {
     hapticsService.cardSnap();
+    if (!isTutorial && gameState.isGameOver) {
+      await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+    }
     soundService.playCardDraw();
     if (rivalTimerRef.current) {
       clearInterval(rivalTimerRef.current);
@@ -1547,8 +1572,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       }
       runDealingAnimation(playerConfigs);
     } else if (activeIsQuickMatch) {
+      botEmoteCountRef.current = {};
+      botLastEmojiRef.current = {};
+      const isRecoveryRematch = await adService.shouldTriggerRecoveryBotMatch().catch(() => false);
       const nextBot = await selectNextQuickMatchBot({
         excludeBotId: gameState.players.find((p) => p.isBot)?.id,
+        forceUndercover: isRecoveryRematch,
       });
       const cached = playerProfile || playerProfileService.getCachedProfile();
       const humanPlayer = gameState.players.find((p) => !p.isBot) || myPlayer;
@@ -1566,9 +1595,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           avatarId: nextBot.avatarId,
           level: nextBot.level,
           countsTowardCareerStats: nextBot.countsTowardCareerStats,
+          ...(isRecoveryRematch ? { botDifficulty: 'soft' as const } : {}),
         },
       ];
       const freshState = createGame(rematchPlayers, 'vs_bot', { allowStacking: true });
+      if (isRecoveryRematch) {
+        freshState.isRecoveryMatch = true;
+      }
       lastTopDiscardIdRef.current =
         freshState.discardPile[freshState.discardPile.length - 1]?.id ?? null;
       lastPendingColorChoiceRef.current = Boolean(freshState.pendingColorChoice);
@@ -1686,6 +1719,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Handle post-game or header "Quit Room" action
   const handleQuitGame = useCallback(async () => {
     hapticsService.cardSnap();
+    if (!isTutorial && isGameOverRef.current) {
+      await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+    }
     if (disconnectCountdownRef.current) {
       clearInterval(disconnectCountdownRef.current);
       disconnectCountdownRef.current = null;
@@ -2325,21 +2361,30 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
 
     // Step 2: If bot has already drawn this turn, pause to deliberate before playing or passing
+    const isSoftBot = currentPlayer.botDifficulty === 'soft';
+    const isSoftEndgame = isSoftBot && (currentPlayer.hand.length <= 2 || myPlayer.hand.length <= 2);
+
     if (gameState.hasDrawnThisTurn) {
       const postDrawDelay = settings.fastBots ? 750 : 1400;
       const postDrawTimer = setTimeout(() => {
         setIsBotProcessing(true);
         try {
           const drawnCard = gameState.drawnCard;
-          if (drawnCard && isValidMove(drawnCard, topDiscardCard, gameState.activeColor)) {
+          const softAvoidPlay =
+            isSoftBot &&
+            (currentPlayer.hand.length <= 1 ||
+              (isSoftEndgame &&
+                drawnCard &&
+                ['wild_draw4', 'rival_swap', 'draw2', 'mute'].includes(drawnCard.value)));
+          if (drawnCard && isValidMove(drawnCard, topDiscardCard, gameState.activeColor) && !softAvoidPlay) {
             const pair = hasIdenticalPair(currentPlayer.hand, drawnCard);
-            const playAsPair = Boolean(pair);
+            const playAsPair = Boolean(pair) && !(isSoftBot && currentPlayer.hand.length <= 2);
             const chosenColor = isWildCard(drawnCard)
               ? getDominantColor(currentPlayer.hand.filter((c) => c.id !== drawnCard.id && (!pair || c.id !== pair.id)))
               : undefined;
             let stateToPlay = gameState;
             const remainingAfter = currentPlayer.hand.length - (playAsPair ? 2 : 1);
-            if (remainingAfter === 1 && Math.random() < 0.75) {
+            if (remainingAfter === 1 && Math.random() < (isSoftBot ? 0.45 : 0.75)) {
               stateToPlay = declareRival(stateToPlay, currentPlayer.id);
             }
             let nextState: GameState;
@@ -2377,10 +2422,13 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       try {
         let stateForBot = gameState;
         // 1. Opportunistic Catch: Catch any opponent who has 1 card without declaring RIVAL!
-        for (const opponent of stateForBot.players) {
-          if (opponent.id !== currentPlayer.id && opponent.hand.length === 1 && !opponent.hasDeclaredRival) {
-            stateForBot = catchRival(stateForBot, currentPlayer.id, opponent.id);
-            break;
+        // Soft recovery bots avoid catching at the finish line so the human isn't penalized right before winning.
+        if (!isSoftEndgame) {
+          for (const opponent of stateForBot.players) {
+            if (opponent.id !== currentPlayer.id && opponent.hand.length === 1 && !opponent.hasDeclaredRival) {
+              stateForBot = catchRival(stateForBot, currentPlayer.id, opponent.id);
+              break;
+            }
           }
         }
 
@@ -2390,8 +2438,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             isValidMove(c, topDiscardCard, stateForBot.activeColor, stateForBot.pendingDrawCount)
           );
 
-          // Bot AI Stacking Logic: Prioritize playing stackable card with ~88% probability
-          const shouldStack = stackableCards.length > 0 && Math.random() < 0.88;
+          // Normal bots & mid-game soft bots stack competitively; in endgame soft bots concede the stack.
+          const shouldStack = !isSoftEndgame && stackableCards.length > 0 && Math.random() < 0.88;
 
           if (shouldStack) {
             const cardToStack = stackableCards[0];
@@ -2479,17 +2527,24 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         const playableCards = currentPlayer.hand.filter((c) =>
           isValidMove(c, topDiscardCard, stateForBot.activeColor, stateForBot.pendingDrawCount || 0)
         );
+        const cardsInPool =
+          stateForBot.deck.length + Math.max(0, stateForBot.discardPile.length - 1);
+        const softMustDrawToAvoidWinning =
+          isSoftBot && currentPlayer.hand.length <= 1 && cardsInPool > 0;
 
-        if (playableCards.length > 0) {
-          const chosenCard = pickBestBotCard(playableCards, stateForBot, currentPlayer);
+        if (playableCards.length > 0 && !softMustDrawToAvoidWinning) {
+          const chosenCard = isSoftEndgame
+            ? pickSoftBotCard(playableCards)
+            : pickBestBotCard(playableCards, stateForBot, currentPlayer);
           const identicalPair = hasIdenticalPair(currentPlayer.hand, chosenCard);
-          const playAsPair = Boolean(identicalPair);
-          const pairCard = identicalPair;
+          // Soft bots never pair-play when holding <= 2 cards so they don't accidentally win on a pair
+          const playAsPair = Boolean(identicalPair) && !(isSoftBot && currentPlayer.hand.length <= 2);
+          const pairCard = playAsPair ? identicalPair : undefined;
 
-          // Pre-declare RIVAL if playing will leave bot with 1 card (with 75% memory rate)
+          // Pre-declare RIVAL if playing will leave bot with 1 card (soft bots forget more often in endgame)
           const remainingAfterPlay = currentPlayer.hand.length - (playAsPair ? 2 : 1);
           if (remainingAfterPlay === 1) {
-            const botRemembers = Math.random() < 0.75;
+            const botRemembers = Math.random() < (isSoftBot ? 0.45 : 0.75);
             if (botRemembers) {
               stateForBot = declareRival(stateForBot, currentPlayer.id);
             }
@@ -4099,9 +4154,24 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           timeoutStandings={gameState.timeoutStandings}
           onPlayAgain={handlePlayAgain}
           onQuitRoom={handleQuitGame}
-          onPlayWithMoreBots={() => handleStartGame('vs_bot_4p')}
-          onPlay1v1={() => handleStartGame('vs_bot_2p')}
-          onSelectPreset={(preset) => handleStartGame(preset)}
+          onPlayWithMoreBots={async () => {
+            if (!isTutorial && gameState.isGameOver) {
+              await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+            }
+            handleStartGame('vs_bot_4p');
+          }}
+          onPlay1v1={async () => {
+            if (!isTutorial && gameState.isGameOver) {
+              await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+            }
+            handleStartGame('vs_bot_2p');
+          }}
+          onSelectPreset={async (preset) => {
+            if (!isTutorial && gameState.isGameOver) {
+              await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+            }
+            handleStartGame(preset);
+          }}
           onMainMenu={handleExitToHome}
         />
 

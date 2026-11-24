@@ -30,6 +30,7 @@ import { settingsService } from './src/services/settingsService';
 import { Asset } from 'expo-asset';
 import { audioService } from './src/services/audioService';
 import { soundService } from './src/services/soundService';
+import { adService } from './src/services/adService';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 let ExpoAudio: typeof import('expo-audio') | null = null;
@@ -317,6 +318,9 @@ function MainAppContent() {
         } catch (audioErr) {
           console.warn('[RivalCard Boot] Audio engine initialization warning:', audioErr);
         }
+
+        // Preload Google AdMob SDK & ads silently in the background (never blocks boot or shows on launch)
+        adService.initialize().catch(() => {});
 
         // Step 4: Finalize & Ready Transition (Instantaneous once real resources resolve)
         if (isMounted) {
