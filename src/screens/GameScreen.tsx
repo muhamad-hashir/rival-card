@@ -86,7 +86,7 @@ import {
   getQuickMatchBotThinkingDelayMs,
   selectNextQuickMatchBot,
 } from '../constants/quickMatchBots';
-import { shopService, ShopItem } from '../services/shopService';
+import { getShopItemImageSource, shopService, ShopItem } from '../services/shopService';
 import { settingsService, UserSettings, DEFAULT_SETTINGS } from '../services/settingsService';
 import {
   multiplayerService,
@@ -138,7 +138,7 @@ import {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
-const CARD_BACK_IMAGE = require('../../assets/card_back.png');
+const CARD_BACK_IMAGE = require('../../assets/store/card_backs/classic_back.png');
 
 export type SetupPreset = 'vs_bot_2p' | 'vs_bot_3p' | 'vs_bot_4p' | 'pass_play_2p' | 'pass_play_3p';
 
@@ -323,9 +323,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   }, [gameState.direction, directionPulseAnim, directionFlipAnim]);
 
-  // Equipped Cosmetics from Shop
-  const [equippedScenery, setEquippedScenery] = useState<ShopItem | null>(null);
+  // Equipped Card Back from Shop
   const [equippedCardBack, setEquippedCardBack] = useState<ShopItem | null>(null);
+  const equippedCardBackImage =
+    equippedCardBack?.image ||
+    (equippedCardBack?.id ? getShopItemImageSource(equippedCardBack.id) : null) ||
+    CARD_BACK_IMAGE;
 
   // User Settings (audio, haptics, fastBots, autoPass)
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
@@ -345,9 +348,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   useEffect(() => {
     async function loadEquippedCosmetics() {
       try {
-        const scenery = await shopService.getEquippedItem('sceneries');
         const cardBack = await shopService.getEquippedItem('card_backs');
-        setEquippedScenery(scenery);
         setEquippedCardBack(cardBack);
       } catch {
         // Fallback to default
@@ -356,10 +357,12 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     loadEquippedCosmetics();
 
     const unsubscribe = shopService.subscribe(async () => {
-      const scenery = await shopService.getEquippedItem('sceneries');
-      const cardBack = await shopService.getEquippedItem('card_backs');
-      setEquippedScenery(scenery);
-      setEquippedCardBack(cardBack);
+      try {
+        const cardBack = await shopService.getEquippedItem('card_backs');
+        setEquippedCardBack(cardBack);
+      } catch {
+        // Fallback to default
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -3268,6 +3271,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                     isFaceDown
                     size="small"
                     disabled
+                    cardBackImage={equippedCardBackImage}
                     cardBackStyle={equippedCardBack?.previewStyle}
                   />
                 </View>
@@ -3375,6 +3379,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   isFaceDown
                   size="small"
                   disabled
+                  cardBackImage={equippedCardBackImage}
                   cardBackStyle={equippedCardBack?.previewStyle}
                 />
               </View>
@@ -3415,21 +3420,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         style={styles.scenicBackground}
         resizeMode="cover"
       >
-        <View
-          style={[
-            styles.scenicOverlay,
-            equippedScenery?.previewStyle?.primaryColor
-              ? {
-                  backgroundColor:
-                    equippedScenery.id === 'scenery_midnight'
-                      ? 'rgba(15, 23, 42, 0.72)'
-                      : equippedScenery.id === 'scenery_royal'
-                      ? 'rgba(88, 28, 135, 0.42)'
-                      : 'rgba(21, 128, 61, 0.32)',
-                }
-              : null,
-          ]}
-        >
+        <View style={styles.scenicOverlay}>
           <View style={styles.container}>
             {/* ================================================================= */}
             {/* 1. TOP HEADER & STATUS BAR */}
@@ -3626,24 +3617,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           )}
 
           {/* Center Table Arena: Discard Pile dead center, Draw Deck top-left, Circular flow arrows */}
-          <View
-            style={[
-              styles.centerTableArena,
-              styles.tableFeltMat,
-              equippedScenery?.previewStyle?.primaryColor
-                ? {
-                    backgroundColor:
-                      equippedScenery.id === 'scenery_midnight'
-                        ? 'rgba(15, 23, 42, 0.65)'
-                        : equippedScenery.id === 'scenery_royal'
-                        ? 'rgba(88, 28, 135, 0.35)'
-                        : 'rgba(21, 128, 61, 0.28)',
-                    borderColor:
-                      equippedScenery.previewStyle.borderColor || 'rgba(255, 255, 255, 0.2)',
-                  }
-                : null,
-            ]}
-          >
+          <View style={[styles.centerTableArena, styles.tableFeltMat]}>
             {/* Floating Cartoon Stack Indicator Badge (+2 / +4 Stacking Rule) */}
             {(gameState.pendingDrawCount || 0) > 0 && (
               <View style={styles.floatingStackBadgeContainer} pointerEvents="none">
@@ -3730,13 +3704,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                     ]}
                   >
                     <Image
-                      source={CARD_BACK_IMAGE}
-                      style={[
-                        styles.drawDeckBackImage,
-                        equippedCardBack?.id !== 'card_back_classic' && equippedCardBack?.previewStyle?.primaryColor
-                          ? { tintColor: equippedCardBack.previewStyle.primaryColor }
-                          : null,
-                      ]}
+                      source={equippedCardBackImage}
+                      style={styles.drawDeckBackImage}
                       resizeMode="cover"
                     />
                   </View>
@@ -3755,13 +3724,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
                   ]}
                 >
                   <Image
-                    source={CARD_BACK_IMAGE}
-                    style={[
-                      styles.drawDeckBackImage,
-                      equippedCardBack?.id !== 'card_back_classic' && equippedCardBack?.previewStyle?.primaryColor
-                        ? { tintColor: equippedCardBack.previewStyle.primaryColor }
-                        : null,
-                    ]}
+                    source={equippedCardBackImage}
+                    style={styles.drawDeckBackImage}
                     resizeMode="cover"
                   />
                   <View style={styles.drawDeckBadge}>
@@ -4273,6 +4237,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           <FlyingCard
             key={card.id}
             {...card}
+            cardBackImage={equippedCardBackImage}
             onComplete={handleFlyingCardComplete}
           />
         ))}

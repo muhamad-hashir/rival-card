@@ -9,7 +9,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-const CARD_BACK_IMAGE = require('../../assets/card_back.png');
+const CARD_BACK_IMAGE = require('../../assets/store/card_backs/classic_back.png');
 
 export interface FlyingCardData {
   id: string;
@@ -19,6 +19,7 @@ export interface FlyingCardData {
   targetY: number;
   duration?: number;
   targetScale?: number;
+  cardBackImage?: any;
   onArrival?: () => void;
 }
 
@@ -34,6 +35,7 @@ export const FlyingCard: React.FC<FlyingCardProps> = ({
   targetY,
   duration = 280,
   targetScale = 1.0,
+  cardBackImage,
   onComplete,
 }) => {
   const progress = useSharedValue(0);
@@ -81,7 +83,7 @@ export const FlyingCard: React.FC<FlyingCardProps> = ({
   return (
     <Animated.View pointerEvents="none" style={[styles.flyingCard, animatedStyle]}>
       <Image
-        source={CARD_BACK_IMAGE}
+        source={cardBackImage || CARD_BACK_IMAGE}
         style={styles.cardBackImage}
         resizeMode="cover"
       />

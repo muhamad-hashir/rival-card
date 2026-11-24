@@ -13,7 +13,7 @@ import type { Card } from '../types';
 import { hapticsService } from '../services/hapticsService';
 import { FONT_CARTOON_HEAVY } from '../styles/typography';
 
-const CARD_BACK_IMAGE = require('../../assets/card_back.png');
+const CARD_BACK_IMAGE = require('../../assets/store/card_backs/classic_back.png');
 
 const ACTION_ICONS: Record<string, any> = {
   skip: require('../../assets/icons/icon_skip.png'),
@@ -34,6 +34,7 @@ export interface CardViewProps {
   size?: 'small' | 'medium' | 'large';
   onPress?: () => void;
   style?: ViewStyle;
+  cardBackImage?: any;
   cardBackStyle?: {
     primaryColor?: string;
     borderColor?: string;
@@ -50,6 +51,7 @@ export const CardView: React.FC<CardViewProps> = ({
   size = 'medium',
   onPress,
   style,
+  cardBackImage,
   cardBackStyle,
   activeColor,
 }) => {
@@ -63,8 +65,9 @@ export const CardView: React.FC<CardViewProps> = ({
     }
   };
 
-  // Face-down card: Render assets/card_back.png with clean rounded borders & fallback
+  // Face-down card: Render equipped card back PNG with clean rounded borders & fallback
   if (isFaceDown || !card) {
+    const resolvedBackSource = cardBackImage || CARD_BACK_IMAGE;
     return (
       <TouchableOpacity
         activeOpacity={0.8}
@@ -81,11 +84,11 @@ export const CardView: React.FC<CardViewProps> = ({
         ]}
       >
         <Image
-          source={CARD_BACK_IMAGE}
+          source={resolvedBackSource}
           style={[
             styles.cardBackImage,
             { borderRadius: Math.max(0, dimensions.container.borderRadius - 1.5) },
-            cardBackStyle?.primaryColor && cardBackStyle.primaryColor !== '#1E293B'
+            !cardBackImage && cardBackStyle?.primaryColor && cardBackStyle.primaryColor !== '#1E293B'
               ? { tintColor: cardBackStyle.primaryColor }
               : null,
           ]}

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Animated,
+  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -17,6 +18,8 @@ import {
   shopService,
   PlayerInventory,
   DEFAULT_INVENTORY,
+  IAP_UNAVAILABLE_MESSAGE,
+  getShopItemImageSource,
 } from '../services/shopService';
 import {
   playerProfileService,
@@ -30,7 +33,6 @@ import {
   FONT_CARTOON_BOLD,
   FONT_CARTOON_HEAVY,
   FONT_CARTOON_REGULAR,
-  FONT_CARTOON_SEMIBOLD,
 } from '../styles/typography';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
@@ -141,7 +143,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
         duration: 200,
         useNativeDriver: true,
       }).start(() => setToastMessage(null));
-    }, 2400);
+    }, 2600);
   };
 
   const handleSelectCategory = (category: ShopCategory) => {
@@ -163,6 +165,12 @@ export const ShopModal: React.FC<ShopModalProps> = ({
   };
 
   const handleBuyItem = async (item: ShopItem) => {
+    if (item.category === 'currency') {
+      hapticsService.cardSnap();
+      showToast(IAP_UNAVAILABLE_MESSAGE);
+      return;
+    }
+
     if (item.isRealMoneyExclusive || item.comingSoon || item.unlockType === 'iap') {
       hapticsService.cardSnap();
       showToast('Real-money Store & VIP packs coming in the next update!');
@@ -254,6 +262,15 @@ export const ShopModal: React.FC<ShopModalProps> = ({
     selectedCategory === 'avatars'
       ? categoryItems.filter((item) => item.unlockType === 'level_coins')
       : [];
+  const coinPackItems =
+    selectedCategory === 'currency'
+      ? categoryItems.filter((item) => item.packType === 'coins')
+      : [];
+  const gemPackItems =
+    selectedCategory === 'currency'
+      ? categoryItems.filter((item) => item.packType === 'gems')
+      : [];
+
   const currentLevel = profile?.level ?? 1;
   const currentCoins = profile?.coins ?? 250;
   const equippedAvatarKey = normalizeAvatarKey(profile?.avatarId) || 'fox';
@@ -350,7 +367,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
             </ScrollView>
           </View>
 
-          {/* 2-Column Items Grid (Avatars split cleanly into VIP Exclusives + Level/Coin Unlocks) */}
+          {/* Store Items Scroll Container */}
           <ScrollView
             style={styles.itemsScrollContainer}
             contentContainerStyle={styles.itemsScrollWrap}
@@ -482,6 +499,117 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                   })}
                 </View>
               </>
+            ) : selectedCategory === 'currency' ? (
+              <>
+                <View style={styles.treasuryNoticeBanner}>
+                  <Text style={styles.treasuryNoticeTitle}>
+                    🚀 GOOGLE PLAY BILLING • COMING SOON (v1.2.0)
+                  </Text>
+                  <Text style={styles.treasuryNoticeSubtitle}>
+                    Payments enabled after launch. Preview upcoming Coin & Gem bundles below.
+                  </Text>
+                </View>
+
+                {/* Coin Packs Section */}
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionHeaderTitle}>🪙 COIN PACKS</Text>
+                  <View style={styles.vipSeasonPill}>
+                    <Text style={styles.vipSeasonPillText}>COMING SOON</Text>
+                  </View>
+                </View>
+
+                <View style={styles.itemsGridContent}>
+                  {coinPackItems.map((item) => (
+                    <View
+                      key={item.id}
+                      style={[styles.itemCard, styles.coinPackCard]}
+                      testID={`shop-item-${item.id}`}
+                    >
+                      <View style={styles.comingSoonTag}>
+                        <Text style={styles.comingSoonTagText}>COMING SOON</Text>
+                      </View>
+
+                      <ItemPreviewBox item={item} />
+
+                      <Text style={styles.itemTitle} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      {item.description ? (
+                        <Text style={styles.itemDescription} numberOfLines={2}>
+                          {item.description}
+                        </Text>
+                      ) : null}
+
+                      <View style={styles.itemActionWrapper}>
+                        <TactileButton
+                          onPress={() => handleBuyItem(item)}
+                          style={styles.usdPriceBtn}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${item.name} for ${item.usdPrice || '$0.99 USD'}, payments enabled after launch`}
+                          testID={`item-iap-btn-${item.id}`}
+                        >
+                          <Text style={styles.usdPriceBtnText}>
+                            {item.usdPrice || `$${item.price.amount.toFixed(2)} USD`}
+                          </Text>
+                        </TactileButton>
+                        <Text style={styles.paymentsLaunchCaption}>
+                          Payments enabled after launch
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Gem Packs Section */}
+                <View style={[styles.sectionHeaderRow, { marginTop: 10 }]}>
+                  <Text style={styles.sectionHeaderTitle}>💎 GEM PACKS</Text>
+                  <View style={styles.gemPackHeaderPill}>
+                    <Text style={styles.gemPackHeaderPillText}>v1.2.0</Text>
+                  </View>
+                </View>
+
+                <View style={styles.itemsGridContent}>
+                  {gemPackItems.map((item) => (
+                    <View
+                      key={item.id}
+                      style={[styles.itemCard, styles.gemPackCard]}
+                      testID={`shop-item-${item.id}`}
+                    >
+                      <View style={styles.comingSoonTagGem}>
+                        <Text style={styles.comingSoonTagGemText}>COMING SOON</Text>
+                      </View>
+
+                      <ItemPreviewBox item={item} />
+
+                      <Text style={styles.itemTitle} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      {item.description ? (
+                        <Text style={styles.itemDescription} numberOfLines={2}>
+                          {item.description}
+                        </Text>
+                      ) : null}
+
+                      <View style={styles.itemActionWrapper}>
+                        <TactileButton
+                          onPress={() => handleBuyItem(item)}
+                          style={styles.usdPriceBtnGem}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${item.name} for ${item.usdPrice || '$0.99 USD'}, payments enabled after launch`}
+                          testID={`item-iap-btn-${item.id}`}
+                        >
+                          <Text style={styles.usdPriceBtnText}>
+                            {item.usdPrice || `$${item.price.amount.toFixed(2)} USD`}
+                          </Text>
+                        </TactileButton>
+                        <Text style={styles.paymentsLaunchCaption}>
+                          Payments enabled after launch
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </>
             ) : (
               <View style={styles.itemsGridContent}>
                 {categoryItems.map((item) => {
@@ -572,41 +700,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
 // Item Preview Thumbnail based on Category
 const ItemPreviewBox: React.FC<{ item: ShopItem }> = ({ item }) => {
   const { previewStyle, category } = item;
-
-  if (category === 'card_backs') {
-    return (
-      <View
-        style={[
-          styles.previewCardBack,
-          {
-            backgroundColor: previewStyle.primaryColor,
-            borderColor: previewStyle.borderColor || '#CBD5E1',
-          },
-        ]}
-      >
-        <View style={styles.previewCardInner}>
-          <Text style={styles.previewCardBackIcon}>🎴</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (category === 'sceneries') {
-    return (
-      <View
-        style={[
-          styles.previewScenery,
-          {
-            backgroundColor: previewStyle.primaryColor,
-            borderColor: previewStyle.borderColor || '#CBD5E1',
-          },
-        ]}
-      >
-        <Text style={styles.previewSceneryIcon}>🏞️</Text>
-        <View style={styles.previewSceneryFelt} />
-      </View>
-    );
-  }
+  const imageSource = item.image || getShopItemImageSource(item.id);
 
   if (category === 'avatars') {
     const knownAvatarKey = normalizeAnyAvatarKey(item.avatarKey || item.id);
@@ -634,35 +728,92 @@ const ItemPreviewBox: React.FC<{ item: ShopItem }> = ({ item }) => {
     );
   }
 
-  if (category === 'cards') {
+  if (category === 'card_backs') {
+    if (imageSource) {
+      return (
+        <View style={styles.previewCardBackImageFrame}>
+          <Image
+            source={imageSource}
+            style={styles.previewArtworkImage}
+            resizeMode="contain"
+            accessibilityLabel={`${item.name} card back preview`}
+          />
+        </View>
+      );
+    }
+
     return (
       <View
         style={[
-          styles.previewCardFace,
+          styles.previewCardBack,
           {
             backgroundColor: previewStyle.primaryColor,
-            borderColor: previewStyle.borderColor || '#E2D9C8',
+            borderColor: previewStyle.borderColor || '#CBD5E1',
           },
         ]}
       >
-        <Text style={styles.previewCardFaceNumber}>7</Text>
-        <View style={styles.previewCardColorBar} />
+        <View style={styles.previewCardInner}>
+          <Text style={styles.previewCardBackIcon}>🎴</Text>
+        </View>
       </View>
     );
   }
 
-  // Emotes / Quick Chat
+  if (category === 'currency') {
+    const isGems = item.packType === 'gems';
+    return (
+      <View
+        style={[
+          styles.previewCurrencyBox,
+          {
+            backgroundColor: previewStyle.primaryColor,
+            borderColor: previewStyle.borderColor || (isGems ? '#0284C7' : '#D97706'),
+          },
+        ]}
+      >
+        <Text style={styles.previewCurrencyEmoji}>{previewStyle.emoji || (isGems ? '💎' : '🪙')}</Text>
+        <View
+          style={[
+            styles.previewCurrencyAmountPill,
+            { backgroundColor: previewStyle.secondaryColor || (isGems ? '#0284C7' : '#F59E0B') },
+          ]}
+        >
+          <Text style={styles.previewCurrencyAmountText}>
+            {previewStyle.text || item.name}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  // Clean standard emoji + quick-chat bubble styling for Emotes
   return (
-    <View
-      style={[
-        styles.previewEmoteBubble,
-        {
-          backgroundColor: previewStyle.primaryColor,
-          borderColor: previewStyle.borderColor || '#CBD5E1',
-        },
-      ]}
-    >
-      <Text style={styles.previewEmoteText}>{previewStyle.text || '💬'}</Text>
+    <View style={styles.previewEmoteWrapper}>
+      <View
+        style={[
+          styles.previewEmoteBubble,
+          {
+            backgroundColor: previewStyle.primaryColor,
+            borderColor: previewStyle.borderColor || '#1E293B',
+          },
+        ]}
+      >
+        {previewStyle.emoji ? (
+          <Text style={styles.previewEmoteEmoji}>{previewStyle.emoji}</Text>
+        ) : null}
+        <Text style={styles.previewEmoteText} numberOfLines={1}>
+          {previewStyle.text || item.name}
+        </Text>
+      </View>
+      <View
+        style={[
+          styles.previewEmoteTail,
+          {
+            backgroundColor: previewStyle.primaryColor,
+            borderColor: previewStyle.borderColor || '#1E293B',
+          },
+        ]}
+      />
     </View>
   );
 };
@@ -769,7 +920,7 @@ const styles = StyleSheet.create({
   toastBanner: {
     backgroundColor: '#0F172A',
     borderRadius: 12,
-    paddingVertical: 6,
+    paddingVertical: 7,
     paddingHorizontal: 12,
     marginTop: 8,
     alignItems: 'center',
@@ -778,6 +929,7 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_BOLD,
     fontSize: 12,
     color: '#FACC15',
+    textAlign: 'center',
   },
   categoryRowWrapper: {
     marginVertical: 10,
@@ -863,6 +1015,20 @@ const styles = StyleSheet.create({
     color: '#5B21B6',
     letterSpacing: 0.4,
   },
+  gemPackHeaderPill: {
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1.5,
+    borderColor: '#7DD3FC',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  gemPackHeaderPillText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 9,
+    color: '#0369A1',
+    letterSpacing: 0.4,
+  },
   levelHeaderPill: {
     backgroundColor: '#DCFCE7',
     borderWidth: 1.5,
@@ -876,10 +1042,44 @@ const styles = StyleSheet.create({
     fontSize: 9.5,
     color: '#15803D',
   },
+  treasuryNoticeBanner: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1.5,
+    borderColor: '#FDE68A',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 10,
+    alignItems: 'center',
+  },
+  treasuryNoticeTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10.5,
+    color: '#92400E',
+    letterSpacing: 0.4,
+    textAlign: 'center',
+  },
+  treasuryNoticeSubtitle: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 10,
+    color: '#B45309',
+    textAlign: 'center',
+    marginTop: 2,
+  },
   vipItemCard: {
     backgroundColor: '#FFFDF5',
     borderColor: '#F59E0B',
     borderTopColor: '#FDE047',
+  },
+  coinPackCard: {
+    backgroundColor: '#FFFDF5',
+    borderColor: '#F59E0B',
+    borderTopColor: '#FDE68A',
+  },
+  gemPackCard: {
+    backgroundColor: '#F8FDFF',
+    borderColor: '#38BDF8',
+    borderTopColor: '#BAE6FD',
   },
   vipCrownTag: {
     backgroundColor: '#312E81',
@@ -893,6 +1093,36 @@ const styles = StyleSheet.create({
     fontSize: 8.5,
     color: '#FDE047',
     letterSpacing: 0.6,
+  },
+  comingSoonTag: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginBottom: 6,
+  },
+  comingSoonTagText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    color: '#92400E',
+    letterSpacing: 0.5,
+  },
+  comingSoonTagGem: {
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginBottom: 6,
+  },
+  comingSoonTagGemText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 8.5,
+    color: '#0369A1',
+    letterSpacing: 0.5,
   },
   comingSoonBtn: {
     width: '100%',
@@ -909,6 +1139,39 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#5B21B6',
     letterSpacing: 0.5,
+  },
+  usdPriceBtn: {
+    width: '100%',
+    backgroundColor: '#F59E0B',
+    borderBottomWidth: 3.5,
+    borderColor: '#B45309',
+    borderRadius: 14,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  usdPriceBtnGem: {
+    width: '100%',
+    backgroundColor: '#0284C7',
+    borderBottomWidth: 3.5,
+    borderColor: '#0369A1',
+    borderRadius: 14,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  usdPriceBtnText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
+  paymentsLaunchCaption: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 8.5,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 4,
   },
   buyBtnInsufficient: {
     backgroundColor: '#F87171',
@@ -940,9 +1203,28 @@ const styles = StyleSheet.create({
     height: 4,
     backgroundColor: 'rgba(255, 255, 255, 0.7)',
   },
+  previewCardBackImageFrame: {
+    width: 72,
+    height: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#0F172A',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  previewArtworkImage: {
+    width: '100%',
+    height: '100%',
+  },
   previewCardBack: {
-    width: 60,
-    height: 84,
+    width: 64,
+    height: 88,
     borderRadius: 10,
     borderWidth: 2,
     justifyContent: 'center',
@@ -955,8 +1237,8 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   previewCardInner: {
-    width: 44,
-    height: 68,
+    width: 48,
+    height: 70,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.25)',
@@ -965,26 +1247,6 @@ const styles = StyleSheet.create({
   },
   previewCardBackIcon: {
     fontSize: 20,
-  },
-  previewScenery: {
-    width: 78,
-    height: 64,
-    borderRadius: 12,
-    borderWidth: 2,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-    overflow: 'hidden',
-  },
-  previewSceneryIcon: {
-    fontSize: 22,
-  },
-  previewSceneryFelt: {
-    position: 'absolute',
-    bottom: 0,
-    width: '100%',
-    height: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
   previewAvatarCircle: {
     width: 58,
@@ -1003,41 +1265,69 @@ const styles = StyleSheet.create({
   previewAvatarEmoji: {
     fontSize: 28,
   },
-  previewCardFace: {
-    width: 58,
-    height: 80,
-    borderRadius: 10,
-    borderWidth: 2,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  previewCardFaceNumber: {
-    ...FONT_CARTOON_HEAVY,
-    fontSize: 28,
-    color: '#0F172A',
-  },
-  previewCardColorBar: {
-    position: 'absolute',
-    bottom: 4,
-    width: 36,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: '#EF4444',
-  },
-  previewEmoteBubble: {
-    width: 78,
-    height: 54,
+  previewCurrencyBox: {
+    width: '100%',
+    minHeight: 74,
     borderRadius: 14,
     borderWidth: 2,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
     marginBottom: 8,
+    gap: 5,
+  },
+  previewCurrencyEmoji: {
+    fontSize: 26,
+  },
+  previewCurrencyAmountPill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+  },
+  previewCurrencyAmountText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
+  previewEmoteWrapper: {
+    height: 66,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  previewEmoteBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderBottomWidth: 3.5,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  previewEmoteEmoji: {
+    fontSize: 16,
   },
   previewEmoteText: {
     ...FONT_CARTOON_HEAVY,
-    fontSize: 14,
+    fontSize: 12.5,
     color: '#FFFFFF',
+  },
+  previewEmoteTail: {
+    width: 10,
+    height: 10,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    transform: [{ rotate: '45deg' }],
+    marginTop: -6,
   },
   itemTitle: {
     ...FONT_CARTOON_HEAVY,

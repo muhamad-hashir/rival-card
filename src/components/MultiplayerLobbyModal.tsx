@@ -73,6 +73,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [isStartingSearch, setIsStartingSearch] = useState<boolean>(false);
   const [searchSeconds, setSearchSeconds] = useState<number>(0);
+  const [showQuickMatchInfo, setShowQuickMatchInfo] = useState<boolean>(false);
 
   const getResolvedPlayerId = useCallback(
     (loadedProfile?: PlayerProfile | null) =>
@@ -87,6 +88,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
       setIsStartingSearch(false);
       setSearchSeconds(0);
       setIsBusy(false);
+      setShowQuickMatchInfo(false);
       matchmakingService.cancelMatchmaking().catch(() => {});
     }
 
@@ -395,14 +397,52 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
             {/* ================================================================= */}
             <View style={styles.hubCard}>
               <View style={styles.cardHeaderRow}>
-                <View>
-                  <Text style={styles.cardTitle}>Quick Match</Text>
+                <View style={styles.cardHeaderLeft}>
+                  <View style={styles.cardTitleRow}>
+                    <Text style={styles.cardTitle}>Quick Match</Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        hapticsService.cardSelection();
+                        soundService.playCardSnap();
+                        setShowQuickMatchInfo((prev) => !prev);
+                      }}
+                      style={[
+                        styles.infoIconBtn,
+                        showQuickMatchInfo && styles.infoIconBtnActive,
+                      ]}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel="Quick Match 1v1 and 4-player info"
+                      testID="quick-match-info-btn"
+                    >
+                      <Text
+                        style={[
+                          styles.infoIconText,
+                          showQuickMatchInfo && styles.infoIconTextActive,
+                        ]}
+                      >
+                        i
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                   <Text style={styles.cardSub}>Instant 1v1 match with an online rival</Text>
                 </View>
                 <View style={styles.cardBadgeGreen}>
                   <Text style={styles.cardBadgeGreenText}>1V1 AUTO</Text>
                 </View>
               </View>
+
+              {showQuickMatchInfo && (
+                <View style={styles.quickMatchInfoNote} testID="quick-match-info-note">
+                  <Text style={styles.quickMatchInfoTitle}>ℹ️ About Quick Match</Text>
+                  <Text style={styles.quickMatchInfoBody}>
+                    Quick Match is currently 1v1 while our player base grows. 4-Player Rumble
+                    will be available soon! Want a 4-player match now? Create or join a Private
+                    Room with your friends below.
+                  </Text>
+                </View>
+              )}
 
               {isSearching ? (
                 /* Searching Overlay on Card 1 */
@@ -825,6 +865,59 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: 12,
+  },
+  cardHeaderLeft: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  cardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  infoIconBtn: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1.5,
+    borderColor: '#7DD3FC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoIconBtnActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#0369A1',
+  },
+  infoIconText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#0369A1',
+    lineHeight: 13,
+  },
+  infoIconTextActive: {
+    color: '#FFFFFF',
+  },
+  quickMatchInfoNote: {
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1.5,
+    borderColor: '#BAE6FD',
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    marginBottom: 12,
+  },
+  quickMatchInfoTitle: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11.5,
+    color: '#0369A1',
+    marginBottom: 3,
+  },
+  quickMatchInfoBody: {
+    ...FONT_CARTOON_REGULAR,
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: '#334155',
   },
   cardTitle: {
     ...FONT_CARTOON_HEAVY,
