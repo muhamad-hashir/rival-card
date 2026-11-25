@@ -137,6 +137,13 @@ import {
   TutorialRewardResult,
 } from '../services/tutorialService';
 import { adService, resolveMatchAdContext } from '../services/adService';
+import {
+  FINAL_CARD_REVEAL_DELAY_MS,
+  ROOM_SCORECARD_MIN_DISPLAY_MS,
+  getDeferredTransitionWaitMs,
+  getRemainingScorecardHoldMs,
+  shouldDelayFinalCardReveal,
+} from '../utils/matchEndPacing';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
@@ -282,6 +289,45 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const seriesNextTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isGameOverRef = useRef(gameState.isGameOver);
   isGameOverRef.current = gameState.isGameOver;
+  const [isGameOverOverlayReady, setIsGameOverOverlayReady] = useState<boolean>(
+    Boolean(initialGameState?.isGameOver)
+  );
+  const isGameOverOverlayReadyRef = useRef<boolean>(isGameOverOverlayReady);
+  isGameOverOverlayReadyRef.current = isGameOverOverlayReady;
+  const finalCardRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameOverDetectedAtRef = useRef<number | null>(
+    initialGameState?.isGameOver ? Date.now() : null
+  );
+  const prevIsGameOverForRevealRef = useRef<boolean>(Boolean(initialGameState?.isGameOver));
+  const roomScorecardOpenedAtRef = useRef<number | null>(null);
+  const [scorecardHoldRemainingMs, setScorecardHoldRemainingMs] = useState<number>(0);
+  const scorecardHoldIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const deferredRemoteNextStateRef = useRef<{
+    kind: 'series_next' | 'game_update';
+    nextState: GameState;
+    isNewSeries?: boolean;
+  } | null>(null);
+  const deferredRemoteApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearPostMatchPacingTimers = useCallback(() => {
+    if (finalCardRevealTimerRef.current) {
+      clearTimeout(finalCardRevealTimerRef.current);
+      finalCardRevealTimerRef.current = null;
+    }
+    if (scorecardHoldIntervalRef.current) {
+      clearInterval(scorecardHoldIntervalRef.current);
+      scorecardHoldIntervalRef.current = null;
+    }
+    if (deferredRemoteApplyTimerRef.current) {
+      clearTimeout(deferredRemoteApplyTimerRef.current);
+      deferredRemoteApplyTimerRef.current = null;
+    }
+    deferredRemoteNextStateRef.current = null;
+    gameOverDetectedAtRef.current = null;
+    roomScorecardOpenedAtRef.current = null;
+    setScorecardHoldRemainingMs(0);
+    setIsGameOverOverlayReady(false);
+    setDepartedRoomPlayerIds([]);
+  }, []);
   const lastTopDiscardIdRef = useRef<string | null>(
     gameState.discardPile[gameState.discardPile.length - 1]?.id ?? null
   );
@@ -300,6 +346,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const activeIsQuickMatchRef = useRef<boolean>(isQuickMatch);
   activeIsQuickMatchRef.current = activeIsQuickMatch;
   const [activeTaunt, setActiveTaunt] = useState<TauntMessage | null>(null);
+  const [departedRoomPlayerIds, setDepartedRoomPlayerIds] = useState<string[]>([]);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [matchRewards, setMatchRewards] = useState<AwardRewardsResult | null>(null);
   const directionPulseAnim = useRef(new Animated.Value(1)).current;
@@ -462,7 +509,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }
   }, [gameState, showQuickBanner, isReconnecting, matchRewards, catchPenaltyTarget, pendingPairPlay]);
 
-  // Cleanup catch timers and network countdown on unmount
+  // Cleanup catch timers, post-match reveal/scorecard timers, and network countdown on unmount
   useEffect(() => {
     return () => {
       if (catchTimerRef.current) clearTimeout(catchTimerRef.current);
@@ -471,9 +518,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         clearInterval(disconnectCountdownRef.current);
         disconnectCountdownRef.current = null;
       }
+      clearPostMatchPacingTimers();
       errorToastService.hide();
     };
-  }, []);
+  }, [clearPostMatchPacingTimers]);
 
   // Lock orientation to landscape on mount; revert to portrait on unmount
   useEffect(() => {
@@ -508,6 +556,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Handle returning to home screen with portrait orientation lock
   const handleExitToHome = async () => {
+    clearPostMatchPacingTimers();
     try {
       if (
         resolveMatchAdContext({
@@ -807,6 +856,84 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     isTutorial,
     gameState.gameMode,
   ]);
+
+  // 3-second Final Card Reveal before opening GameOverModal / PrivateSeriesModal so every player
+  // can clearly inspect the winning card on top of the discard pile.
+  useEffect(() => {
+    const wasOver = prevIsGameOverForRevealRef.current;
+    prevIsGameOverForRevealRef.current = gameState.isGameOver;
+
+    if (!gameState.isGameOver) {
+      if (finalCardRevealTimerRef.current) {
+        clearTimeout(finalCardRevealTimerRef.current);
+        finalCardRevealTimerRef.current = null;
+      }
+      gameOverDetectedAtRef.current = null;
+      setIsGameOverOverlayReady(false);
+      return;
+    }
+
+    if (!wasOver) {
+      gameOverDetectedAtRef.current = Date.now();
+      if (shouldDelayFinalCardReveal(gameState)) {
+        if (finalCardRevealTimerRef.current) {
+          clearTimeout(finalCardRevealTimerRef.current);
+        }
+        setIsGameOverOverlayReady(false);
+        const winnerName = gameState.winner?.name || 'Winner';
+        showQuickBanner(`🏆 ${winnerName} played the winning card!`, FINAL_CARD_REVEAL_DELAY_MS);
+        finalCardRevealTimerRef.current = setTimeout(() => {
+          finalCardRevealTimerRef.current = null;
+          setIsGameOverOverlayReady(true);
+        }, FINAL_CARD_REVEAL_DELAY_MS);
+      } else {
+        setIsGameOverOverlayReady(true);
+      }
+    } else if (!shouldDelayFinalCardReveal(gameState) && !isGameOverOverlayReady) {
+      if (finalCardRevealTimerRef.current) {
+        clearTimeout(finalCardRevealTimerRef.current);
+        finalCardRevealTimerRef.current = null;
+      }
+      setIsGameOverOverlayReady(true);
+    }
+  }, [gameState, isGameOverOverlayReady, showQuickBanner]);
+
+  // Minimum 5.5-second Room Scorecard hold when PrivateSeriesModal opens for Online Room matches
+  useEffect(() => {
+    if (!isGameOverOverlayReady || !gameState.isGameOver || !isPrivateSeriesRoom) {
+      if (scorecardHoldIntervalRef.current) {
+        clearInterval(scorecardHoldIntervalRef.current);
+        scorecardHoldIntervalRef.current = null;
+      }
+      roomScorecardOpenedAtRef.current = null;
+      setScorecardHoldRemainingMs(0);
+      return;
+    }
+
+    const openedAt = Date.now();
+    roomScorecardOpenedAtRef.current = openedAt;
+    setScorecardHoldRemainingMs(ROOM_SCORECARD_MIN_DISPLAY_MS);
+
+    scorecardHoldIntervalRef.current = setInterval(() => {
+      const remaining = getRemainingScorecardHoldMs(
+        openedAt,
+        Date.now(),
+        ROOM_SCORECARD_MIN_DISPLAY_MS
+      );
+      setScorecardHoldRemainingMs(remaining);
+      if (remaining <= 0 && scorecardHoldIntervalRef.current) {
+        clearInterval(scorecardHoldIntervalRef.current);
+        scorecardHoldIntervalRef.current = null;
+      }
+    }, 150);
+
+    return () => {
+      if (scorecardHoldIntervalRef.current) {
+        clearInterval(scorecardHoldIntervalRef.current);
+        scorecardHoldIntervalRef.current = null;
+      }
+    };
+  }, [isGameOverOverlayReady, gameState.isGameOver, isPrivateSeriesRoom]);
 
   // =========================================================================
   // PURELY LOCAL AI BOT SITUATIONAL EMOJI REACTIONS (ZERO SUPABASE WRITES)
@@ -1545,6 +1672,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
   // Restart match with current or new preset
   const handleStartGame = useCallback((presetKey: SetupPreset) => {
+    clearPostMatchPacingTimers();
     setCurrentPresetKey(presetKey);
     const preset = PRESETS[presetKey];
     const players = getPresetPlayers(presetKey);
@@ -1580,7 +1708,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     botEmoteCountRef.current = {};
     botLastEmojiRef.current = {};
     runDealingAnimation(players);
-  }, [runDealingAnimation, resetMatchTrackingIds, resetMatchCountdown]);
+  }, [clearPostMatchPacingTimers, runDealingAnimation, resetMatchTrackingIds, resetMatchCountdown]);
 
   // Handle post-game "Play Again" action
   const handlePlayAgain = async () => {
@@ -1588,6 +1716,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     if (!isTutorial && gameState.isGameOver) {
       await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
     }
+    clearPostMatchPacingTimers();
     soundService.playCardDraw();
     if (rivalTimerRef.current) {
       clearInterval(rivalTimerRef.current);
@@ -1679,10 +1808,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const handleAdvanceNextSeriesMatch = useCallback(
     async (resetSeries: boolean = false) => {
       if (!isPrivateSeriesRoom || !gameState.seriesState) return;
+      if (
+        !isGameOverOverlayReadyRef.current ||
+        getRemainingScorecardHoldMs(roomScorecardOpenedAtRef.current, Date.now()) > 0
+      ) {
+        return;
+      }
       if (resetSeries) {
         // Show the series-end interstitial to the host before launching a new 5-match series rematch
         await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
       }
+      clearPostMatchPacingTimers();
       if (seriesNextTimerRef.current) {
         clearInterval(seriesNextTimerRef.current);
         seriesNextTimerRef.current = null;
@@ -1719,15 +1855,22 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         runDealingAnimation(nextMatchState.players);
       }
     },
-    [isPrivateSeriesRoom, gameState, runDealingAnimation, resetMatchCountdown]
+    [
+      isPrivateSeriesRoom,
+      gameState,
+      clearPostMatchPacingTimers,
+      runDealingAnimation,
+      resetMatchCountdown,
+    ]
   );
 
-  // Between-round countdown timer (12s) in Private Room Series; Host auto-advances at 0
+  // Between-round countdown timer (12s) in Private Room Series; starts only after 3s card reveal completes
   useEffect(() => {
     const series = gameState.seriesState;
     const isBetweenRounds =
       isPrivateSeriesRoom &&
       gameState.isGameOver &&
+      isGameOverOverlayReady &&
       Boolean(series) &&
       !series?.seriesEndedEarly &&
       (series?.currentMatchNumber ?? 0) < (series?.totalMatches ?? 5);
@@ -1770,6 +1913,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   }, [
     isPrivateSeriesRoom,
     gameState.isGameOver,
+    isGameOverOverlayReady,
     gameState.seriesState?.currentMatchNumber,
     gameState.seriesState?.totalMatches,
     gameState.seriesState?.seriesEndedEarly,
@@ -1792,6 +1936,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     ) {
       await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
     }
+    clearPostMatchPacingTimers();
     if (disconnectCountdownRef.current) {
       clearInterval(disconnectCountdownRef.current);
       disconnectCountdownRef.current = null;
@@ -1832,7 +1977,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       setLocalOnlinePlayerId(null);
     }
     await handleExitToHome();
-  }, [isOnlineMode, isTutorial, handleExitToHome]);
+  }, [isOnlineMode, isTutorial, clearPostMatchPacingTimers, handleExitToHome]);
 
   const stopDisconnectionCountdown = useCallback(() => {
     if (disconnectCountdownRef.current) {
@@ -1888,6 +2033,74 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   useEffect(() => {
     if (!isOnlineMode) return;
 
+    const applyRemoteMatchReset = (nextState: GameState) => {
+      clearPostMatchPacingTimers();
+      lastTopDiscardIdRef.current =
+        nextState.discardPile[nextState.discardPile.length - 1]?.id ?? null;
+      lastPendingColorChoiceRef.current = Boolean(nextState.pendingColorChoice);
+      resetMatchTrackingIds(onlineRoomCode);
+      resetMatchCountdown(
+        nextState.matchStartedAt
+          ? computeRemainingMsFromStart(
+              nextState.matchStartedAt,
+              Date.now(),
+              (nextState.matchDurationSeconds ?? 180) * 1000
+            )
+          : MATCH_DURATION_MS
+      );
+      setGameState(nextState);
+      setIsReconnecting(false);
+      setSelectedWildCard(null);
+      setIsColorPickerOpen(false);
+      setPendingPairPlay(null);
+      setPendingWildPair(null);
+      setRivalCountdown(null);
+      runDealingAnimation(nextState.players);
+    };
+
+    const applyRemoteSeriesNextMatch = (nextState: GameState, isNewSeries: boolean) => {
+      stopDisconnectionCountdown();
+      clearPostMatchPacingTimers();
+      if (isNewSeries) {
+        // Display the series-end interstitial to non-host players on new series rematch too
+        void adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+      }
+      if (seriesNextTimerRef.current) {
+        clearInterval(seriesNextTimerRef.current);
+        seriesNextTimerRef.current = null;
+      }
+      setSeriesNextCountdown(null);
+      setSelectedWildCard(null);
+      setIsColorPickerOpen(false);
+      setPendingPairPlay(null);
+      setPendingWildPair(null);
+      setRivalCountdown(null);
+      lastTopDiscardIdRef.current =
+        nextState.discardPile[nextState.discardPile.length - 1]?.id ?? null;
+      lastPendingColorChoiceRef.current = Boolean(nextState.pendingColorChoice);
+      resetMatchCountdown(
+        nextState.matchStartedAt
+          ? computeRemainingMsFromStart(
+              nextState.matchStartedAt,
+              Date.now(),
+              (nextState.matchDurationSeconds ?? 180) * 1000
+            )
+          : MATCH_DURATION_MS
+      );
+      setGameState(nextState);
+      setIsReconnecting(false);
+      if (!nextState.seriesState?.seriesEndedEarly) {
+        soundService.playCardDraw();
+        hapticsService.cardSnap();
+        runDealingAnimation(nextState.players);
+        const matchNum = nextState.seriesState?.currentMatchNumber ?? 1;
+        const total = nextState.seriesState?.totalMatches ?? 5;
+        showQuickBanner(
+          isNewSeries ? 'New 5-Match Series started!' : `Match ${matchNum}/${total} started!`
+        );
+      }
+    };
+
     multiplayerService.setCallbacks({
       onGameStateUpdate: (remoteState, senderId) => {
         stopDisconnectionCountdown();
@@ -1899,6 +2112,37 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             remoteState.isGameOver && remoteState.seriesState?.isPrivateSeries
               ? recordSeriesRoundResult(remoteState)
               : remoteState;
+
+          // Never let a remote NEXT_ROUND / PLAY_AGAIN state skip the 3s reveal or 5.5s scorecard hold
+          if (wasGameOver && !normalizedRemote.isGameOver) {
+            const waitMs = getDeferredTransitionWaitMs({
+              isGameOver: wasGameOver,
+              isOverlayReady: isGameOverOverlayReadyRef.current,
+              gameOverDetectedAtMs: gameOverDetectedAtRef.current,
+              scorecardOpenedAtMs: roomScorecardOpenedAtRef.current,
+              isOnlineRoom: isOnlineMode && !activeIsQuickMatchRef.current,
+              nowMs: Date.now(),
+            });
+            if (waitMs > 0) {
+              deferredRemoteNextStateRef.current = {
+                kind: 'game_update',
+                nextState: normalizedRemote,
+              };
+              if (deferredRemoteApplyTimerRef.current) {
+                clearTimeout(deferredRemoteApplyTimerRef.current);
+              }
+              deferredRemoteApplyTimerRef.current = setTimeout(() => {
+                deferredRemoteApplyTimerRef.current = null;
+                const pending = deferredRemoteNextStateRef.current;
+                deferredRemoteNextStateRef.current = null;
+                if (pending && pending.kind === 'game_update') {
+                  applyRemoteMatchReset(pending.nextState);
+                }
+              }, waitMs);
+              return;
+            }
+          }
+
           const topCard = normalizedRemote.discardPile[normalizedRemote.discardPile.length - 1];
           const remoteTopId = topCard?.id ?? null;
           const isNewCardPlayed = !wasGameOver && Boolean(remoteTopId && remoteTopId !== prevTopId);
@@ -1933,22 +2177,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               hapticsService.victory();
             }
           } else if (wasGameOver) {
-            resetMatchTrackingIds(onlineRoomCode);
-            resetMatchCountdown(
-              normalizedRemote.matchStartedAt
-                ? computeRemainingMsFromStart(
-                    normalizedRemote.matchStartedAt,
-                    Date.now(),
-                    (normalizedRemote.matchDurationSeconds ?? 180) * 1000
-                  )
-                : MATCH_DURATION_MS
-            );
-            setSelectedWildCard(null);
-            setIsColorPickerOpen(false);
-            setPendingPairPlay(null);
-            setPendingWildPair(null);
-            setRivalCountdown(null);
-            runDealingAnimation(normalizedRemote.players);
+            applyRemoteMatchReset(normalizedRemote);
           } else if (isNewCardPlayed && topCard) {
             soundService.playCardSnap();
             hapticsService.cardSnap();
@@ -2039,16 +2268,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             matchRemainingRef.current = 0;
             setMatchRemainingMs(0);
           }
-        } else if (recoveredState.matchStartedAt) {
-          resetMatchCountdown(
-            computeRemainingMsFromStart(
-              recoveredState.matchStartedAt,
-              Date.now(),
-              (recoveredState.matchDurationSeconds ?? 180) * 1000
-            )
-          );
-          if (resolvedOnlineUserId) {
-            multiplayerService.broadcastReclaimControl(resolvedOnlineUserId).catch(() => {});
+        } else {
+          clearPostMatchPacingTimers();
+          if (recoveredState.matchStartedAt) {
+            resetMatchCountdown(
+              computeRemainingMsFromStart(
+                recoveredState.matchStartedAt,
+                Date.now(),
+                (recoveredState.matchDurationSeconds ?? 180) * 1000
+              )
+            );
+            if (resolvedOnlineUserId) {
+              multiplayerService.broadcastReclaimControl(resolvedOnlineUserId).catch(() => {});
+            }
           }
         }
         setGameState(recoveredState);
@@ -2064,50 +2296,42 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         playOpponentRivalCue(event.playerId, event.playerName, event.timestamp);
       },
       onSeriesNextMatch: (nextState, isNewSeries) => {
-        stopDisconnectionCountdown();
-        if (isNewSeries) {
-          // Display the series-end interstitial to non-host players on new series rematch too
-          void adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+        const waitMs = getDeferredTransitionWaitMs({
+          isGameOver: isGameOverRef.current,
+          isOverlayReady: isGameOverOverlayReadyRef.current,
+          gameOverDetectedAtMs: gameOverDetectedAtRef.current,
+          scorecardOpenedAtMs: roomScorecardOpenedAtRef.current,
+          isOnlineRoom: isOnlineMode && !activeIsQuickMatchRef.current,
+          nowMs: Date.now(),
+        });
+        if (waitMs > 0) {
+          deferredRemoteNextStateRef.current = {
+            kind: 'series_next',
+            nextState,
+            isNewSeries,
+          };
+          if (deferredRemoteApplyTimerRef.current) {
+            clearTimeout(deferredRemoteApplyTimerRef.current);
+          }
+          deferredRemoteApplyTimerRef.current = setTimeout(() => {
+            deferredRemoteApplyTimerRef.current = null;
+            const pending = deferredRemoteNextStateRef.current;
+            deferredRemoteNextStateRef.current = null;
+            if (pending && pending.kind === 'series_next') {
+              applyRemoteSeriesNextMatch(pending.nextState, Boolean(pending.isNewSeries));
+            }
+          }, waitMs);
+          return;
         }
-        if (seriesNextTimerRef.current) {
-          clearInterval(seriesNextTimerRef.current);
-          seriesNextTimerRef.current = null;
-        }
-        setSeriesNextCountdown(null);
-        setSelectedWildCard(null);
-        setIsColorPickerOpen(false);
-        setPendingPairPlay(null);
-        setPendingWildPair(null);
-        setRivalCountdown(null);
-        lastTopDiscardIdRef.current =
-          nextState.discardPile[nextState.discardPile.length - 1]?.id ?? null;
-        lastPendingColorChoiceRef.current = Boolean(nextState.pendingColorChoice);
-        resetMatchCountdown(
-          nextState.matchStartedAt
-            ? computeRemainingMsFromStart(
-                nextState.matchStartedAt,
-                Date.now(),
-                (nextState.matchDurationSeconds ?? 180) * 1000
-              )
-            : MATCH_DURATION_MS
-        );
-        setGameState(nextState);
-        setIsReconnecting(false);
-        if (!nextState.seriesState?.seriesEndedEarly) {
-          soundService.playCardDraw();
-          hapticsService.cardSnap();
-          runDealingAnimation(nextState.players);
-          const matchNum = nextState.seriesState?.currentMatchNumber ?? 1;
-          const total = nextState.seriesState?.totalMatches ?? 5;
-          showQuickBanner(
-            isNewSeries ? 'New 5-Match Series started!' : `Match ${matchNum}/${total} started!`
-          );
-        }
+        applyRemoteSeriesNextMatch(nextState, isNewSeries);
       },
       onPlayerLeft: (departedId, name) => {
+        setDepartedRoomPlayerIds((prev) => (prev.includes(departedId) ? prev : [...prev, departedId]));
         if (isPrivateSeriesRoom) {
           showQuickBanner(`👋 ${name || 'A player'} left the room`);
           setGameState((prev) => applySeriesPlayerDeparture(prev, departedId));
+        } else if (isGameOverRef.current) {
+          showQuickBanner(`👋 ${name || 'A player'} left the room`);
         } else {
           Alert.alert('Player Disconnected', `${name} has left the match.`);
         }
@@ -2127,6 +2351,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     showQuickBanner,
     startDisconnectionCountdown,
     stopDisconnectionCountdown,
+    clearPostMatchPacingTimers,
+    onlineRoomCode,
+    resetMatchCountdown,
+    resetMatchTrackingIds,
   ]);
 
   // AppState background/foreground resume listener (audio lifecycle + online reconnection)
@@ -4193,6 +4421,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           visible={isLobbyModalOpen}
           onClose={() => setIsLobbyModalOpen(false)}
           onGameStart={(initialState, playerId, roomCode, isQuick) => {
+            clearPostMatchPacingTimers();
             resetMatchTrackingIds(roomCode);
             setGameState(initialState);
             setLocalOnlinePlayerId(playerId);
@@ -4212,9 +4441,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           onGoHome={handleExitToHome}
         />
 
-        {/* Game Over Victory Screen (Solo / Pass & Play / Quick Match) */}
+        {/* Game Over Victory Screen (Solo / Pass & Play / Quick Match / Non-Series Room) */}
         <GameOverModal
-          visible={gameState.isGameOver && !isPrivateSeriesRoom && !isTutorial}
+          visible={gameState.isGameOver && isGameOverOverlayReady && !isPrivateSeriesRoom && !isTutorial}
           winner={gameState.winner}
           turnCount={gameState.turnCount}
           players={gameState.players}
@@ -4222,6 +4451,9 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           mode={isOnlineMode ? 'online' : gameState.gameMode === 'vs_bot' ? 'bot' : 'pass_and_play'}
           gameMode={gameState.gameMode}
           isOnlineMode={isOnlineMode}
+          isOnlineRoom={isOnlineMode && !activeIsQuickMatch}
+          seriesState={gameState.seriesState}
+          departedPlayerIds={departedRoomPlayerIds}
           matchRewards={matchRewards}
           endedByTimeout={gameState.endedByTimeout}
           timeoutUsedTieBreaker={gameState.timeoutUsedTieBreaker}
@@ -4251,18 +4483,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
 
         {/* Celebratory Tutorial Completion Modal (+100 Coins & +3 Gems on first completion) */}
         <TutorialCompleteModal
-          visible={Boolean(isTutorial && gameState.isGameOver)}
+          visible={Boolean(isTutorial && gameState.isGameOver && isGameOverOverlayReady)}
           rewardResult={tutorialRewardResult}
           onContinueHome={handleExitToHome}
         />
 
         {/* Private Room 5-Match Series Modal (Between-Round & Final Scorecard) */}
         <PrivateSeriesModal
-          visible={gameState.isGameOver && isPrivateSeriesRoom}
+          visible={gameState.isGameOver && isGameOverOverlayReady && isPrivateSeriesRoom}
           seriesState={gameState.seriesState}
           roundWinner={gameState.winner}
           localPlayerId={myPlayer.id}
           nextMatchCountdown={seriesNextCountdown}
+          scorecardHoldRemainingMs={scorecardHoldRemainingMs}
           endedByTimeout={gameState.endedByTimeout}
           timeoutUsedTieBreaker={gameState.timeoutUsedTieBreaker}
           onNextMatch={() => handleAdvanceNextSeriesMatch(false)}

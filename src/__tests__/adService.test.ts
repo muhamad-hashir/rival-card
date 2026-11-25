@@ -9,6 +9,8 @@ import {
   ADMOB_TEST_INTERSTITIAL_ID,
   ADMOB_TEST_REWARDED_ID,
   formatCooldownRemaining,
+  getGoogleMobileAdsModule,
+  initializeAdMob,
   INTERSTITIAL_MATCH_INTERVAL,
   MAX_REWARDED_ADS_PER_DAY,
   MAX_TOTAL_REWARDED_ADS_PER_DAY,
@@ -759,5 +761,32 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
         canShowPendingInterstitialOnExit: true,
       }
     );
+  });
+
+  test('Lazy native module loader returns null safely and AdService no-ops cleanly on Web / Expo Go', async () => {
+    // In Node/Expo Go/Web without native RNGoogleMobileAdsModule linked, lazy loader returns null without throwing
+    assert.strictEqual(getGoogleMobileAdsModule(), null);
+
+    adService.setMobileAdsModuleForTesting(null);
+    await assert.doesNotReject(async () => {
+      await initializeAdMob();
+      await adService.initializeAdMob();
+      adService.preloadRewardedAd();
+      adService.preloadInterstitialAd();
+    });
+
+    assert.strictEqual(adService.isRewardedAdReady(), false);
+    assert.strictEqual(adService.isInterstitialAdReady(), false);
+
+    const rewardedRes = await adService.showRewardedAdForCoins('shop', 9_000_000);
+    assert.strictEqual(rewardedRes.shown, false);
+    assert.strictEqual(rewardedRes.rewarded, false);
+    assert.strictEqual(rewardedRes.coinsAwarded, 0);
+    assert.strictEqual(rewardedRes.reason, 'unavailable');
+
+    await adService.recordCompletedMatch({ isOnlineRoom: true, isSeriesComplete: true, isWinner: true });
+    const interRes = await adService.showPendingPostMatchInterstitialIfDue();
+    assert.strictEqual(interRes.shown, false);
+    assert.strictEqual(interRes.skippedReason, 'unavailable');
   });
 });

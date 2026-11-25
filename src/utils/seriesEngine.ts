@@ -51,8 +51,46 @@ export function createInitialSeriesState(
     hostPlayerId,
     playerStats,
     roundResults: [],
+    seriesCompleted: false,
     seriesEndedEarly: false,
   };
+}
+
+type SeriesCompletionSummary = Pick<
+  SeriesState,
+  | 'isPrivateSeries'
+  | 'currentMatchNumber'
+  | 'totalMatches'
+  | 'roundResults'
+  | 'seriesCompleted'
+  | 'seriesEndedEarly'
+>;
+
+/**
+ * Returns true when the series has already naturally completed its final match
+ * (as opposed to ending early before the final round concluded).
+ */
+export function isSeriesNaturallyCompleted(
+  stateOrSeries:
+    | Pick<GameState, 'isGameOver' | 'seriesState'>
+    | SeriesCompletionSummary
+    | null
+    | undefined
+): boolean {
+  if (!stateOrSeries) return false;
+  const series: SeriesCompletionSummary | undefined =
+    'isPrivateSeries' in stateOrSeries ? stateOrSeries : stateOrSeries.seriesState;
+  const isRoundOver = 'isGameOver' in stateOrSeries ? Boolean(stateOrSeries.isGameOver) : false;
+  if (!series || !series.isPrivateSeries || series.seriesEndedEarly) {
+    return false;
+  }
+  if (series.seriesCompleted) {
+    return true;
+  }
+  if (Array.isArray(series.roundResults) && series.roundResults.length >= series.totalMatches) {
+    return true;
+  }
+  return isRoundOver && series.currentMatchNumber >= series.totalMatches;
 }
 
 /**
@@ -128,12 +166,17 @@ export function recordSeriesRoundResult(state: GameState): GameState {
     placements,
   };
 
+  const completedNaturally =
+    !series.seriesEndedEarly &&
+    (Boolean(series.seriesCompleted) || series.currentMatchNumber >= series.totalMatches);
+
   return {
     ...state,
     seriesState: {
       ...series,
       playerStats: nextStats,
       roundResults: [...series.roundResults, roundResult],
+      seriesCompleted: completedNaturally,
     },
   };
 }
@@ -293,7 +336,22 @@ export function applySeriesPlayerDeparture(
     playerStats: updatedStats,
   };
 
-  // Fewer than 2 active players left: conclude series cleanly into Final Scorecard
+  // If the final match of the series has already naturally completed, preserve
+  // `Series Completed` (`seriesEndedEarly = false`) while keeping the departed player
+  // flagged as `isActive: false` ("Left Room") on the final scorecard.
+  if (isSeriesNaturallyCompleted(state)) {
+    return {
+      ...state,
+      seriesState: {
+        ...nextSeries,
+        seriesCompleted: true,
+        seriesEndedEarly: false,
+        endedReason: undefined,
+      },
+    };
+  }
+
+  // Fewer than 2 active players left BEFORE series completion: conclude early
   if (remainingActiveStats.length < 2) {
     const soleSurvivor = remainingPlayersInHand[0] ?? state.winner ?? state.players[0] ?? null;
     const endedState: GameState = {
@@ -306,6 +364,7 @@ export function applySeriesPlayerDeparture(
       pendingWildCard: null,
       seriesState: {
         ...nextSeries,
+        seriesCompleted: false,
         seriesEndedEarly: true,
         endedReason: 'Fewer than 2 players remain in the room.',
       },

@@ -121,6 +121,7 @@ export interface SeriesState {
   hostPlayerId: string;
   playerStats: Record<string, SeriesPlayerStats>;
   roundResults: SeriesRoundResult[];
+  seriesCompleted?: boolean;
   seriesEndedEarly?: boolean;
   endedReason?: string;
 }

@@ -2,6 +2,11 @@
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { getTimeoutTieBreakerNote } from '../gameEngine';
+import {
+  formatScorecardHoldSeconds,
+  getRemainingScorecardHoldMs,
+  ROOM_SCORECARD_MIN_DISPLAY_MS,
+} from '../utils/matchEndPacing';
 import type { Player, TimeoutStandingBreakdown } from '../types';
 
 function getOrdinalRank(index: number): string {
@@ -247,5 +252,25 @@ describe('GameOverModal Standings & Ranking Logic', () => {
     assert.strictEqual(getTimeoutTieBreakerNote('p1', threeWayTie), 'Tie-breaker: Special/Wild card');
     assert.strictEqual(getTimeoutTieBreakerNote('p2', threeWayTie), 'Tie-breaker: Action card');
     assert.strictEqual(getTimeoutTieBreakerNote('p3', threeWayTie), null);
+  });
+
+  test('Online Room Step 1 Scorecard locks Continue / auto-advance for 5500ms before Step 2 Rewards', () => {
+    assert.strictEqual(ROOM_SCORECARD_MIN_DISPLAY_MS, 5500);
+    const openedAt = 10_000;
+
+    // Immediately upon opening -> locked for 5500ms (6s ceiling display)
+    const remainingStart = getRemainingScorecardHoldMs(openedAt, openedAt);
+    assert.strictEqual(remainingStart > 0, true);
+    assert.strictEqual(formatScorecardHoldSeconds(remainingStart), 6);
+
+    // At 4000ms -> still locked with 1500ms (2s ceiling display)
+    const remainingMid = getRemainingScorecardHoldMs(openedAt, openedAt + 4000);
+    assert.strictEqual(remainingMid, 1500);
+    assert.strictEqual(formatScorecardHoldSeconds(remainingMid), 2);
+
+    // At 5500ms -> unlocked (0ms remaining) and ready to auto-advance to Step 2
+    const remainingDone = getRemainingScorecardHoldMs(openedAt, openedAt + 5500);
+    assert.strictEqual(remainingDone, 0);
+    assert.strictEqual(formatScorecardHoldSeconds(remainingDone), 0);
   });
 });

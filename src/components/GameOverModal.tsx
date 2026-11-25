@@ -9,8 +9,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { GameMode, Player, TimeoutStandingBreakdown } from '../types';
+import type { GameMode, Player, SeriesState, TimeoutStandingBreakdown } from '../types';
 import { getTimeoutTieBreakerNote } from '../gameEngine';
+import { isSeriesNaturallyCompleted } from '../utils/seriesEngine';
 import type { SetupPreset } from '../screens/HomeScreen';
 import {
   FONT_CARTOON_BOLD,
@@ -30,6 +31,12 @@ import {
   REWARDED_AD_COIN_PAYOUT,
   RewardedAdCooldownStatus,
 } from '../services/adService';
+import {
+  formatScorecardHoldSeconds,
+  getRemainingScorecardHoldMs,
+  getScorecardHoldProgressPct,
+  ROOM_SCORECARD_MIN_DISPLAY_MS,
+} from '../utils/matchEndPacing';
 
 export interface GameOverModalProps {
   visible: boolean;
@@ -40,6 +47,9 @@ export interface GameOverModalProps {
   mode?: 'bot' | 'online' | 'pass_and_play';
   gameMode?: GameMode;
   isOnlineMode?: boolean;
+  isOnlineRoom?: boolean;
+  seriesState?: SeriesState | null;
+  departedPlayerIds?: string[];
   matchRewards?: AwardRewardsResult | null;
   endedByTimeout?: boolean;
   timeoutUsedTieBreaker?: boolean;
@@ -69,6 +79,9 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   mode,
   gameMode,
   isOnlineMode: _isOnlineMode = false,
+  isOnlineRoom = false,
+  seriesState = null,
+  departedPlayerIds = [],
   matchRewards = null,
   endedByTimeout = false,
   timeoutUsedTieBreaker = false,
@@ -82,6 +95,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
 }) => {
   // Step 1: "Victory & Standings" | Step 2: "Rewards & Level Up"
   const [step, setStep] = useState<1 | 2>(1);
+  const [scorecardHoldRemainingMs, setScorecardHoldRemainingMs] = useState<number>(0);
   const [isWatchingAd, setIsWatchingAd] = useState(false);
   const [adRewardClaimed, setAdRewardClaimed] = useState(false);
   const [adFeedbackMessage, setAdFeedbackMessage] = useState<string | null>(null);
@@ -102,8 +116,32 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
       setAdFeedbackMessage(null);
       adService.getRewardedAdCooldownStatus('post_match').then(setAdCooldown).catch(() => {});
       adService.preloadRewardedAd();
+    } else {
+      setScorecardHoldRemainingMs(0);
     }
   }, [visible]);
+
+  // Enforce a 5.5-second minimum Room Scorecard view before auto-advancing to Match Rewards
+  useEffect(() => {
+    if (!visible || !isOnlineRoom || step !== 1) {
+      setScorecardHoldRemainingMs(0);
+      return;
+    }
+
+    const openedAt = Date.now();
+    setScorecardHoldRemainingMs(ROOM_SCORECARD_MIN_DISPLAY_MS);
+
+    const timer = setInterval(() => {
+      const remaining = getRemainingScorecardHoldMs(openedAt, Date.now(), ROOM_SCORECARD_MIN_DISPLAY_MS);
+      setScorecardHoldRemainingMs(remaining);
+      if (remaining <= 0) {
+        clearInterval(timer);
+        setStep(2);
+      }
+    }, 150);
+
+    return () => clearInterval(timer);
+  }, [visible, isOnlineRoom, step]);
 
   if (!winner) return null;
 
@@ -158,7 +196,15 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     )
   );
 
+  const isScorecardHoldLocked = Boolean(isOnlineRoom && step === 1 && scorecardHoldRemainingMs > 0);
+  const scorecardHoldSeconds = formatScorecardHoldSeconds(scorecardHoldRemainingMs);
+  const scorecardHoldProgressPct = getScorecardHoldProgressPct(
+    scorecardHoldRemainingMs,
+    ROOM_SCORECARD_MIN_DISPLAY_MS
+  );
+
   const handleContinueToStep2 = () => {
+    if (isScorecardHoldLocked) return;
     hapticsService.cardSnap();
     soundService.playCardSnap();
     setStep(2);
@@ -199,6 +245,16 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
       setIsWatchingAd(false);
     }
   };
+
+  const seriesCompletedNaturally = isSeriesNaturallyCompleted(seriesState);
+  const seriesEndedEarlyFlag = Boolean(seriesState?.seriesEndedEarly) && !seriesCompletedNaturally;
+  const seriesStatusLabel = seriesState?.isPrivateSeries
+    ? seriesCompletedNaturally
+      ? 'Series Completed'
+      : seriesEndedEarlyFlag
+      ? 'Series Ended Early'
+      : null
+    : null;
 
   return (
     <Modal
@@ -256,6 +312,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                   >
                     {endedByTimeout
                       ? `⏱️ TIME'S UP! • ${isLocalWinner ? 'VICTORY' : 'DEFEAT'}`
+                      : seriesStatusLabel
+                      ? `${seriesStatusLabel.toUpperCase()} • ${isLocalWinner ? 'VICTORY' : 'DEFEAT'}`
                       : isLocalWinner
                       ? 'VICTORY!'
                       : 'DEFEAT'}
@@ -287,6 +345,9 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                     const tieBreakerNote = endedByTimeout
                       ? getTimeoutTieBreakerNote(p.id, timeoutStandings)
                       : null;
+                    const hasLeftRoom =
+                      departedPlayerIds.includes(p.id) ||
+                      seriesState?.playerStats?.[p.id]?.isActive === false;
                     const pCardLabel = p.hand.length === 1 ? 'card' : 'cards';
 
                     return (
@@ -310,16 +371,23 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                           {Boolean(p.avatarId) && (
                             <AvatarIcon avatarId={p.avatarId} size={34} showCircle />
                           )}
-                          <Text
-                            style={[
-                              styles.playerRowName,
-                              isWinner && styles.winnerRowName,
-                              !isWinner && isLocalPlayer && styles.localPlayerRowName,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {displayName}
-                          </Text>
+                          <View style={styles.playerNameStack}>
+                            <Text
+                              style={[
+                                styles.playerRowName,
+                                isWinner && styles.winnerRowName,
+                                !isWinner && isLocalPlayer && styles.localPlayerRowName,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {displayName}
+                            </Text>
+                            {hasLeftRoom && (
+                              <View style={styles.leftRoomBadge}>
+                                <Text style={styles.leftRoomBadgeText}>Left Room</Text>
+                              </View>
+                            )}
+                          </View>
                         </View>
 
                         {/* Column 3: Remaining Cards / Tie-Breaker Note / Winner Badge */}
@@ -346,13 +414,31 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                   })}
                 </View>
 
+                {/* Visible Room Scorecard minimum-display countdown & progress bar */}
+                {isScorecardHoldLocked && (
+                  <View style={styles.scorecardHoldBox} testID="gameover-scorecard-hold-banner">
+                    <Text style={styles.scorecardHoldText}>
+                      Room Scorecard • Match Rewards in {scorecardHoldSeconds}s
+                    </Text>
+                    <View style={styles.scorecardHoldTrack}>
+                      <View
+                        style={[styles.scorecardHoldFill, { width: `${scorecardHoldProgressPct}%` }]}
+                      />
+                    </View>
+                  </View>
+                )}
+
                 {/* Primary Action Button: Emerald Green "Continue ➔" */}
                 <TouchableOpacity
                   activeOpacity={0.8}
+                  disabled={isScorecardHoldLocked}
                   onPress={handleContinueToStep2}
-                  style={styles.continueBtn}
+                  style={[styles.continueBtn, isScorecardHoldLocked && styles.continueBtnDisabled]}
+                  accessibilityState={{ disabled: isScorecardHoldLocked }}
                 >
-                  <Text style={styles.continueBtnText}>Continue ➔</Text>
+                  <Text style={styles.continueBtnText}>
+                    {isScorecardHoldLocked ? `Continue in ${scorecardHoldSeconds}s...` : 'Continue ➔'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -814,7 +900,24 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_BOLD,
     fontSize: 13,
     color: '#334155',
+  },
+  playerNameStack: {
     flex: 1,
+  },
+  leftRoomBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginTop: 2,
+  },
+  leftRoomBadgeText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 10,
+    color: '#DC2626',
   },
   winnerRowName: {
     color: '#0F172A',
@@ -864,6 +967,40 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 3,
+  },
+  continueBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+    shadowOpacity: 0.08,
+  },
+  scorecardHoldBox: {
+    width: '100%',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  scorecardHoldText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#1E40AF',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  scorecardHoldTrack: {
+    width: '100%',
+    height: 6,
+    backgroundColor: '#DBEAFE',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  scorecardHoldFill: {
+    height: '100%',
+    backgroundColor: '#3B82F6',
+    borderRadius: 999,
   },
   continueBtnText: {
     ...FONT_CARTOON_HEAVY,

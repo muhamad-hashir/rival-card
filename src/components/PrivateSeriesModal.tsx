@@ -20,6 +20,11 @@ import { getActiveSeriesPlayers, getSeriesStandings } from '../utils/seriesEngin
 import { ModalConfettiBurst } from './ModalConfettiBurst';
 import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
+import {
+  formatScorecardHoldSeconds,
+  getScorecardHoldProgressPct,
+  ROOM_SCORECARD_MIN_DISPLAY_MS,
+} from '../utils/matchEndPacing';
 
 export interface PrivateSeriesModalProps {
   visible: boolean;
@@ -27,6 +32,7 @@ export interface PrivateSeriesModalProps {
   roundWinner: Player | null;
   localPlayerId: string;
   nextMatchCountdown: number | null;
+  scorecardHoldRemainingMs?: number;
   endedByTimeout?: boolean;
   timeoutUsedTieBreaker?: boolean;
   onNextMatch: () => void;
@@ -47,6 +53,7 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
   roundWinner,
   localPlayerId,
   nextMatchCountdown,
+  scorecardHoldRemainingMs = 0,
   endedByTimeout = false,
   timeoutUsedTieBreaker = false,
   onNextMatch,
@@ -59,25 +66,48 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
 
   const standings = getSeriesStandings(seriesState);
   const activePlayers = getActiveSeriesPlayers(seriesState);
+  const isSeriesCompletedNaturally =
+    !seriesState.seriesEndedEarly &&
+    (Boolean(seriesState.seriesCompleted) ||
+      seriesState.currentMatchNumber >= seriesState.totalMatches ||
+      seriesState.roundResults.length >= seriesState.totalMatches);
   const isFinalMatch =
-    Boolean(seriesState.seriesEndedEarly) ||
-    seriesState.currentMatchNumber >= seriesState.totalMatches;
+    Boolean(seriesState.seriesEndedEarly) || isSeriesCompletedNaturally;
 
   const isHost = seriesState.hostPlayerId === localPlayerId;
   const canContinueSeries = activePlayers.length >= 2;
   const nextMatchNumber = Math.min(seriesState.currentMatchNumber + 1, seriesState.totalMatches);
+  const isScorecardHoldLocked = scorecardHoldRemainingMs > 0;
+  const holdSecondsLeft = formatScorecardHoldSeconds(scorecardHoldRemainingMs);
+  const holdProgressPct = getScorecardHoldProgressPct(
+    scorecardHoldRemainingMs,
+    ROOM_SCORECARD_MIN_DISPLAY_MS
+  );
+
+  const latestRoundResult =
+    seriesState.roundResults.length > 0
+      ? seriesState.roundResults[seriesState.roundResults.length - 1]
+      : null;
+  const roundDeltaByPlayerId: Record<string, number> = {};
+  if (latestRoundResult) {
+    for (const p of latestRoundResult.placements) {
+      roundDeltaByPlayerId[p.playerId] = p.pointsEarned;
+    }
+  }
 
   const seriesChampion = standings[0] ?? null;
   const isLocalRoundWinner = Boolean(roundWinner && roundWinner.id === localPlayerId);
   const isLocalChampion = Boolean(seriesChampion && seriesChampion.playerId === localPlayerId);
 
   const handleNextPress = () => {
+    if (isScorecardHoldLocked) return;
     hapticsService.cardSnap();
     soundService.playCardSnap();
     onNextMatch();
   };
 
   const handleNewSeriesPress = () => {
+    if (isScorecardHoldLocked) return;
     hapticsService.cardSnap();
     soundService.playCardSnap();
     onPlayNewSeries();
@@ -90,15 +120,15 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
   };
 
   const pillText = isFinalMatch
-    ? seriesState.seriesEndedEarly
+    ? seriesState.seriesEndedEarly && !isSeriesCompletedNaturally
       ? `SERIES ENDED • ${seriesState.roundResults.length}/${seriesState.totalMatches} PLAYED`
-      : `SERIES COMPLETE • ${seriesState.totalMatches}/${seriesState.totalMatches}`
+      : `SERIES COMPLETED • ${seriesState.totalMatches}/${seriesState.totalMatches}`
     : endedByTimeout
     ? `⏱️ TIME'S UP! • MATCH ${seriesState.currentMatchNumber} OF ${seriesState.totalMatches}`
     : `MATCH ${seriesState.currentMatchNumber} OF ${seriesState.totalMatches}`;
 
   const headline = isFinalMatch
-    ? seriesState.seriesEndedEarly
+    ? seriesState.seriesEndedEarly && !isSeriesCompletedNaturally
       ? 'Series Ended Early'
       : isLocalChampion
       ? 'Series Champion!'
@@ -108,7 +138,7 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
     : `${roundWinner?.name || 'Player'} Won Match ${seriesState.currentMatchNumber}!`;
 
   const subtitle = isFinalMatch
-    ? seriesState.seriesEndedEarly
+    ? seriesState.seriesEndedEarly && !isSeriesCompletedNaturally
       ? seriesState.endedReason || 'Not enough players remained to continue the 5-match series.'
       : isLocalChampion
       ? 'You topped the 5-match private room leaderboard!'
@@ -207,16 +237,25 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
                           {displayName}
                         </Text>
                         {!entry.isActive && (
-                          <Text style={styles.leftRoomTag}>Left room</Text>
+                          <View style={styles.leftRoomBadge}>
+                            <Text style={styles.leftRoomTag}>Left Room</Text>
+                          </View>
                         )}
                       </View>
                     </View>
 
-                    {/* Wins & Total Series Score */}
+                    {/* Wins, Round Delta & Total Series Score */}
                     <View style={styles.scoreColumn}>
-                      <Text style={[styles.pointsText, isFirst && styles.leaderPointsText]}>
-                        {entry.totalPoints} pts
-                      </Text>
+                      <View style={styles.pointsRow}>
+                        <Text style={[styles.pointsText, isFirst && styles.leaderPointsText]}>
+                          {entry.totalPoints} pts
+                        </Text>
+                        {typeof roundDeltaByPlayerId[entry.playerId] === 'number' && (
+                          <Text style={styles.roundDeltaText}>
+                            +{roundDeltaByPlayerId[entry.playerId]}
+                          </Text>
+                        )}
+                      </View>
                       <Text style={styles.winsText}>
                         {entry.wins} {entry.wins === 1 ? 'Win' : 'Wins'}
                       </Text>
@@ -226,19 +265,40 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
               })}
             </View>
 
+            {/* Minimum 5.5s Room Scorecard Review Indicator */}
+            {isScorecardHoldLocked && (
+              <View style={styles.scorecardHoldBox} testID="room-scorecard-hold-banner">
+                <Text style={styles.scorecardHoldText}>
+                  {isFinalMatch
+                    ? `Scorecard review • Rematch ready in ${holdSecondsLeft}s`
+                    : `Scorecard review • Next round unlocks in ${holdSecondsLeft}s`}
+                </Text>
+                <View style={styles.scorecardHoldTrack}>
+                  <View style={[styles.scorecardHoldFill, { width: `${holdProgressPct}%` }]} />
+                </View>
+              </View>
+            )}
+
             {/* BETWEEN-ROUND ACTIONS (Matches 1–4) */}
             {!isFinalMatch && (
               <View style={styles.actionsColumn}>
                 {isHost ? (
                   <TouchableOpacity
                     activeOpacity={0.85}
+                    disabled={isScorecardHoldLocked}
                     onPress={handleNextPress}
-                    style={styles.primaryActionBtn}
+                    style={[
+                      styles.primaryActionBtn,
+                      isScorecardHoldLocked && styles.primaryActionBtnDisabled,
+                    ]}
                     accessibilityRole="button"
                     accessibilityLabel={`Start Match ${nextMatchNumber} of ${seriesState.totalMatches}`}
+                    accessibilityState={{ disabled: isScorecardHoldLocked }}
                   >
                     <Text style={styles.primaryActionBtnText}>
-                      {nextMatchCountdown !== null
+                      {isScorecardHoldLocked
+                        ? `Scorecard (${holdSecondsLeft}s)...`
+                        : nextMatchCountdown !== null
                         ? `Next Match (${nextMatchNumber}/${seriesState.totalMatches}) • ${nextMatchCountdown}s ➔`
                         : `Next Match (${nextMatchNumber}/${seriesState.totalMatches}) ➔`}
                     </Text>
@@ -246,7 +306,9 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
                 ) : (
                   <View style={styles.waitingHostBanner}>
                     <Text style={styles.waitingHostText}>
-                      {nextMatchCountdown !== null
+                      {isScorecardHoldLocked
+                        ? `⏳ Reviewing Match ${seriesState.currentMatchNumber} scorecard (${holdSecondsLeft}s)...`
+                        : nextMatchCountdown !== null
                         ? `⏳ Starting Match ${nextMatchNumber}/${seriesState.totalMatches} in ${nextMatchCountdown}s...`
                         : `⏳ Waiting for Host to start Match ${nextMatchNumber}/${seriesState.totalMatches}...`}
                     </Text>
@@ -271,12 +333,21 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
                 {isHost && canContinueSeries && !seriesState.seriesEndedEarly && (
                   <TouchableOpacity
                     activeOpacity={0.85}
+                    disabled={isScorecardHoldLocked}
                     onPress={handleNewSeriesPress}
-                    style={styles.primaryActionBtn}
+                    style={[
+                      styles.primaryActionBtn,
+                      isScorecardHoldLocked && styles.primaryActionBtnDisabled,
+                    ]}
                     accessibilityRole="button"
                     accessibilityLabel="Play New 5-Match Series"
+                    accessibilityState={{ disabled: isScorecardHoldLocked }}
                   >
-                    <Text style={styles.primaryActionBtnText}>Play New 5-Match Series</Text>
+                    <Text style={styles.primaryActionBtnText}>
+                      {isScorecardHoldLocked
+                        ? `Scorecard (${holdSecondsLeft}s)...`
+                        : 'Play New 5-Match Series'}
+                    </Text>
                   </TouchableOpacity>
                 )}
 
@@ -284,6 +355,14 @@ export const PrivateSeriesModal: React.FC<PrivateSeriesModalProps> = ({
                   <View style={styles.waitingHostBanner}>
                     <Text style={styles.waitingHostText}>
                       Host can start a new 5-match series or head back to lobby.
+                    </Text>
+                  </View>
+                )}
+
+                {!canContinueSeries && !seriesState.seriesEndedEarly && (
+                  <View style={styles.waitingHostBanner}>
+                    <Text style={styles.waitingHostText}>
+                      Other players left the room. Head back to the lobby to start a new room.
                     </Text>
                   </View>
                 )}
@@ -483,18 +562,43 @@ const styles = StyleSheet.create({
   localNameText: {
     color: '#1D4ED8',
   },
+  leftRoomBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginTop: 2,
+  },
   leftRoomTag: {
-    ...FONT_CARTOON_REGULAR,
+    ...FONT_CARTOON_BOLD,
     fontSize: 10,
     color: '#DC2626',
   },
   scoreColumn: {
     alignItems: 'flex-end',
   },
+  pointsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
   pointsText: {
     ...FONT_CARTOON_HEAVY,
     fontSize: 13,
     color: '#0F172A',
+  },
+  roundDeltaText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 11,
+    color: '#15803D',
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 6,
+    overflow: 'hidden',
   },
   leaderPointsText: {
     color: '#B45309',
@@ -503,6 +607,35 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_BOLD,
     fontSize: 10,
     color: '#64748B',
+  },
+  scorecardHoldBox: {
+    width: '100%',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  scorecardHoldText: {
+    ...FONT_CARTOON_BOLD,
+    fontSize: 12,
+    color: '#1E40AF',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  scorecardHoldTrack: {
+    width: '100%',
+    height: 6,
+    backgroundColor: '#DBEAFE',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  scorecardHoldFill: {
+    height: '100%',
+    backgroundColor: '#3B82F6',
+    borderRadius: 999,
   },
   actionsColumn: {
     width: '100%',
@@ -523,6 +656,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 3,
+  },
+  primaryActionBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    borderColor: '#64748B',
+    shadowOpacity: 0.08,
   },
   primaryActionBtnText: {
     ...FONT_CARTOON_HEAVY,

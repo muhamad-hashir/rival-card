@@ -8,9 +8,11 @@ import {
   createNextSeriesMatchState,
   getActiveSeriesPlayers,
   getSeriesStandings,
+  isSeriesNaturallyCompleted,
   PRIVATE_SERIES_TOTAL_MATCHES,
   recordSeriesRoundResult,
 } from '../utils/seriesEngine';
+import { resolveMatchAdContext } from '../services/adService';
 
 describe('Audible RIVAL! Callout Cue Metadata', () => {
   test('declareRival stamps caller ID, name, and timestamp on GameState for opponent SFX detection', () => {
@@ -134,5 +136,52 @@ describe('Private Room 5-Match Series Engine', () => {
     assert.equal(newSeries.seriesState?.roundResults.length, 0);
     assert.equal(newSeries.seriesState?.playerStats['p1'].totalPoints, 0);
     assert.equal(newSeries.seriesState?.playerStats['p1'].wins, 0);
+  });
+
+  test('player leaving after final match completes preserves Series Completed (seriesEndedEarly=false) and keeps Left Room flag', () => {
+    const twoPlayers = samplePlayers.slice(0, 2);
+    let state = createGame(twoPlayers, 'multiplayer', { allowStacking: true });
+    state.seriesState = createInitialSeriesState(twoPlayers, 'p1', PRIVATE_SERIES_TOTAL_MATCHES);
+
+    // Advance naturally through Match 5 of 5 and complete the final match
+    state.seriesState.currentMatchNumber = PRIVATE_SERIES_TOTAL_MATCHES;
+    state.players[0].hand = [];
+    state.players[1].hand = state.players[1].hand.slice(0, 3);
+    state.winner = state.players[0];
+    state.isGameOver = true;
+    state = recordSeriesRoundResult(state);
+
+    assert.equal(isSeriesNaturallyCompleted(state), true);
+    assert.equal(state.seriesState?.seriesCompleted, true);
+    assert.equal(state.seriesState?.seriesEndedEarly, false);
+
+    // Opponent (p2) leaves after the final match completes (< 2 active players remain)
+    const afterPostSeriesLeave = applySeriesPlayerDeparture(state, 'p2');
+
+    // Status MUST stay Series Completed (never overwritten to Series Ended Early)
+    assert.equal(afterPostSeriesLeave.seriesState?.seriesEndedEarly, false);
+    assert.equal(afterPostSeriesLeave.seriesState?.seriesCompleted, true);
+    assert.equal(afterPostSeriesLeave.seriesState?.endedReason, undefined);
+    assert.equal(isSeriesNaturallyCompleted(afterPostSeriesLeave), true);
+
+    // Departed player remains visible on scorecard flagged as inactive ("Left Room")
+    assert.equal(afterPostSeriesLeave.seriesState?.playerStats['p2']?.isActive, false);
+    assert.equal(afterPostSeriesLeave.seriesState?.playerStats['p1']?.isActive, true);
+    assert.equal(afterPostSeriesLeave.players.length, 2);
+
+    // Ad context still preserves series-complete state
+    assert.deepEqual(
+      resolveMatchAdContext({
+        gameMode: 'multiplayer',
+        isQuickMatch: false,
+        isGameOver: true,
+        seriesState: afterPostSeriesLeave.seriesState,
+      }),
+      {
+        isOnlineRoom: true,
+        isSeriesComplete: true,
+        canShowPendingInterstitialOnExit: true,
+      }
+    );
   });
 });

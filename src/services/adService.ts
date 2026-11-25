@@ -2,6 +2,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { GameMode, SeriesState } from '../types';
 import { playerProfileService, PlayerProfile } from './playerProfileService';
+import { getGoogleMobileAdsModule, isExpoGoRuntime } from './googleMobileAdsLoader';
+import type { AdInstanceLike, MobileAdsModuleLike } from './googleMobileAdsTypes';
+
+export type { AdInstanceLike, MobileAdsModuleLike };
+export { getGoogleMobileAdsModule, isExpoGoRuntime };
 
 function getPlatformOS(): string {
   try {
@@ -45,33 +50,6 @@ const FALLBACK_REWARDED_EVENT_TYPES = {
   LOADED: 'rewarded_loaded',
   EARNED_REWARD: 'rewarded_earned_reward',
 } as const;
-
-export interface AdInstanceLike {
-  loaded?: boolean;
-  load: () => void;
-  show: () => Promise<void>;
-  addAdEventListener: (eventType: string, listener: (payload?: any) => void) => () => void;
-}
-
-export interface MobileAdsModuleLike {
-  default?: () => { initialize: () => Promise<any> };
-  RewardedAd: {
-    createForAdRequest: (adUnitId: string, requestOptions?: Record<string, any>) => AdInstanceLike;
-  };
-  InterstitialAd: {
-    createForAdRequest: (adUnitId: string, requestOptions?: Record<string, any>) => AdInstanceLike;
-  };
-  AdEventType: {
-    LOADED: string;
-    ERROR: string;
-    OPENED?: string;
-    CLOSED: string;
-  };
-  RewardedAdEventType: {
-    LOADED: string;
-    EARNED_REWARD: string;
-  };
-}
 
 export interface RewardedAdCooldownStatus {
   placement: RewardedAdPlacement;
@@ -132,7 +110,11 @@ export interface MatchAdContextInput {
   isRecoveryMatch?: boolean;
   seriesState?: Pick<
     SeriesState,
-    'isPrivateSeries' | 'currentMatchNumber' | 'totalMatches' | 'seriesEndedEarly'
+    | 'isPrivateSeries'
+    | 'currentMatchNumber'
+    | 'totalMatches'
+    | 'seriesCompleted'
+    | 'seriesEndedEarly'
   > | null;
 }
 
@@ -168,7 +150,9 @@ export function resolveMatchAdContext(input: MatchAdContextInput): MatchAdContex
   const series = input.seriesState;
   const isSeriesComplete = !series?.isPrivateSeries
     ? true
-    : Boolean(series.seriesEndedEarly) || series.currentMatchNumber >= series.totalMatches;
+    : Boolean(series.seriesEndedEarly) ||
+      Boolean(series.seriesCompleted) ||
+      series.currentMatchNumber >= series.totalMatches;
 
   return {
     isOnlineRoom: true,
@@ -292,21 +276,9 @@ class AdService {
       return this.moduleOverride;
     }
 
-    if (getPlatformOS() === 'web') {
-      return null;
-    }
-
     if (!this.nativeModuleLoaded) {
       this.nativeModuleLoaded = true;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const mod = require('react-native-google-mobile-ads');
-        if (mod && mod.RewardedAd && mod.InterstitialAd) {
-          this.nativeModule = mod as MobileAdsModuleLike;
-        }
-      } catch {
-        this.nativeModule = null;
-      }
+      this.nativeModule = getGoogleMobileAdsModule();
     }
 
     return this.nativeModule;
@@ -364,6 +336,14 @@ class AdService {
         // ignore
       }
     }
+  }
+
+  /**
+   * Alias for `initialize()` to safely initialize Google AdMob on native builds
+   * and no-op cleanly on Web or Expo Go.
+   */
+  public async initializeAdMob(): Promise<void> {
+    return this.initialize();
   }
 
   /**
@@ -1046,3 +1026,7 @@ class AdService {
 }
 
 export const adService = new AdService();
+
+export function initializeAdMob(): Promise<void> {
+  return adService.initialize();
+}
