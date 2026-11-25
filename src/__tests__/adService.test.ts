@@ -12,6 +12,7 @@ import {
   INTERSTITIAL_MATCH_INTERVAL,
   MAX_REWARDED_ADS_PER_DAY,
   MAX_TOTAL_REWARDED_ADS_PER_DAY,
+  resolveMatchAdContext,
   REWARDED_AD_COIN_PAYOUT,
   REWARDED_COOLDOWN_WINDOW_MS,
   resolveAdUnitId,
@@ -545,5 +546,218 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     assert.strictEqual(recoveryWin.shown, true);
     assert.strictEqual(await adService.getConsecutiveLosses(), 0);
     assert.strictEqual(await adService.shouldTriggerRecoveryBotMatch(), false);
+  });
+
+  test('Online Room series: individual games never increment 3-match counter, trigger recovery bots, or show between-round ads', async () => {
+    const mock = createMockAdsModule();
+    adService.setMobileAdsModuleForTesting(mock.mod);
+    await adService.initialize();
+
+    // Seed Solo/Quick Match state: 2 matches played, 1 consecutive loss
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: true });
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: false });
+    assert.strictEqual(await adService.getCompletedMatchesCount(), 2);
+    assert.strictEqual(await adService.getConsecutiveLosses(), 1);
+
+    // Play 4 individual Online Room rounds (losses & wins) in an ongoing 5-match series
+    for (let round = 1; round <= 4; round++) {
+      const roundRes = await adService.recordCompletedMatch({
+        isTutorial: false,
+        isWinner: round % 2 === 0,
+        isOnlineRoom: true,
+        isSeriesComplete: false,
+      });
+      assert.strictEqual(roundRes.completedMatchesCount, 2, `Room match #${round} must not increment 3-match counter`);
+      assert.strictEqual(roundRes.consecutiveLosses, 1, `Room match #${round} must not alter consecutiveLosses`);
+      assert.strictEqual(roundRes.shouldShowInterstitial, false, `No interstitial after ongoing Room match #${round}`);
+      assert.strictEqual(roundRes.suppressedByLossStreak, false);
+      assert.strictEqual(adService.hasPendingPostMatchInterstitial(), false);
+    }
+
+    assert.strictEqual(await adService.getCompletedMatchesCount(), 2);
+    assert.strictEqual(await adService.getConsecutiveLosses(), 1);
+    assert.strictEqual(await adService.shouldTriggerRecoveryBotMatch(), false);
+    assert.strictEqual(
+      mock.createdInterstitials.reduce((sum, ad) => sum + ad.showCalls, 0),
+      0
+    );
+
+    // Direct call helper during ongoing room series also stays silent
+    const midSeriesDirect = await adService.recordCompletedMatchAndMaybeShowInterstitial({
+      isOnlineRoom: true,
+      isSeriesComplete: false,
+      isWinner: false,
+    });
+    assert.strictEqual(midSeriesDirect.shown, false);
+    assert.strictEqual(midSeriesDirect.shouldShow, false);
+    assert.strictEqual(midSeriesDirect.skippedReason, 'room_series_in_progress');
+    assert.strictEqual(await adService.getCompletedMatchesCount(), 2);
+  });
+
+  test('Online Room series completion triggers interstitial for both winners & losers even when consecutiveLosses >= 3', async () => {
+    const mock = createMockAdsModule();
+    adService.setMobileAdsModuleForTesting(mock.mod);
+    await adService.initialize();
+
+    // Put player into 3-loss suppression state via Solo/Quick Match
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: false });
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: false });
+    await adService.recordCompletedMatch({ isTutorial: false, isWinner: false });
+    assert.strictEqual(await adService.getCompletedMatchesCount(), 3);
+    assert.strictEqual(await adService.getConsecutiveLosses(), 3);
+
+    // Winner finishing an Online Room series gets the series-end interstitial (bypasses loss_streak_guard)
+    const winnerRecord = await adService.recordCompletedMatch({
+      isOnlineRoom: true,
+      isSeriesComplete: true,
+      isWinner: true,
+    });
+    assert.strictEqual(winnerRecord.completedMatchesCount, 3);
+    assert.strictEqual(winnerRecord.consecutiveLosses, 3);
+    assert.strictEqual(winnerRecord.shouldShowInterstitial, true);
+    assert.strictEqual(winnerRecord.suppressedByLossStreak, false);
+    assert.strictEqual(adService.hasPendingPostMatchInterstitial(), true);
+
+    const winnerShown = await adService.showPendingPostMatchInterstitialIfDue();
+    assert.strictEqual(winnerShown.shown, true);
+    assert.strictEqual(winnerShown.shouldShow, true);
+
+    // Loser finishing an Online Room series ALSO gets the series-end interstitial even with 3 Solo losses
+    const loserRecord = await adService.recordCompletedMatch({
+      isOnlineRoom: true,
+      isSeriesComplete: true,
+      isWinner: false,
+    });
+    assert.strictEqual(loserRecord.completedMatchesCount, 3);
+    assert.strictEqual(loserRecord.consecutiveLosses, 3);
+    assert.strictEqual(loserRecord.shouldShowInterstitial, true);
+    assert.strictEqual(loserRecord.suppressedByLossStreak, false);
+
+    const loserShown = await adService.showPendingPostMatchInterstitialIfDue();
+    assert.strictEqual(loserShown.shown, true);
+    assert.strictEqual(loserShown.shouldShow, true);
+
+    // Watching a post-match rewarded ad on the final room screen still prevents back-to-back interstitials
+    await adService.recordCompletedMatch({
+      isOnlineRoom: true,
+      isSeriesComplete: true,
+      isWinner: false,
+    });
+    assert.strictEqual(adService.hasPendingPostMatchInterstitial(), true);
+    const rewardedRes = await adService.showRewardedAdForCoins('post_match', 7_000_000);
+    assert.strictEqual(rewardedRes.rewarded, true);
+    assert.strictEqual(adService.hasPendingPostMatchInterstitial(), false);
+
+    const suppressedBackToBack = await adService.showPendingPostMatchInterstitialIfDue();
+    assert.strictEqual(suppressedBackToBack.shown, false);
+
+    // Total interstitials shown = 2 (winner + loser), NOT 3
+    assert.strictEqual(
+      mock.createdInterstitials.reduce((sum, ad) => sum + ad.showCalls, 0),
+      2
+    );
+  });
+
+  test('resolveMatchAdContext cleanly separates Online Room series from Solo, Quick Match, and Tutorial', () => {
+    // Tutorial never shows ads
+    assert.deepStrictEqual(
+      resolveMatchAdContext({
+        gameMode: 'vs_bot',
+        isQuickMatch: false,
+        isTutorial: true,
+        isGameOver: true,
+      }),
+      {
+        isOnlineRoom: false,
+        isSeriesComplete: false,
+        canShowPendingInterstitialOnExit: false,
+      }
+    );
+
+    // Solo vs AI & Quick Match (both vs_bot fallback and 1v1 human) follow standard Solo/QM rules
+    assert.deepStrictEqual(
+      resolveMatchAdContext({
+        gameMode: 'vs_bot',
+        isQuickMatch: false,
+        isGameOver: true,
+      }),
+      {
+        isOnlineRoom: false,
+        isSeriesComplete: false,
+        canShowPendingInterstitialOnExit: true,
+      }
+    );
+    assert.deepStrictEqual(
+      resolveMatchAdContext({
+        gameMode: 'multiplayer',
+        isQuickMatch: true,
+        isGameOver: true,
+      }),
+      {
+        isOnlineRoom: false,
+        isSeriesComplete: false,
+        canShowPendingInterstitialOnExit: true,
+      }
+    );
+
+    // Online Room round 2 of 5 -> ongoing series, cannot show interstitial on exit
+    assert.deepStrictEqual(
+      resolveMatchAdContext({
+        gameMode: 'multiplayer',
+        isQuickMatch: false,
+        isGameOver: true,
+        seriesState: {
+          isPrivateSeries: true,
+          currentMatchNumber: 2,
+          totalMatches: 5,
+          seriesEndedEarly: false,
+        },
+      }),
+      {
+        isOnlineRoom: true,
+        isSeriesComplete: false,
+        canShowPendingInterstitialOnExit: false,
+      }
+    );
+
+    // Online Room final match 5 of 5 -> series complete, eligible for interstitial
+    assert.deepStrictEqual(
+      resolveMatchAdContext({
+        gameMode: 'multiplayer',
+        isQuickMatch: false,
+        isGameOver: true,
+        seriesState: {
+          isPrivateSeries: true,
+          currentMatchNumber: 5,
+          totalMatches: 5,
+          seriesEndedEarly: false,
+        },
+      }),
+      {
+        isOnlineRoom: true,
+        isSeriesComplete: true,
+        canShowPendingInterstitialOnExit: true,
+      }
+    );
+
+    // Online Room ended early (e.g. players left after match 2) -> series complete
+    assert.deepStrictEqual(
+      resolveMatchAdContext({
+        gameMode: 'multiplayer',
+        isQuickMatch: false,
+        isGameOver: true,
+        seriesState: {
+          isPrivateSeries: true,
+          currentMatchNumber: 2,
+          totalMatches: 5,
+          seriesEndedEarly: true,
+        },
+      }),
+      {
+        isOnlineRoom: true,
+        isSeriesComplete: true,
+        canShowPendingInterstitialOnExit: true,
+      }
+    );
   });
 });

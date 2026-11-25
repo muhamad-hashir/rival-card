@@ -136,7 +136,7 @@ import {
   tutorialService,
   TutorialRewardResult,
 } from '../services/tutorialService';
-import { adService } from '../services/adService';
+import { adService, resolveMatchAdContext } from '../services/adService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCENIC_BACKGROUND = require('../../assets/background1.png');
@@ -297,6 +297,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const [onlineRoomCode, setOnlineRoomCode] = useState<string | null>(initialOnlineRoomCode);
   const [localOnlinePlayerId, setLocalOnlinePlayerId] = useState<string | null>(initialLocalOnlinePlayerId);
   const [activeIsQuickMatch, setActiveIsQuickMatch] = useState<boolean>(isQuickMatch);
+  const activeIsQuickMatchRef = useRef<boolean>(isQuickMatch);
+  activeIsQuickMatchRef.current = activeIsQuickMatch;
   const [activeTaunt, setActiveTaunt] = useState<TauntMessage | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [matchRewards, setMatchRewards] = useState<AwardRewardsResult | null>(null);
@@ -507,7 +509,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Handle returning to home screen with portrait orientation lock
   const handleExitToHome = async () => {
     try {
-      if (!isTutorial && gameState.isGameOver) {
+      if (
+        resolveMatchAdContext({
+          gameMode: gameStateRef.current.gameMode,
+          isQuickMatch: activeIsQuickMatchRef.current,
+          isTutorial,
+          isGameOver: isGameOverRef.current,
+          seriesState: gameStateRef.current.seriesState,
+        }).canShowPendingInterstitialOnExit
+      ) {
         await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
       }
       if (disconnectCountdownRef.current) {
@@ -655,7 +665,17 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Record match result in persistent player profile (STRICTLY public human-vs-human multiplayer)
   // and award match rewards (XP, Coins, Level Up)
   const hasRecordedResultRef = useRef(false);
+  const hasRecordedSeriesCompletionRef = useRef(false);
   useEffect(() => {
+    const matchAdContext = resolveMatchAdContext({
+      gameMode: gameState.gameMode,
+      isQuickMatch: activeIsQuickMatch,
+      isTutorial,
+      isGameOver: gameState.isGameOver,
+      isRecoveryMatch: Boolean(gameState.isRecoveryMatch),
+      seriesState: gameState.seriesState,
+    });
+
     if (gameState.isGameOver && !hasRecordedResultRef.current) {
       hasRecordedResultRef.current = true;
       const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
@@ -675,15 +695,28 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       }
 
       clearActiveMatchSession().catch(() => {});
-      // Smart Post-Match Interstitial tracking (every 3rd completed non-tutorial match,
-      // direct ad after winning a 2-loss recovery match, and never after 3+ consecutive losses)
-      adService
-        .recordCompletedMatch({
-          isTutorial: false,
-          isWinner,
-          wasRecoveryBotMatch: Boolean(gameState.isRecoveryMatch),
-        })
-        .catch(() => {});
+      // Online Rooms use series-end interstitials only (no 3-match counter, no recovery bot triggers,
+      // no 3-loss suppression guard); Solo & Quick Match use existing pacing & loss-streak rules.
+      if (matchAdContext.isOnlineRoom) {
+        hasRecordedSeriesCompletionRef.current = matchAdContext.isSeriesComplete;
+        adService
+          .recordCompletedMatch({
+            isTutorial: false,
+            isWinner,
+            wasRecoveryBotMatch: false,
+            isOnlineRoom: true,
+            isSeriesComplete: matchAdContext.isSeriesComplete,
+          })
+          .catch(() => {});
+      } else {
+        adService
+          .recordCompletedMatch({
+            isTutorial: false,
+            isWinner,
+            wasRecoveryBotMatch: Boolean(gameState.isRecoveryMatch),
+          })
+          .catch(() => {});
+      }
       if (isOnlineMode && !gameState.seriesState?.isPrivateSeries) {
         multiplayerService.cleanupFinishedRoom().catch(() => {});
       }
@@ -733,8 +766,28 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         .catch((err) => {
           console.warn('Failed to award match rewards:', err);
         });
+    } else if (
+      gameState.isGameOver &&
+      !isTutorial &&
+      matchAdContext.isOnlineRoom &&
+      matchAdContext.isSeriesComplete &&
+      !hasRecordedSeriesCompletionRef.current
+    ) {
+      // Queue series-end interstitial if an Online Room series ended early after a round modal opened
+      hasRecordedSeriesCompletionRef.current = true;
+      const isWinner = gameState.winner ? gameState.winner.id === myPlayer.id : false;
+      adService
+        .recordCompletedMatch({
+          isTutorial: false,
+          isWinner,
+          wasRecoveryBotMatch: false,
+          isOnlineRoom: true,
+          isSeriesComplete: true,
+        })
+        .catch(() => {});
     } else if (!gameState.isGameOver) {
       hasRecordedResultRef.current = false;
+      hasRecordedSeriesCompletionRef.current = false;
       setMatchRewards(null);
     }
   }, [
@@ -743,6 +796,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     gameState.turnCount,
     gameState.players,
     gameState.seriesState?.isPrivateSeries,
+    gameState.seriesState?.currentMatchNumber,
+    gameState.seriesState?.totalMatches,
+    gameState.seriesState?.seriesEndedEarly,
+    gameState.isRecoveryMatch,
+    gameState.forfeitedByPlayerId,
     myPlayer.id,
     isOnlineMode,
     activeIsQuickMatch,
@@ -1621,6 +1679,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   const handleAdvanceNextSeriesMatch = useCallback(
     async (resetSeries: boolean = false) => {
       if (!isPrivateSeriesRoom || !gameState.seriesState) return;
+      if (resetSeries) {
+        // Show the series-end interstitial to the host before launching a new 5-match series rematch
+        await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+      }
       if (seriesNextTimerRef.current) {
         clearInterval(seriesNextTimerRef.current);
         seriesNextTimerRef.current = null;
@@ -1719,7 +1781,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   // Handle post-game or header "Quit Room" action
   const handleQuitGame = useCallback(async () => {
     hapticsService.cardSnap();
-    if (!isTutorial && isGameOverRef.current) {
+    if (
+      resolveMatchAdContext({
+        gameMode: gameStateRef.current.gameMode,
+        isQuickMatch: activeIsQuickMatchRef.current,
+        isTutorial,
+        isGameOver: isGameOverRef.current,
+        seriesState: gameStateRef.current.seriesState,
+      }).canShowPendingInterstitialOnExit
+    ) {
       await adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
     }
     if (disconnectCountdownRef.current) {
@@ -1762,7 +1832,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       setLocalOnlinePlayerId(null);
     }
     await handleExitToHome();
-  }, [isOnlineMode, handleExitToHome]);
+  }, [isOnlineMode, isTutorial, handleExitToHome]);
 
   const stopDisconnectionCountdown = useCallback(() => {
     if (disconnectCountdownRef.current) {
@@ -1995,6 +2065,10 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       },
       onSeriesNextMatch: (nextState, isNewSeries) => {
         stopDisconnectionCountdown();
+        if (isNewSeries) {
+          // Display the series-end interstitial to non-host players on new series rematch too
+          void adService.showPendingPostMatchInterstitialIfDue().catch(() => {});
+        }
         if (seriesNextTimerRef.current) {
           clearInterval(seriesNextTimerRef.current);
           seriesNextTimerRef.current = null;

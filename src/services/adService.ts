@@ -1,5 +1,6 @@
 // src/services/adService.ts - Non-intrusive Google AdMob Rewarded & Interstitial Ad Manager
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { GameMode, SeriesState } from '../types';
 import { playerProfileService, PlayerProfile } from './playerProfileService';
 
 function getPlatformOS(): string {
@@ -98,10 +99,82 @@ export interface InterstitialCheckResult {
   skippedReason?:
     | 'tutorial'
     | 'interval'
+    | 'room_series_in_progress'
     | 'loss_streak_guard'
     | 'not_loaded'
     | 'unavailable'
     | 'error';
+}
+
+export interface RecordCompletedMatchOptions {
+  isTutorial?: boolean;
+  isWinner?: boolean;
+  wasRecoveryBotMatch?: boolean;
+  /**
+   * True for Online Room matches (multiplayer room series with 2-4 players, non-Quick-Match).
+   * Room matches do not increment the 3-match counter, do not update consecutive losses or
+   * recovery bot triggers, and are never blocked by the 3-loss suppression guard.
+   */
+  isOnlineRoom?: boolean;
+  /**
+   * For `isOnlineRoom` matches: true only when the entire room series finishes (final match
+   * completed, series ended early, or single-game room concluded). When false, no interstitial
+   * is queued between individual room games.
+   */
+  isSeriesComplete?: boolean;
+}
+
+export interface MatchAdContextInput {
+  gameMode: GameMode;
+  isQuickMatch: boolean;
+  isTutorial?: boolean;
+  isGameOver: boolean;
+  isRecoveryMatch?: boolean;
+  seriesState?: Pick<
+    SeriesState,
+    'isPrivateSeries' | 'currentMatchNumber' | 'totalMatches' | 'seriesEndedEarly'
+  > | null;
+}
+
+export interface MatchAdContext {
+  isOnlineRoom: boolean;
+  isSeriesComplete: boolean;
+  canShowPendingInterstitialOnExit: boolean;
+}
+
+/**
+ * Classifies whether a match belongs to an Online Room series (2-4 players) vs Solo/Quick Match,
+ * whether the entire room series has finished, and whether an exit/rematch transition is eligible
+ * to display a queued post-match interstitial.
+ */
+export function resolveMatchAdContext(input: MatchAdContextInput): MatchAdContext {
+  if (input.isTutorial) {
+    return {
+      isOnlineRoom: false,
+      isSeriesComplete: false,
+      canShowPendingInterstitialOnExit: false,
+    };
+  }
+
+  const isOnlineRoom = input.gameMode === 'multiplayer' && !input.isQuickMatch;
+  if (!isOnlineRoom) {
+    return {
+      isOnlineRoom: false,
+      isSeriesComplete: false,
+      canShowPendingInterstitialOnExit: input.isGameOver,
+    };
+  }
+
+  const series = input.seriesState;
+  const isSeriesComplete = !series?.isPrivateSeries
+    ? true
+    : Boolean(series.seriesEndedEarly) || series.currentMatchNumber >= series.totalMatches;
+
+  return {
+    isOnlineRoom: true,
+    isSeriesComplete,
+    canShowPendingInterstitialOnExit: input.isGameOver && isSeriesComplete,
+  };
 }
 
 const memoryStorage: Record<string, string> = {};
@@ -211,6 +284,7 @@ class AdService {
   private interstitialLoading = false;
   private interstitialUnsubs: Array<() => void> = [];
   private pendingPostMatchInterstitial = false;
+  private pendingInterstitialBypassLossGuard = false;
   private isShowingInterstitial = false;
 
   private getMobileAdsModule(): MobileAdsModuleLike | null {
@@ -252,6 +326,7 @@ class AdService {
     this.interstitialLoading = false;
     this.initialized = false;
     this.pendingPostMatchInterstitial = false;
+    this.pendingInterstitialBypassLossGuard = false;
     this.isShowingInterstitial = false;
     this.activeRewardedPromise = null;
     this.moduleOverride = mod;
@@ -613,6 +688,7 @@ class AdService {
         if (placement === 'post_match') {
           // Do not double-serve an interstitial right after the player watched a post-match rewarded ad
           this.pendingPostMatchInterstitial = false;
+          this.pendingInterstitialBypassLossGuard = false;
         }
         const updatedProfile = await playerProfileService.addCurrency(REWARDED_AD_COIN_PAYOUT, 0);
         await this.recordRewardedClaimTimestamp(placement, nowMs);
@@ -690,13 +766,18 @@ class AdService {
   /**
    * Records a completed match for engagement & ad pacing:
    * - Tutorial matches are never counted and never trigger interstitials.
-   * - Tracks consecutive losses: resets to 0 on win, increments on loss.
-   * - Frustration Guard: if consecutiveLosses >= 3, NEVER show an interstitial ad.
-   * - Recovery Win Direct Ad: if the player wins a 2-loss recovery match, queue an interstitial directly.
-   * - Otherwise, shows an interstitial strictly on every 3rd completed non-tutorial match.
+   * - Online Room matches (multiplayer room series with 2-4 players) never increment the
+   *   3-match counter, never update consecutive losses / recovery bot triggers, never show
+   *   interstitials between individual rounds, and queue an interstitial for all players on
+   *   final series completion regardless of win/loss or 3-loss suppression.
+   * - Solo vs AI & Quick Match:
+   *   - Tracks consecutive losses: resets to 0 on win, increments on loss.
+   *   - Frustration Guard: if consecutiveLosses >= 3, NEVER show an interstitial ad.
+   *   - Recovery Win Direct Ad: if the player wins a 2-loss recovery match, queue an interstitial directly.
+   *   - Otherwise, shows an interstitial strictly on every 3rd completed non-tutorial match.
    */
   public async recordCompletedMatch(
-    options: { isTutorial?: boolean; isWinner?: boolean; wasRecoveryBotMatch?: boolean } = {}
+    options: RecordCompletedMatchOptions = {}
   ): Promise<{
     completedMatchesCount: number;
     consecutiveLosses: number;
@@ -710,6 +791,19 @@ class AdService {
         completedMatchesCount: current,
         consecutiveLosses: prevLosses,
         shouldShowInterstitial: false,
+        suppressedByLossStreak: false,
+      };
+    }
+
+    if (options.isOnlineRoom) {
+      const seriesDone = options.isSeriesComplete === true;
+      this.pendingPostMatchInterstitial = seriesDone;
+      this.pendingInterstitialBypassLossGuard = seriesDone;
+      this.preloadInterstitialAd();
+      return {
+        completedMatchesCount: current,
+        consecutiveLosses: prevLosses,
+        shouldShowInterstitial: seriesDone,
         suppressedByLossStreak: false,
       };
     }
@@ -728,6 +822,7 @@ class AdService {
     // Never frustrate a player who has lost 3+ matches in a row with an interstitial ad
     if (nextLosses >= LOSS_STREAK_AD_SUPPRESS_THRESHOLD) {
       this.pendingPostMatchInterstitial = false;
+      this.pendingInterstitialBypassLossGuard = false;
       this.preloadInterstitialAd();
       return {
         completedMatchesCount: nextCount,
@@ -743,6 +838,7 @@ class AdService {
 
     if (shouldShowInterstitial) {
       this.pendingPostMatchInterstitial = true;
+      this.pendingInterstitialBypassLossGuard = false;
     }
 
     // Keep next interstitial warmed up silently in the background
@@ -761,23 +857,16 @@ class AdService {
   }
 
   /**
-   * Shows the queued post-match interstitial (only if due and not suppressed by 3+ consecutive losses)
-   * when transitioning away from the Victory/Game Over modal. Never blocks or throws.
+   * Shows the queued post-match interstitial (respecting the 3+ consecutive losses guard for
+   * Solo/Quick Match, and bypassing it for Online Room series completion) when transitioning away
+   * from the Victory/Game Over/Series Complete modal. Never blocks or throws.
    */
   public async showPendingPostMatchInterstitialIfDue(): Promise<InterstitialCheckResult> {
     const count = await this.getCompletedMatchesCount();
     const losses = await this.getConsecutiveLosses();
-    if (losses >= LOSS_STREAK_AD_SUPPRESS_THRESHOLD) {
-      this.pendingPostMatchInterstitial = false;
-      return {
-        shown: false,
-        completedMatchesCount: count,
-        shouldShow: false,
-        skippedReason: 'loss_streak_guard',
-      };
-    }
 
     if (!this.pendingPostMatchInterstitial) {
+      this.pendingInterstitialBypassLossGuard = false;
       return {
         shown: false,
         completedMatchesCount: count,
@@ -786,17 +875,30 @@ class AdService {
       };
     }
 
+    if (!this.pendingInterstitialBypassLossGuard && losses >= LOSS_STREAK_AD_SUPPRESS_THRESHOLD) {
+      this.pendingPostMatchInterstitial = false;
+      this.pendingInterstitialBypassLossGuard = false;
+      return {
+        shown: false,
+        completedMatchesCount: count,
+        shouldShow: false,
+        skippedReason: 'loss_streak_guard',
+      };
+    }
+
     this.pendingPostMatchInterstitial = false;
+    this.pendingInterstitialBypassLossGuard = false;
     return this.showPreloadedInterstitial(count);
   }
 
   /**
    * Convenience method combining match completion tracking and showing the interstitial
-   * strictly on every 3rd completed non-tutorial match (or recovery win), while respecting
-   * the 3-loss frustration guard.
+   * strictly on every 3rd completed non-tutorial Solo/Quick Match (or recovery win),
+   * or on final completion of an Online Room series, while respecting the 3-loss frustration
+   * guard for Solo/Quick Match only.
    */
   public async recordCompletedMatchAndMaybeShowInterstitial(
-    options: { isTutorial?: boolean; isWinner?: boolean; wasRecoveryBotMatch?: boolean } = {}
+    options: RecordCompletedMatchOptions = {}
   ): Promise<InterstitialCheckResult> {
     if (options.isTutorial) {
       const count = await this.getCompletedMatchesCount();
@@ -813,6 +915,8 @@ class AdService {
         isTutorial: false,
         isWinner: options.isWinner,
         wasRecoveryBotMatch: options.wasRecoveryBotMatch,
+        isOnlineRoom: options.isOnlineRoom,
+        isSeriesComplete: options.isSeriesComplete,
       });
 
     if (suppressedByLossStreak) {
@@ -829,11 +933,12 @@ class AdService {
         shown: false,
         completedMatchesCount,
         shouldShow: false,
-        skippedReason: 'interval',
+        skippedReason: options.isOnlineRoom ? 'room_series_in_progress' : 'interval',
       };
     }
 
     this.pendingPostMatchInterstitial = false;
+    this.pendingInterstitialBypassLossGuard = false;
     return this.showPreloadedInterstitial(completedMatchesCount);
   }
 
@@ -933,6 +1038,7 @@ class AdService {
     this.interstitialLoaded = false;
     this.interstitialLoading = false;
     this.pendingPostMatchInterstitial = false;
+    this.pendingInterstitialBypassLossGuard = false;
     this.isShowingInterstitial = false;
     this.activeRewardedPromise = null;
     this.initialized = false;
