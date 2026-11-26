@@ -101,7 +101,11 @@ import {
 import { COLOR_HEX } from '../types';
 import type { Card, CardValue, GameMode, GameState, Player, StandardColor } from '../types';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
-import { getCardOverlapMargin, HAND_HORIZONTAL_PADDING } from '../utils/boardLayout';
+import {
+  countHandColors,
+  getCardOverlapMargin,
+  HAND_HORIZONTAL_PADDING,
+} from '../utils/boardLayout';
 import {
   applySeriesPlayerDeparture,
   createNextSeriesMatchState,
@@ -171,7 +175,7 @@ const PRESETS: Record<
     players: [
       { id: 'p1', name: 'You', isBot: false },
       { id: 'bot1', name: 'CyberBot', isBot: true, avatarId: 'bot' },
-      { id: 'bot2', name: 'NovaBot', isBot: true, avatarId: 'shield' },
+      { id: 'bot2', name: 'NovaBot', isBot: true, avatarId: 'bot' },
     ],
   },
   vs_bot_4p: {
@@ -180,8 +184,8 @@ const PRESETS: Record<
     players: [
       { id: 'p1', name: 'You', isBot: false },
       { id: 'bot1', name: 'CyberBot', isBot: true, avatarId: 'bot' },
-      { id: 'bot2', name: 'NovaBot', isBot: true, avatarId: 'wolf' },
-      { id: 'bot3', name: 'EchoBot', isBot: true, avatarId: 'ninja' },
+      { id: 'bot2', name: 'NovaBot', isBot: true, avatarId: 'bot' },
+      { id: 'bot3', name: 'EchoBot', isBot: true, avatarId: 'bot' },
     ],
   },
   pass_play_2p: {
@@ -4399,10 +4403,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         {/* ================================================================= */}
         {/* 5. MODALS */}
         {/* ================================================================= */}
-        {/* Color Picker for Wild Cards */}
+        {/* Color Picker for Wild Cards (compact floating upper-middle panel above hand) */}
         <ColorPickerModal
           visible={isColorPickerOpen || gameState.pendingColorChoice}
           cardName={selectedWildCard?.value || gameState.pendingWildCard?.value || 'Wild Card'}
+          handColorCounts={countHandColors(myPlayer.hand, [
+            ...(selectedWildCard ? [selectedWildCard.id] : []),
+            ...(pendingWildPair ? [pendingWildPair.card1.id, pendingWildPair.card2.id] : []),
+          ])}
           onSelectColor={handleSelectWildColor}
         />
 
@@ -4448,10 +4456,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           turnCount={gameState.turnCount}
           players={gameState.players}
           localPlayerId={myPlayer.id}
-          mode={isOnlineMode ? 'online' : gameState.gameMode === 'vs_bot' ? 'bot' : 'pass_and_play'}
+          mode={isOnlineMode || activeIsQuickMatch ? 'online' : gameState.gameMode === 'vs_bot' ? 'bot' : 'pass_and_play'}
           gameMode={gameState.gameMode}
           isOnlineMode={isOnlineMode}
           isOnlineRoom={isOnlineMode && !activeIsQuickMatch}
+          isQuickMatch={activeIsQuickMatch}
           seriesState={gameState.seriesState}
           departedPlayerIds={departedRoomPlayerIds}
           matchRewards={matchRewards}

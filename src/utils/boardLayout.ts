@@ -1,7 +1,34 @@
 // src/utils/boardLayout.ts - Pure layout helpers for GameScreen card hand centering & responsive overlap
+import type { Card, StandardColor } from '../types';
 
 export const HAND_CARD_WIDTH = 62;
 export const HAND_HORIZONTAL_PADDING = 96;
+
+export type HandColorCounts = Record<StandardColor, number>;
+
+/**
+ * Counts how many cards of each standard color the player holds in hand,
+ * optionally excluding the Wild card(s) currently being played.
+ */
+export function countHandColors(
+  hand: ReadonlyArray<Pick<Card, 'id' | 'color'>>,
+  excludeCardIds: ReadonlyArray<string> = []
+): HandColorCounts {
+  const counts: HandColorCounts = { red: 0, blue: 0, green: 0, yellow: 0 };
+  const excluded = excludeCardIds.length > 0 ? new Set(excludeCardIds) : null;
+  for (const card of hand) {
+    if (excluded && excluded.has(card.id)) continue;
+    if (
+      card.color === 'red' ||
+      card.color === 'blue' ||
+      card.color === 'green' ||
+      card.color === 'yellow'
+    ) {
+      counts[card.color] += 1;
+    }
+  }
+  return counts;
+}
 
 /**
  * Computes responsive horizontal negative overlap margin between cards in the local player's hand.

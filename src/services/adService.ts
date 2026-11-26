@@ -34,10 +34,19 @@ export const ENABLE_INTERSTITIAL_ADS = false;
 
 export const REWARDED_AD_COIN_PAYOUT = 100;
 export const POST_MATCH_REWARDED_FALLBACK_MIN_COINS = 25;
-export const MAX_REWARDED_ADS_PER_DAY = 5;
-export const MAX_TOTAL_REWARDED_ADS_PER_DAY = MAX_REWARDED_ADS_PER_DAY * 2;
+export const MAX_SHOP_REWARDED_ADS_PER_DAY = 5;
+export const MAX_POST_MATCH_REWARDED_ADS_PER_DAY = 6;
+export const MAX_REWARDED_ADS_PER_DAY = MAX_SHOP_REWARDED_ADS_PER_DAY;
+export const MAX_TOTAL_REWARDED_ADS_PER_DAY =
+  MAX_SHOP_REWARDED_ADS_PER_DAY + MAX_POST_MATCH_REWARDED_ADS_PER_DAY;
 export const REWARDED_COOLDOWN_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const INTERSTITIAL_MATCH_INTERVAL = 3;
+
+export function getMaxRewardedAdsPerDay(placement: RewardedAdPlacement = 'shop'): number {
+  return placement === 'post_match'
+    ? MAX_POST_MATCH_REWARDED_ADS_PER_DAY
+    : MAX_SHOP_REWARDED_ADS_PER_DAY;
+}
 
 export const REWARDED_SHOP_TIMESTAMPS_STORAGE_KEY = '@rivalcard:rewarded_ad_timestamps_shop';
 export const REWARDED_POST_MATCH_TIMESTAMPS_STORAGE_KEY =
@@ -569,22 +578,24 @@ class AdService {
     nowMs: number = Date.now()
   ): Promise<number[]> {
     const recent = await this.getRewardedClaimTimestamps(placement, nowMs);
-    const updated = [...recent, nowMs].slice(-MAX_REWARDED_ADS_PER_DAY);
+    const maxPerDay = getMaxRewardedAdsPerDay(placement);
+    const updated = [...recent, nowMs].slice(-maxPerDay);
     await storageSet(this.getRewardedStorageKey(placement), JSON.stringify(updated));
     return updated;
   }
 
   /**
    * Returns current 24-hour daily cooldown quota for a placement ('shop' or 'post_match').
-   * Each placement allows 5 rewarded ads per rolling 24-hour day (10/day total = 1,000 coins/day).
+   * Shop allows 5 rewarded ads/day (+100 Coins each); post-match allows 6 rewarded ads/day (2x rewards).
    */
   public async getRewardedAdCooldownStatus(
     placement: RewardedAdPlacement = 'shop',
     nowMs: number = Date.now()
   ): Promise<RewardedAdCooldownStatus> {
     const recent = await this.getRewardedClaimTimestamps(placement, nowMs);
+    const maxPerDay = getMaxRewardedAdsPerDay(placement);
     const watchedToday = recent.length;
-    const remainingWatches = Math.max(0, MAX_REWARDED_ADS_PER_DAY - watchedToday);
+    const remainingWatches = Math.max(0, maxPerDay - watchedToday);
     const canWatch = remainingWatches > 0;
     const nextAvailableInMs =
       canWatch || recent.length === 0
@@ -596,7 +607,7 @@ class AdService {
       canWatch,
       watchedToday,
       remainingWatches,
-      maxPerDay: MAX_REWARDED_ADS_PER_DAY,
+      maxPerDay,
       nextAvailableInMs,
     };
   }
@@ -661,8 +672,6 @@ class AdService {
     const run = async (): Promise<RewardedAdResult> => {
       const cooldownStatus = await this.getRewardedAdCooldownStatus(placement, nowMs);
       if (!cooldownStatus.canWatch) {
-        const waitLabel = formatCooldownRemaining(cooldownStatus.nextAvailableInMs);
-        const label = placement === 'post_match' ? 'Post-match daily' : 'Shop daily';
         return {
           shown: false,
           rewarded: false,
@@ -670,7 +679,7 @@ class AdService {
           xpAwarded: 0,
           cooldownStatus,
           reason: 'cooldown',
-          message: `${label} limit reached (${MAX_REWARDED_ADS_PER_DAY}/${MAX_REWARDED_ADS_PER_DAY}). Try again in ${waitLabel}.`,
+          message: 'No more ads available for today.',
         };
       }
 

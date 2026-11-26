@@ -12,6 +12,7 @@ import {
   formatScorecardHoldSeconds,
   getRemainingScorecardHoldMs,
   ROOM_SCORECARD_MIN_DISPLAY_MS,
+  shouldShowPlayVsAiOpponents,
 } from '../utils/matchEndPacing';
 import type { Player, TimeoutStandingBreakdown } from '../types';
 
@@ -288,6 +289,15 @@ describe('GameOverModal Standings & Ranking Logic', () => {
     assert.ok(modalSrc.includes('shouldShowPostMatchDoubleRewardButton'));
     assert.ok(modalSrc.includes('showPostMatchDoubleRewardsAd'));
     assert.ok(modalSrc.includes('Watch Ad • 2x Rewards'));
+    assert.ok(modalSrc.includes('No more ads available for today'));
+    assert.ok(!modalSrc.includes('left today'));
+
+    const shopSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/ShopModal.tsx'),
+      'utf8'
+    );
+    assert.ok(shopSrc.includes('No more ads available for today'));
+    assert.ok(!shopSrc.includes('left today'));
 
     assert.strictEqual(
       shouldShowPostMatchDoubleRewardButton({ isWinner: true, winnerId: 'p1' }),
@@ -315,5 +325,86 @@ describe('GameOverModal Standings & Ranking Logic', () => {
       bonusXp: 20,
       usedFallbackMinimum: false,
     });
+  });
+
+  test('PLAY VS AI OPPONENTS switcher is hidden in Play Online (real players, 3 bots, and 20 undercover bots) and visible only in Solo vs AI', () => {
+    // Solo vs AI -> visible
+    assert.strictEqual(
+      shouldShowPlayVsAiOpponents({
+        mode: 'bot',
+        gameMode: 'vs_bot',
+        isOnlineMode: false,
+        isOnlineRoom: false,
+        isQuickMatch: false,
+        hasHandlers: true,
+      }),
+      true
+    );
+
+    // Play Online Quick Match vs real player -> hidden
+    assert.strictEqual(
+      shouldShowPlayVsAiOpponents({
+        mode: 'online',
+        gameMode: 'multiplayer',
+        isOnlineMode: true,
+        isOnlineRoom: false,
+        isQuickMatch: true,
+        hasHandlers: true,
+      }),
+      false
+    );
+
+    // Play Online Quick Match fallback (3 signature bots or 20 undercover human bots, gameMode === 'vs_bot') -> hidden
+    assert.strictEqual(
+      shouldShowPlayVsAiOpponents({
+        mode: 'bot',
+        gameMode: 'vs_bot',
+        isOnlineMode: false,
+        isOnlineRoom: false,
+        isQuickMatch: true,
+        hasHandlers: true,
+      }),
+      false
+    );
+
+    // Private Online Room -> hidden
+    assert.strictEqual(
+      shouldShowPlayVsAiOpponents({
+        mode: 'online',
+        gameMode: 'multiplayer',
+        isOnlineMode: true,
+        isOnlineRoom: true,
+        isQuickMatch: false,
+        hasHandlers: true,
+      }),
+      false
+    );
+
+    // Pass & Play -> hidden
+    assert.strictEqual(
+      shouldShowPlayVsAiOpponents({
+        mode: 'pass_and_play',
+        gameMode: 'pass_and_play',
+        isOnlineMode: false,
+        isOnlineRoom: false,
+        isQuickMatch: false,
+        hasHandlers: true,
+      }),
+      false
+    );
+
+    const modalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/GameOverModal.tsx'),
+      'utf8'
+    );
+    assert.ok(modalSrc.includes('shouldShowPlayVsAiOpponents'));
+    assert.ok(modalSrc.includes('isQuickMatch'));
+
+    const gameScreenSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/screens/GameScreen.tsx'),
+      'utf8'
+    );
+    assert.ok(gameScreenSrc.includes('isQuickMatch={activeIsQuickMatch}'));
+    assert.ok(gameScreenSrc.includes("isOnlineMode || activeIsQuickMatch ? 'online'"));
   });
 });

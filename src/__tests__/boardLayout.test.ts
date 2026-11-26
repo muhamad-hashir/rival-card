@@ -1,7 +1,10 @@
 // src/__tests__/boardLayout.test.ts - Unit tests for responsive hand overlap & centering layout math
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
+  countHandColors,
   getCardOverlapMargin,
   getHandSpanWidth,
   HAND_CARD_WIDTH,
@@ -32,5 +35,29 @@ describe('Player Hand Responsive Overlap & Centering', () => {
         `Expected ${count} cards (${totalWidth}px) to fit cleanly within ${usableWidth}px centered area`
       );
     }
+  });
+
+  test('countHandColors accurately tallies Red, Blue, Green, Yellow cards while excluding played Wild card', () => {
+    const counts = countHandColors(
+      [
+        { id: 'c1', color: 'red' },
+        { id: 'c2', color: 'red' },
+        { id: 'c3', color: 'blue' },
+        { id: 'c4', color: 'yellow' },
+        { id: 'w1', color: 'wild' },
+      ],
+      ['w1']
+    );
+    assert.deepStrictEqual(counts, { red: 2, blue: 1, green: 0, yellow: 1 });
+
+    const colorPickerSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/ColorPickerModal.tsx'),
+      'utf8'
+    );
+    assert.ok(colorPickerSrc.includes("justifyContent: 'flex-start'"));
+    assert.ok(colorPickerSrc.includes('paddingBottom: 120'));
+    assert.ok(colorPickerSrc.includes('rgba(10, 12, 28, 0.28)'));
+    assert.ok(colorPickerSrc.includes('#1E163D'));
+    assert.ok(colorPickerSrc.includes('handColorCounts'));
   });
 });

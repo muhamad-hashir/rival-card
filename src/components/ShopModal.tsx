@@ -39,8 +39,7 @@ import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import {
   adService,
-  formatCooldownRemaining,
-  MAX_REWARDED_ADS_PER_DAY,
+  MAX_SHOP_REWARDED_ADS_PER_DAY,
   REWARDED_AD_COIN_PAYOUT,
   RewardedAdCooldownStatus,
 } from '../services/adService';
@@ -113,8 +112,8 @@ export const ShopModal: React.FC<ShopModalProps> = ({
     placement: 'shop',
     canWatch: true,
     watchedToday: 0,
-    remainingWatches: MAX_REWARDED_ADS_PER_DAY,
-    maxPerDay: MAX_REWARDED_ADS_PER_DAY,
+    remainingWatches: MAX_SHOP_REWARDED_ADS_PER_DAY,
+    maxPerDay: MAX_SHOP_REWARDED_ADS_PER_DAY,
     nextAvailableInMs: 0,
   });
 
@@ -432,8 +431,8 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                 </Text>
                 <Text style={styles.rewardedAdSub} numberOfLines={1}>
                   {adCooldown.canWatch
-                    ? `Free Coins • ${adCooldown.remainingWatches}/${adCooldown.maxPerDay} left today`
-                    : `Daily limit reached • Resets in ${formatCooldownRemaining(adCooldown.nextAvailableInMs)}`}
+                    ? 'Free Coins • Watch a short video'
+                    : 'No more ads available for today'}
                 </Text>
               </View>
             </View>
@@ -447,7 +446,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <Text style={styles.rewardedAdActionText}>
-                  {adCooldown.canWatch ? '🪙 +100' : 'WAIT'}
+                  {adCooldown.canWatch ? '🪙 +100' : 'DONE'}
                 </Text>
               )}
             </View>

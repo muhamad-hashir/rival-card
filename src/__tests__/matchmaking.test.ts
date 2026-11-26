@@ -183,10 +183,19 @@ describe('Quick Match Auto-Matchmaking Service Lifecycle', () => {
       ),
       'All 20 undercover bots must have natural levels 2-14 and countsTowardCareerStats = true'
     );
+    const allowedEarlyAvatars = new Set(['fox', 'bot', 'panda', 'shield', 'tiger', 'wolf']);
     assert.ok(
-      SIGNATURE_QUICK_MATCH_BOTS.every((b) => !b.isUndercover && b.countsTowardCareerStats === false) &&
-        SIGNATURE_QUICK_MATCH_BOTS.some((b) => b.name === 'NovaBot'),
-      'Signature bot pool must preserve NovaBot and the other 2 named bots with countsTowardCareerStats = false'
+      UNDERCOVER_QUICK_MATCH_BOTS.every((b) => allowedEarlyAvatars.has(b.avatarId)),
+      'All 20 undercover bots must only use avatars up to Wolf (fox, bot, panda, shield, tiger, wolf)'
+    );
+    assert.ok(
+      SIGNATURE_QUICK_MATCH_BOTS.every(
+        (b) => !b.isUndercover && b.countsTowardCareerStats === false && b.avatarId === 'bot'
+      ) &&
+        SIGNATURE_QUICK_MATCH_BOTS.some((b) => b.name === 'NovaBot') &&
+        SIGNATURE_QUICK_MATCH_BOTS.some((b) => b.name === 'EchoBot') &&
+        SIGNATURE_QUICK_MATCH_BOTS.some((b) => b.name === 'CyberBot'),
+      'Signature bot pool (NovaBot, CyberBot, EchoBot) must all use Bot avatar with countsTowardCareerStats = false'
     );
 
     // Every 3rd or 4th bot-matched Quick Match selects a signature bot; others pick undercover bots

@@ -29,43 +29,43 @@ export interface QuickMatchBotProfile {
 
 /**
  * 20 realistic Pakistani, Indian, and anime-inspired undercover profiles
- * with natural levels (2-14) and varied unlocked avatar IDs.
+ * with natural levels (2-14) and unlocked avatars up to Wolf.
  */
 export const UNDERCOVER_QUICK_MATCH_BOTS: readonly QuickMatchBotProfile[] = [
   // Pakistani (8)
   { id: 'qm_bot_hamza', name: 'Hamza_OP', level: 9, avatarId: 'tiger', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
   { id: 'qm_bot_zain', name: 'ZainPlays', level: 6, avatarId: 'panda', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
   { id: 'qm_bot_ayesha', name: 'Ayesha_GG', level: 11, avatarId: 'fox', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
-  { id: 'qm_bot_bilal', name: 'Bilal_King', level: 14, avatarId: 'champ', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
+  { id: 'qm_bot_bilal', name: 'Bilal_King', level: 14, avatarId: 'wolf', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
   { id: 'qm_bot_usman', name: 'Usman_786', level: 4, avatarId: 'shield', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
-  { id: 'qm_bot_mahnoor', name: 'Mahnoor_X', level: 8, avatarId: 'rival', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
+  { id: 'qm_bot_mahnoor', name: 'Mahnoor_X', level: 8, avatarId: 'panda', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
   { id: 'qm_bot_saad', name: 'Saad_Clutch', level: 12, avatarId: 'wolf', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
   { id: 'qm_bot_daniyal', name: 'Daniyal_PK', level: 3, avatarId: 'bot', isUndercover: true, countsTowardCareerStats: true, region: 'pakistani' },
 
   // Indian (7)
-  { id: 'qm_bot_aarav', name: 'Aarav_OP', level: 10, avatarId: 'flame', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
+  { id: 'qm_bot_aarav', name: 'Aarav_OP', level: 10, avatarId: 'tiger', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
   { id: 'qm_bot_rohan', name: 'RohanPlays', level: 5, avatarId: 'fox', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
-  { id: 'qm_bot_priya', name: 'Priya_GG', level: 7, avatarId: 'jester', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
-  { id: 'qm_bot_kabir', name: 'Kabir_X', level: 13, avatarId: 'ninja', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
+  { id: 'qm_bot_priya', name: 'Priya_GG', level: 7, avatarId: 'shield', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
+  { id: 'qm_bot_kabir', name: 'Kabir_X', level: 13, avatarId: 'wolf', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
   { id: 'qm_bot_ananya', name: 'Ananya_99', level: 2, avatarId: 'panda', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
   { id: 'qm_bot_vikram', name: 'Vikram_IND', level: 11, avatarId: 'shield', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
   { id: 'qm_bot_dev', name: 'Dev_Clutch', level: 8, avatarId: 'tiger', isUndercover: true, countsTowardCareerStats: true, region: 'indian' },
 
   // Anime / Global (5)
-  { id: 'qm_bot_kaito', name: 'Kaito_99', level: 9, avatarId: 'dragon', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
-  { id: 'qm_bot_hokage', name: 'ShadowHokage', level: 14, avatarId: 'ninja', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
+  { id: 'qm_bot_kaito', name: 'Kaito_99', level: 9, avatarId: 'tiger', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
+  { id: 'qm_bot_hokage', name: 'ShadowHokage', level: 14, avatarId: 'wolf', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
   { id: 'qm_bot_itachi', name: 'ItachiVibes', level: 12, avatarId: 'wolf', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
-  { id: 'qm_bot_gojo', name: 'Gojo_Satoru', level: 13, avatarId: 'rival', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
-  { id: 'qm_bot_zoro', name: 'ZoroLostAgain', level: 6, avatarId: 'flame', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
+  { id: 'qm_bot_gojo', name: 'Gojo_Satoru', level: 13, avatarId: 'shield', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
+  { id: 'qm_bot_zoro', name: 'ZoroLostAgain', level: 6, avatarId: 'fox', isUndercover: true, countsTowardCareerStats: true, region: 'anime' },
 ] as const;
 
 /**
  * Existing 3 named signature AI bots kept as the signature pool and post-500-download fallback.
  */
 export const SIGNATURE_QUICK_MATCH_BOTS: readonly QuickMatchBotProfile[] = [
-  { id: 'bot_nova', name: 'NovaBot', level: 10, avatarId: 'wolf', isUndercover: false, countsTowardCareerStats: false, region: 'signature' },
+  { id: 'bot_nova', name: 'NovaBot', level: 10, avatarId: 'bot', isUndercover: false, countsTowardCareerStats: false, region: 'signature' },
   { id: 'bot_cyber', name: 'CyberBot', level: 8, avatarId: 'bot', isUndercover: false, countsTowardCareerStats: false, region: 'signature' },
-  { id: 'bot_echo', name: 'EchoBot', level: 12, avatarId: 'ninja', isUndercover: false, countsTowardCareerStats: false, region: 'signature' },
+  { id: 'bot_echo', name: 'EchoBot', level: 12, avatarId: 'bot', isUndercover: false, countsTowardCareerStats: false, region: 'signature' },
 ] as const;
 
 const UNDERCOVER_BOT_ID_SET = new Set(UNDERCOVER_QUICK_MATCH_BOTS.map((b) => b.id));

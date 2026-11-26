@@ -27,8 +27,7 @@ import { soundService } from '../services/soundService';
 import {
   adService,
   computeDoubleMatchRewardBonus,
-  formatCooldownRemaining,
-  MAX_REWARDED_ADS_PER_DAY,
+  MAX_POST_MATCH_REWARDED_ADS_PER_DAY,
   RewardedAdCooldownStatus,
   shouldShowPostMatchDoubleRewardButton,
 } from '../services/adService';
@@ -37,6 +36,7 @@ import {
   getRemainingScorecardHoldMs,
   getScorecardHoldProgressPct,
   ROOM_SCORECARD_MIN_DISPLAY_MS,
+  shouldShowPlayVsAiOpponents,
 } from '../utils/matchEndPacing';
 
 export interface GameOverModalProps {
@@ -49,6 +49,7 @@ export interface GameOverModalProps {
   gameMode?: GameMode;
   isOnlineMode?: boolean;
   isOnlineRoom?: boolean;
+  isQuickMatch?: boolean;
   seriesState?: SeriesState | null;
   departedPlayerIds?: string[];
   matchRewards?: AwardRewardsResult | null;
@@ -84,8 +85,9 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   localPlayerId,
   mode,
   gameMode,
-  isOnlineMode: _isOnlineMode = false,
+  isOnlineMode = false,
   isOnlineRoom = false,
+  isQuickMatch = false,
   seriesState = null,
   departedPlayerIds = [],
   matchRewards = null,
@@ -115,8 +117,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     placement: 'post_match',
     canWatch: true,
     watchedToday: 0,
-    remainingWatches: MAX_REWARDED_ADS_PER_DAY,
-    maxPerDay: MAX_REWARDED_ADS_PER_DAY,
+    remainingWatches: MAX_POST_MATCH_REWARDED_ADS_PER_DAY,
+    maxPerDay: MAX_POST_MATCH_REWARDED_ADS_PER_DAY,
     nextAvailableInMs: 0,
   });
 
@@ -599,8 +601,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                                 doubleRewardPreview.bonusXp > 0
                                   ? `, +${doubleRewardPreview.bonusXp} XP`
                                   : ''
-                              }) (${adCooldown.remainingWatches}/${adCooldown.maxPerDay} left today)`
-                            : `🎬 Daily Limit Reached (${formatCooldownRemaining(adCooldown.nextAvailableInMs)})`}
+                              })`
+                            : '🎬 No more ads available for today'}
                         </Text>
                       )}
                     </TouchableOpacity>
@@ -620,8 +622,15 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                   <Text style={styles.playAgainBtnText}>Play Again</Text>
                 </TouchableOpacity>
 
-                {/* Bot Match Option: Multi-Bot Selection Row */}
-                {Boolean((mode === 'bot' || gameMode === 'vs_bot') && (onSelectPreset || onPlay1v1 || onPlayWithMoreBots)) && (
+                {/* Bot Match Option: Multi-Bot Selection Row (Solo vs AI only — never Play Online) */}
+                {shouldShowPlayVsAiOpponents({
+                  mode,
+                  gameMode,
+                  isOnlineMode,
+                  isOnlineRoom,
+                  isQuickMatch,
+                  hasHandlers: Boolean(onSelectPreset || onPlay1v1 || onPlayWithMoreBots),
+                }) && (
                   <View style={styles.botSelectorContainer}>
                     <Text style={styles.botSelectorLabel}>PLAY VS AI OPPONENTS</Text>
                     <View style={styles.botSelectorRow}>

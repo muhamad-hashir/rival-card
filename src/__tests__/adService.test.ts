@@ -14,7 +14,9 @@ import {
   getGoogleMobileAdsModule,
   initializeAdMob,
   INTERSTITIAL_MATCH_INTERVAL,
+  MAX_POST_MATCH_REWARDED_ADS_PER_DAY,
   MAX_REWARDED_ADS_PER_DAY,
+  MAX_SHOP_REWARDED_ADS_PER_DAY,
   MAX_TOTAL_REWARDED_ADS_PER_DAY,
   POST_MATCH_REWARDED_FALLBACK_MIN_COINS,
   resolveMatchAdContext,
@@ -350,9 +352,11 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     assert.strictEqual(afterProfile.coins, beforeProfile.coins);
   });
 
-  test('Split daily quotas allow 5 Shop + 5 Post-Match rewarded ads (10/day = 1,000 coins/day) independently and unlock after 24h', async () => {
+  test('Split daily quotas allow 5 Shop (+100 Coins) + 6 Post-Match (2x) rewarded ads independently and show clean exhaustion message', async () => {
+    assert.strictEqual(MAX_SHOP_REWARDED_ADS_PER_DAY, 5);
     assert.strictEqual(MAX_REWARDED_ADS_PER_DAY, 5);
-    assert.strictEqual(MAX_TOTAL_REWARDED_ADS_PER_DAY, 10);
+    assert.strictEqual(MAX_POST_MATCH_REWARDED_ADS_PER_DAY, 6);
+    assert.strictEqual(MAX_TOTAL_REWARDED_ADS_PER_DAY, 11);
     assert.strictEqual(REWARDED_COOLDOWN_WINDOW_MS, 24 * 60 * 60 * 1000);
     assert.strictEqual(formatCooldownRemaining(24 * 60 * 60 * 1000), '24h');
     assert.strictEqual(formatCooldownRemaining(23 * 60 * 60 * 1000 + 15 * 60 * 1000), '23h 15m');
@@ -366,46 +370,49 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     const startCoins = (await playerProfileService.getProfile()).coins;
 
     // 1. Exhaust all 5 Shop rewarded ads (500 coins)
-    for (let i = 0; i < MAX_REWARDED_ADS_PER_DAY; i++) {
+    for (let i = 0; i < MAX_SHOP_REWARDED_ADS_PER_DAY; i++) {
       const res = await adService.showRewardedAdForCoins('shop', baseTime + i * 1000);
       assert.strictEqual(res.rewarded, true, `Shop rewarded ad #${i + 1} should succeed`);
       assert.strictEqual(res.coinsAwarded, 100);
       assert.strictEqual(res.cooldownStatus.placement, 'shop');
+      assert.strictEqual(res.cooldownStatus.maxPerDay, 5);
     }
 
     assert.strictEqual((await playerProfileService.getProfile()).coins, startCoins + 500);
 
-    // 6th Shop attempt within 24h is blocked
+    // 6th Shop attempt within 24h is blocked cleanly
     const blockedShopRes = await adService.showRewardedAdForCoins('shop', baseTime + 2 * 60 * 60 * 1000);
     assert.strictEqual(blockedShopRes.shown, false);
     assert.strictEqual(blockedShopRes.rewarded, false);
     assert.strictEqual(blockedShopRes.coinsAwarded, 0);
     assert.strictEqual(blockedShopRes.reason, 'cooldown');
-    assert.match(blockedShopRes.message, /Shop daily limit reached \(5\/5\)/);
+    assert.strictEqual(blockedShopRes.message, 'No more ads available for today.');
     assert.strictEqual(blockedShopRes.cooldownStatus.remainingWatches, 0);
 
-    // 2. Post-Match bucket is completely independent -> still has all 5 watches (another 500 coins = 1,000 total)
+    // 2. Post-Match bucket is completely independent -> allows 6 watches/day
     const postStatusBefore = await adService.getRewardedAdCooldownStatus('post_match', baseTime + 10_000);
     assert.strictEqual(postStatusBefore.canWatch, true);
-    assert.strictEqual(postStatusBefore.remainingWatches, 5);
+    assert.strictEqual(postStatusBefore.remainingWatches, 6);
+    assert.strictEqual(postStatusBefore.maxPerDay, 6);
 
-    for (let i = 0; i < MAX_REWARDED_ADS_PER_DAY; i++) {
+    for (let i = 0; i < MAX_POST_MATCH_REWARDED_ADS_PER_DAY; i++) {
       const res = await adService.showRewardedAdForCoins('post_match', baseTime + 20_000 + i * 1000);
       assert.strictEqual(res.rewarded, true, `Post-match rewarded ad #${i + 1} should succeed`);
       assert.strictEqual(res.coinsAwarded, 100);
       assert.strictEqual(res.cooldownStatus.placement, 'post_match');
+      assert.strictEqual(res.cooldownStatus.maxPerDay, 6);
     }
 
-    assert.strictEqual((await playerProfileService.getProfile()).coins, startCoins + 1000);
+    assert.strictEqual((await playerProfileService.getProfile()).coins, startCoins + 1100);
 
-    // 6th Post-Match attempt within 24h is blocked
+    // 7th Post-Match attempt within 24h is blocked cleanly
     const blockedPostRes = await adService.showRewardedAdForCoins(
       'post_match',
       baseTime + 2 * 60 * 60 * 1000
     );
     assert.strictEqual(blockedPostRes.shown, false);
     assert.strictEqual(blockedPostRes.reason, 'cooldown');
-    assert.match(blockedPostRes.message, /Post-match daily limit reached \(5\/5\)/);
+    assert.strictEqual(blockedPostRes.message, 'No more ads available for today.');
 
     // After 24 hours + 1ms from first watch, Shop quota opens back up
     const unlockedRes = await adService.showRewardedAdForCoins(
@@ -414,7 +421,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     );
     assert.strictEqual(unlockedRes.rewarded, true);
     assert.strictEqual(unlockedRes.coinsAwarded, 100);
-    assert.strictEqual((await playerProfileService.getProfile()).coins, startCoins + 1100);
+    assert.strictEqual((await playerProfileService.getProfile()).coins, startCoins + 1200);
   });
 
   test('Smart Post-Match Interstitial shows strictly after every 3rd completed non-tutorial match', async () => {
@@ -922,7 +929,11 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     assert.strictEqual(winRes.coinsAwarded, 50);
     assert.strictEqual(winRes.xpAwarded, 100);
     assert.strictEqual(winRes.cooldownStatus.placement, 'post_match');
-    assert.strictEqual(winRes.cooldownStatus.remainingWatches, MAX_REWARDED_ADS_PER_DAY - 1);
+    assert.strictEqual(winRes.cooldownStatus.maxPerDay, MAX_POST_MATCH_REWARDED_ADS_PER_DAY);
+    assert.strictEqual(
+      winRes.cooldownStatus.remainingWatches,
+      MAX_POST_MATCH_REWARDED_ADS_PER_DAY - 1
+    );
     assert.match(winRes.message, /\+50 Coins & \+100 XP/);
 
     // Profile gained +50 Coins (plus +100 Coins & +5 Gems from leveling up at 100 XP!)
@@ -947,7 +958,10 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     assert.strictEqual(fallbackWinRes.rewarded, true);
     assert.strictEqual(fallbackWinRes.coinsAwarded, POST_MATCH_REWARDED_FALLBACK_MIN_COINS);
     assert.strictEqual(fallbackWinRes.xpAwarded, 20);
-    assert.strictEqual(fallbackWinRes.cooldownStatus.remainingWatches, MAX_REWARDED_ADS_PER_DAY - 2);
+    assert.strictEqual(
+      fallbackWinRes.cooldownStatus.remainingWatches,
+      MAX_POST_MATCH_REWARDED_ADS_PER_DAY - 2
+    );
 
     // 5. Shop rewarded ad still grants flat +100 Coins independently
     const shopRes = await adService.showRewardedAdForCoins('shop', 2_020_000);

@@ -1,5 +1,5 @@
 // src/utils/matchEndPacing.ts - Timing & hold helpers for final winning card reveal and room scorecard pacing
-import type { GameState } from '../types';
+import type { GameMode, GameState } from '../types';
 
 /**
  * Duration (ms) to keep the board and winning final card visible on top of the
@@ -108,4 +108,33 @@ export function getDeferredTransitionWaitMs(input: DeferredTransitionWaitInput):
   }
 
   return getRemainingScorecardHoldMs(input.scorecardOpenedAtMs, nowMs, minScorecardMs);
+}
+
+export interface PlayVsAiOpponentsVisibilityInput {
+  mode?: 'bot' | 'online' | 'pass_and_play';
+  gameMode?: GameMode;
+  isOnlineMode?: boolean;
+  isOnlineRoom?: boolean;
+  isQuickMatch?: boolean;
+  hasHandlers?: boolean;
+}
+
+/**
+ * Shows the "PLAY VS AI OPPONENTS" preset switcher ONLY in Solo vs AI matches.
+ * Never shows in Play Online (real humans, 3 signature bots, or 20 undercover human bots),
+ * Online Rooms, or Pass & Play.
+ */
+export function shouldShowPlayVsAiOpponents(
+  input: PlayVsAiOpponentsVisibilityInput
+): boolean {
+  if (input.isOnlineMode || input.isOnlineRoom || input.isQuickMatch) {
+    return false;
+  }
+  if (input.mode === 'online' || input.mode === 'pass_and_play') {
+    return false;
+  }
+  if (!input.hasHandlers) {
+    return false;
+  }
+  return input.mode === 'bot' || input.gameMode === 'vs_bot';
 }
