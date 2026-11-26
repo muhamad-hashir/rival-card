@@ -26,10 +26,11 @@ import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import {
   adService,
+  computeDoubleMatchRewardBonus,
   formatCooldownRemaining,
   MAX_REWARDED_ADS_PER_DAY,
-  REWARDED_AD_COIN_PAYOUT,
   RewardedAdCooldownStatus,
+  shouldShowPostMatchDoubleRewardButton,
 } from '../services/adService';
 import {
   formatScorecardHoldSeconds,
@@ -51,6 +52,11 @@ export interface GameOverModalProps {
   seriesState?: SeriesState | null;
   departedPlayerIds?: string[];
   matchRewards?: AwardRewardsResult | null;
+  onDoubleRewardsClaimed?: (
+    bonusCoins: number,
+    bonusXp: number,
+    bonusResult?: AwardRewardsResult
+  ) => void;
   endedByTimeout?: boolean;
   timeoutUsedTieBreaker?: boolean;
   timeoutStandings?: TimeoutStandingBreakdown[];
@@ -83,6 +89,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   seriesState = null,
   departedPlayerIds = [],
   matchRewards = null,
+  onDoubleRewardsClaimed,
   endedByTimeout = false,
   timeoutUsedTieBreaker = false,
   timeoutStandings,
@@ -98,6 +105,11 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   const [scorecardHoldRemainingMs, setScorecardHoldRemainingMs] = useState<number>(0);
   const [isWatchingAd, setIsWatchingAd] = useState(false);
   const [adRewardClaimed, setAdRewardClaimed] = useState(false);
+  const [claimedBonus, setClaimedBonus] = useState<{
+    coins: number;
+    xp: number;
+    result?: AwardRewardsResult;
+  } | null>(null);
   const [adFeedbackMessage, setAdFeedbackMessage] = useState<string | null>(null);
   const [adCooldown, setAdCooldown] = useState<RewardedAdCooldownStatus>({
     placement: 'post_match',
@@ -113,6 +125,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
       setStep(1);
       setIsWatchingAd(false);
       setAdRewardClaimed(false);
+      setClaimedBonus(null);
       setAdFeedbackMessage(null);
       adService.getRewardedAdCooldownStatus('post_match').then(setAdCooldown).catch(() => {});
       adService.preloadRewardedAd();
@@ -183,11 +196,28 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     : `${winner.name} emptied their hand and won the match.`;
 
   // Rewards calculation with sensible defaults
-  const earnedXp = matchRewards?.earnedXp ?? (isLocalWinner ? 120 : 50);
-  const earnedCoins = matchRewards?.earnedCoins ?? (isLocalWinner ? 60 : 20);
-  const displayLevel = matchRewards?.newLevel ?? 1;
-  const displayCurrentXp = matchRewards?.currentXp ?? (isLocalWinner ? 120 : 50);
-  const displayXpToNextLevel = matchRewards?.xpToNextLevel ?? (displayLevel * 100);
+  const baseEarnedXp = matchRewards?.earnedXp ?? (isLocalWinner ? 120 : 50);
+  const baseEarnedCoins = matchRewards?.earnedCoins ?? (isLocalWinner ? 60 : 20);
+  const doubleRewardPreview = computeDoubleMatchRewardBonus({
+    baseCoins: baseEarnedCoins,
+    baseXp: baseEarnedXp,
+  });
+  const canShowDoubleRewards = shouldShowPostMatchDoubleRewardButton({
+    isWinner: isLocalWinner,
+    winnerId: winner?.id,
+  });
+  const earnedXp = baseEarnedXp + (claimedBonus?.xp ?? 0);
+  const earnedCoins = baseEarnedCoins + (claimedBonus?.coins ?? 0);
+  const displayLevel = claimedBonus?.result?.newLevel ?? matchRewards?.newLevel ?? 1;
+  const displayCurrentXp =
+    claimedBonus?.result?.currentXp ?? matchRewards?.currentXp ?? (isLocalWinner ? 120 : 50);
+  const displayXpToNextLevel =
+    claimedBonus?.result?.xpToNextLevel ?? matchRewards?.xpToNextLevel ?? (displayLevel * 100);
+  const didLevelUp = Boolean(matchRewards?.leveledUp || claimedBonus?.result?.leveledUp);
+  const totalLevelUpBonusCoins =
+    (matchRewards?.bonusCoins ?? 0) + (claimedBonus?.result?.bonusCoins ?? 0);
+  const totalLevelUpBonusGems =
+    (matchRewards?.bonusGems ?? 0) + (claimedBonus?.result?.bonusGems ?? 0);
   const progressPct = Math.min(
     100,
     Math.max(
@@ -223,17 +253,29 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   };
 
   const handleWatchRewardedAd = async () => {
-    if (isWatchingAd || adRewardClaimed) return;
+    if (isWatchingAd || adRewardClaimed || !canShowDoubleRewards) return;
     hapticsService.cardSelection();
     soundService.playCardSnap();
     setIsWatchingAd(true);
     setAdFeedbackMessage(null);
     try {
-      const result = await adService.showRewardedAdForCoins('post_match');
+      const result = await adService.showPostMatchDoubleRewardsAd({
+        isWinner: isLocalWinner,
+        baseCoins: baseEarnedCoins,
+        baseXp: baseEarnedXp,
+      });
       setAdCooldown(result.cooldownStatus);
       setAdFeedbackMessage(result.message);
       if (result.rewarded) {
+        const awardedCoins = result.coinsAwarded;
+        const awardedXp = result.xpAwarded ?? 0;
         setAdRewardClaimed(true);
+        setClaimedBonus({
+          coins: awardedCoins,
+          xp: awardedXp,
+          result: result.bonusAwardResult,
+        });
+        onDoubleRewardsClaimed?.(awardedCoins, awardedXp, result.bonusAwardResult);
         hapticsService.victory();
         soundService.playWinChime();
       } else {
@@ -505,54 +547,68 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                 </View>
 
                 {/* Celebratory Level Up Card (if leveled up) */}
-                {matchRewards?.leveledUp && (
+                {didLevelUp && (
                   <View style={styles.levelUpCard}>
                     <View style={styles.levelUpCardHeader}>
                       <Text style={styles.levelUpEmoji}>🎉</Text>
                       <Text style={styles.levelUpTitle}>LEVEL UP!</Text>
                     </View>
                     <Text style={styles.levelUpSubtitle}>
-                      Reached Level {matchRewards.newLevel}!
+                      Reached Level {displayLevel}!
                     </Text>
                     <View style={styles.levelUpBonusBadge}>
                       <Text style={styles.levelUpBonusText}>
-                        Bonus: +{matchRewards.bonusCoins} Coins • +{matchRewards.bonusGems} Gems
+                        Bonus: +{totalLevelUpBonusCoins} Coins • +{totalLevelUpBonusGems} Gems
                       </Text>
                     </View>
                   </View>
                 )}
 
-                {/* Optional Rewarded Ad Bonus (+100 Coins, max 5/day) */}
-                <View style={styles.rewardedAdContainer}>
-                  <TouchableOpacity
-                    activeOpacity={0.85}
-                    disabled={isWatchingAd || adRewardClaimed}
-                    onPress={handleWatchRewardedAd}
-                    style={[
-                      styles.rewardedAdBtn,
-                      adRewardClaimed && styles.rewardedAdBtnClaimed,
-                      !adRewardClaimed && !adCooldown.canWatch && styles.rewardedAdBtnCooldown,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Watch Ad for +${REWARDED_AD_COIN_PAYOUT} Coins`}
-                    testID="gameover-watch-ad-btn"
-                  >
-                    {isWatchingAd ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.rewardedAdBtnText}>
-                        {adRewardClaimed
-                          ? `✓ +${REWARDED_AD_COIN_PAYOUT} Bonus Coins Claimed!`
-                          : adCooldown.canWatch
-                          ? `🎬 Watch Ad for +${REWARDED_AD_COIN_PAYOUT} Coins (${adCooldown.remainingWatches}/${adCooldown.maxPerDay} left today)`
-                          : `🎬 Daily Limit Reached (${formatCooldownRemaining(adCooldown.nextAvailableInMs)})`}
-                      </Text>
+                {/* Winners-Only 2x Match Rewards Ad Bonus (max 5/day) */}
+                {canShowDoubleRewards && (
+                  <View style={styles.rewardedAdContainer}>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      disabled={isWatchingAd || adRewardClaimed}
+                      onPress={handleWatchRewardedAd}
+                      style={[
+                        styles.rewardedAdBtn,
+                        adRewardClaimed && styles.rewardedAdBtnClaimed,
+                        !adRewardClaimed && !adCooldown.canWatch && styles.rewardedAdBtnCooldown,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Watch Ad for 2x Rewards (+${doubleRewardPreview.bonusCoins} Coins${
+                        doubleRewardPreview.bonusXp > 0
+                          ? `, +${doubleRewardPreview.bonusXp} XP`
+                          : ''
+                      })`}
+                      testID="gameover-watch-ad-btn"
+                    >
+                      {isWatchingAd ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.rewardedAdBtnText}>
+                          {adRewardClaimed
+                            ? `✓ 2x Rewards Claimed! (+${doubleRewardPreview.bonusCoins} Coins${
+                                doubleRewardPreview.bonusXp > 0
+                                  ? `, +${doubleRewardPreview.bonusXp} XP`
+                                  : ''
+                              })`
+                            : adCooldown.canWatch
+                            ? `🎬 Watch Ad • 2x Rewards (+${doubleRewardPreview.bonusCoins} Coins${
+                                doubleRewardPreview.bonusXp > 0
+                                  ? `, +${doubleRewardPreview.bonusXp} XP`
+                                  : ''
+                              }) (${adCooldown.remainingWatches}/${adCooldown.maxPerDay} left today)`
+                            : `🎬 Daily Limit Reached (${formatCooldownRemaining(adCooldown.nextAvailableInMs)})`}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                    {Boolean(adFeedbackMessage) && (
+                      <Text style={styles.rewardedAdFeedback}>{adFeedbackMessage}</Text>
                     )}
-                  </TouchableOpacity>
-                  {Boolean(adFeedbackMessage) && (
-                    <Text style={styles.rewardedAdFeedback}>{adFeedbackMessage}</Text>
-                  )}
-                </View>
+                  </View>
+                )}
 
                 {/* Screen 2 Action Buttons (Bottom) */}
                 {/* 1. Primary Emerald Green "Play Again" */}

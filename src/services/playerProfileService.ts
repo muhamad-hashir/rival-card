@@ -318,6 +318,55 @@ function getShopService(): any {
   return shopServiceRef;
 }
 
+function applyXpAndCurrencyDelta(
+  current: PlayerProfile,
+  earnedCoins: number,
+  earnedXp: number
+): { updated: PlayerProfile; rewardResult: AwardRewardsResult } {
+  let currentXp = current.currentXp + earnedXp;
+  let level = current.level;
+  let xpToNextLevel = current.xpToNextLevel || level * 100;
+
+  let leveledUp = false;
+  let bonusCoins = 0;
+  let bonusGems = 0;
+
+  while (currentXp >= xpToNextLevel) {
+    leveledUp = true;
+    currentXp -= xpToNextLevel;
+    level += 1;
+    xpToNextLevel = level * 100;
+    bonusCoins += 100;
+    bonusGems += 5;
+  }
+
+  const totalCoins = current.coins + earnedCoins + bonusCoins;
+  const totalGems = current.gems + bonusGems;
+
+  const updated: PlayerProfile = {
+    ...current,
+    level,
+    currentXp,
+    xpToNextLevel,
+    coins: totalCoins,
+    gems: totalGems,
+  };
+
+  return {
+    updated,
+    rewardResult: {
+      leveledUp,
+      newLevel: level,
+      bonusCoins,
+      bonusGems,
+      earnedXp,
+      earnedCoins,
+      currentXp,
+      xpToNextLevel,
+    },
+  };
+}
+
 class PlayerProfileService {
   private cachedProfile: PlayerProfile | null = null;
   private listeners: Set<(profile: PlayerProfile) => void> = new Set();
@@ -930,52 +979,41 @@ class PlayerProfileService {
       earnedCoins = 0;
     }
 
-    let currentXp = current.currentXp + earnedXp;
-    let level = current.level;
-    let xpToNextLevel = current.xpToNextLevel || (level * 100);
-
-    let leveledUp = false;
-    let bonusCoins = 0;
-    let bonusGems = 0;
-
-    while (currentXp >= xpToNextLevel) {
-      leveledUp = true;
-      currentXp -= xpToNextLevel;
-      level += 1;
-      xpToNextLevel = level * 100;
-      bonusCoins += 100;
-      bonusGems += 5;
-    }
-
-    const totalCoins = current.coins + earnedCoins + bonusCoins;
-    const totalGems = current.gems + bonusGems;
-
-    const updated: PlayerProfile = {
-      ...current,
-      level,
-      currentXp,
-      xpToNextLevel,
-      coins: totalCoins,
-      gems: totalGems,
-    };
+    // 3. Apply XP, coins & level-up progression via shared helper
+    const { updated, rewardResult } = applyXpAndCurrencyDelta(current, earnedCoins, earnedXp);
 
     this.cachedProfile = updated;
     await persistProfile(updated);
     this.notify();
-    if (!updated.isGuest && (earnedXp > 0 || earnedCoins > 0 || leveledUp)) {
+    if (!updated.isGuest && (earnedXp > 0 || earnedCoins > 0 || rewardResult.leveledUp)) {
       this.syncProfileToCloud(updated).catch(() => {});
     }
 
-    return {
-      leveledUp,
-      newLevel: level,
-      bonusCoins,
-      bonusGems,
-      earnedXp,
-      earnedCoins,
-      currentXp,
-      xpToNextLevel,
-    };
+    return rewardResult;
+  }
+
+  /**
+   * Grants bonus coins and XP (e.g. from winning a match and watching the 2x Rewards ad),
+   * applying the standard level-up progression loop and persisting/syncing the profile.
+   */
+  public async grantBonusRewards(
+    bonusCoinsToAdd: number,
+    bonusXpToAdd: number
+  ): Promise<{ profile: PlayerProfile; rewardResult: AwardRewardsResult }> {
+    const current = await this.getProfile();
+    const safeCoins = Math.max(0, Math.floor(bonusCoinsToAdd));
+    const safeXp = Math.max(0, Math.floor(bonusXpToAdd));
+
+    const { updated, rewardResult } = applyXpAndCurrencyDelta(current, safeCoins, safeXp);
+
+    this.cachedProfile = updated;
+    await persistProfile(updated);
+    this.notify();
+    if (!updated.isGuest && (safeXp > 0 || safeCoins > 0 || rewardResult.leveledUp)) {
+      this.syncProfileToCloud(updated).catch(() => {});
+    }
+
+    return { profile: updated, rewardResult };
   }
 
   /**

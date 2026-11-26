@@ -8,16 +8,20 @@ import {
   ADMOB_TEST_ANDROID_APP_ID,
   ADMOB_TEST_INTERSTITIAL_ID,
   ADMOB_TEST_REWARDED_ID,
+  computeDoubleMatchRewardBonus,
+  ENABLE_INTERSTITIAL_ADS,
   formatCooldownRemaining,
   getGoogleMobileAdsModule,
   initializeAdMob,
   INTERSTITIAL_MATCH_INTERVAL,
   MAX_REWARDED_ADS_PER_DAY,
   MAX_TOTAL_REWARDED_ADS_PER_DAY,
+  POST_MATCH_REWARDED_FALLBACK_MIN_COINS,
   resolveMatchAdContext,
   REWARDED_AD_COIN_PAYOUT,
   REWARDED_COOLDOWN_WINDOW_MS,
   resolveAdUnitId,
+  shouldShowPostMatchDoubleRewardButton,
   AdInstanceLike,
   MobileAdsModuleLike,
 } from '../services/adService';
@@ -229,7 +233,60 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     );
   });
 
-  test('initialize() preloads ads silently without showing any ad on first launch', async () => {
+  test('ENABLE_INTERSTITIAL_ADS is false by default: skips interstitial preloads/shows while rewarded ads & loss-streak recovery stay active', async () => {
+    assert.strictEqual(ENABLE_INTERSTITIAL_ADS, false);
+
+    const mock = createMockAdsModule();
+    adService.setMobileAdsModuleForTesting(mock.mod);
+    await adService.initialize();
+
+    assert.strictEqual(mock.getInitializeCalls(), 1);
+    assert.strictEqual(mock.createdRewarded.length, 1);
+    assert.strictEqual(mock.createdInterstitials.length, 0, 'Must NOT preload interstitials when ENABLE_INTERSTITIAL_ADS is false');
+    assert.strictEqual(adService.isRewardedAdReady(), true);
+    assert.strictEqual(adService.isInterstitialAdReady(), false);
+
+    // Rewarded ads still work normally and grant +100 Coins
+    const rewardedRes = await adService.showRewardedAdForCoins('shop', 1_234_567);
+    assert.strictEqual(rewardedRes.shown, true);
+    assert.strictEqual(rewardedRes.rewarded, true);
+    assert.strictEqual(rewardedRes.coinsAwarded, 100);
+
+    // Calling preloadInterstitialAd() directly also remains a no-op
+    adService.preloadInterstitialAd();
+    assert.strictEqual(mock.createdInterstitials.length, 0);
+
+    // Match tracking & 2-loss recovery still work, while interstitials return reason: 'interstitials_disabled'
+    const l1 = await adService.recordCompletedMatchAndMaybeShowInterstitial({ isWinner: false });
+    assert.strictEqual(l1.shown, false);
+    assert.strictEqual(l1.reason, 'interstitials_disabled');
+
+    const l2 = await adService.recordCompletedMatchAndMaybeShowInterstitial({ isWinner: false });
+    assert.strictEqual(l2.shown, false);
+    assert.strictEqual(l2.reason, 'interstitials_disabled');
+    assert.strictEqual(await adService.getConsecutiveLosses(), 2);
+    assert.strictEqual(await adService.shouldTriggerRecoveryBotMatch(), true);
+
+    // 3rd match & room series completion never queue/show interstitials while disabled
+    const m3 = await adService.recordCompletedMatch({ isWinner: true, wasRecoveryBotMatch: true });
+    assert.strictEqual(m3.completedMatchesCount, 3);
+    assert.strictEqual(m3.shouldShowInterstitial, false);
+    assert.strictEqual(await adService.getConsecutiveLosses(), 0);
+    assert.strictEqual(adService.hasPendingPostMatchInterstitial(), false);
+
+    const pendingSolo = await adService.showPendingPostMatchInterstitialIfDue();
+    assert.strictEqual(pendingSolo.shown, false);
+    assert.strictEqual(pendingSolo.reason, 'interstitials_disabled');
+
+    await adService.recordCompletedMatch({ isOnlineRoom: true, isSeriesComplete: true, isWinner: true });
+    const pendingRoom = await adService.showPendingPostMatchInterstitialIfDue();
+    assert.strictEqual(pendingRoom.shown, false);
+    assert.strictEqual(pendingRoom.reason, 'interstitials_disabled');
+    assert.strictEqual(mock.createdInterstitials.length, 0);
+  });
+
+  test('initialize() preloads ads silently without showing any ad on first launch (when interstitials enabled)', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
 
@@ -362,6 +419,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
 
   test('Smart Post-Match Interstitial shows strictly after every 3rd completed non-tutorial match', async () => {
     assert.strictEqual(INTERSTITIAL_MATCH_INTERVAL, 3);
+    adService.setInterstitialAdsEnabledForTesting(true);
 
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
@@ -415,6 +473,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
   });
 
   test('Deferred post-match interstitial fires cleanly on transition after every 3rd match', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
     await adService.initialize();
@@ -439,6 +498,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
   });
 
   test('Watching a post-match rewarded ad suppresses any due post-match interstitial on exit', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
     await adService.initialize();
@@ -465,6 +525,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
   });
 
   test('Fails silently without throwing when offline or when ads fail to fill', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule({
       onRewardedLoad: (ad) => {
         ad.loaded = false;
@@ -499,6 +560,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
   });
 
   test('3-loss frustration guard suppresses interstitials, while winning a 2-loss recovery match triggers an ad directly', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
     await adService.initialize();
@@ -551,6 +613,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
   });
 
   test('Online Room series: individual games never increment 3-match counter, trigger recovery bots, or show between-round ads', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
     await adService.initialize();
@@ -597,6 +660,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
   });
 
   test('Online Room series completion triggers interstitial for both winners & losers even when consecutiveLosses >= 3', async () => {
+    adService.setInterstitialAdsEnabledForTesting(true);
     const mock = createMockAdsModule();
     adService.setMobileAdsModuleForTesting(mock.mod);
     await adService.initialize();
@@ -768,6 +832,7 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     assert.strictEqual(getGoogleMobileAdsModule(), null);
 
     adService.setMobileAdsModuleForTesting(null);
+    adService.setInterstitialAdsEnabledForTesting(true);
     await assert.doesNotReject(async () => {
       await initializeAdMob();
       await adService.initializeAdMob();
@@ -788,5 +853,106 @@ describe('Google AdMob Service (Rewarded +100 Coins & Every-3rd-Match Interstiti
     const interRes = await adService.showPendingPostMatchInterstitialIfDue();
     assert.strictEqual(interRes.shown, false);
     assert.strictEqual(interRes.skippedReason, 'unavailable');
+  });
+
+  test('Post-match 2x Rewards ad is winners-only, doubles earned Coins & XP, uses fallback minimum on 0 coins, and enforces 5/day cap', async () => {
+    const mock = createMockAdsModule();
+    adService.setMobileAdsModuleForTesting(mock.mod);
+    await adService.initialize();
+
+    // 1. Visibility helper: strictly winners only (hidden on loss or tie)
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: true, winnerId: 'p1' }),
+      true
+    );
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: false, winnerId: 'bot1' }),
+      false
+    );
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: true, winnerId: 'p1', isTie: true }),
+      false
+    );
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: true, winnerId: null }),
+      false
+    );
+
+    // 2. Loser or tie attempting showPostMatchDoubleRewardsAd is rejected with 0 ads shown and 0 rewards
+    const beforeProfile = await playerProfileService.getProfile();
+    const lossRes = await adService.showPostMatchDoubleRewardsAd({
+      isWinner: false,
+      baseCoins: 10,
+      baseXp: 25,
+      nowMs: 1_000_000,
+    });
+    assert.strictEqual(lossRes.shown, false);
+    assert.strictEqual(lossRes.rewarded, false);
+    assert.strictEqual(lossRes.coinsAwarded, 0);
+    assert.strictEqual(lossRes.xpAwarded, 0);
+    assert.strictEqual(lossRes.reason, 'not_winner');
+    assert.strictEqual(mock.createdRewarded[0].showCalls, 0);
+
+    const tieRes = await adService.showPostMatchDoubleRewardsAd({
+      isWinner: true,
+      isTie: true,
+      baseCoins: 50,
+      baseXp: 100,
+      nowMs: 1_000_500,
+    });
+    assert.strictEqual(tieRes.shown, false);
+    assert.strictEqual(tieRes.reason, 'not_winner');
+    assert.strictEqual(mock.createdRewarded[0].showCalls, 0);
+
+    // 3. Quick Match win (50 Coins, 100 XP) -> grants matching +50 Coins & +100 XP (triggering Level 2 + level-up bonuses!)
+    assert.deepStrictEqual(computeDoubleMatchRewardBonus({ baseCoins: 50, baseXp: 100 }), {
+      bonusCoins: 50,
+      bonusXp: 100,
+      usedFallbackMinimum: false,
+    });
+
+    const winRes = await adService.showPostMatchDoubleRewardsAd({
+      isWinner: true,
+      baseCoins: 50,
+      baseXp: 100,
+      nowMs: 2_000_000,
+    });
+    assert.strictEqual(winRes.shown, true);
+    assert.strictEqual(winRes.rewarded, true);
+    assert.strictEqual(winRes.coinsAwarded, 50);
+    assert.strictEqual(winRes.xpAwarded, 100);
+    assert.strictEqual(winRes.cooldownStatus.placement, 'post_match');
+    assert.strictEqual(winRes.cooldownStatus.remainingWatches, MAX_REWARDED_ADS_PER_DAY - 1);
+    assert.match(winRes.message, /\+50 Coins & \+100 XP/);
+
+    // Profile gained +50 Coins (plus +100 Coins & +5 Gems from leveling up at 100 XP!)
+    const afterWinProfile = await playerProfileService.getProfile();
+    assert.strictEqual(afterWinProfile.level, 2);
+    assert.strictEqual(afterWinProfile.coins, beforeProfile.coins + 50 + 100);
+    assert.strictEqual(afterWinProfile.gems, beforeProfile.gems + 5);
+
+    // 4. Fallback minimum coins when a winning mode awarded 0 base coins (e.g. capped bot / pass_and_play)
+    assert.deepStrictEqual(computeDoubleMatchRewardBonus({ baseCoins: 0, baseXp: 20 }), {
+      bonusCoins: POST_MATCH_REWARDED_FALLBACK_MIN_COINS,
+      bonusXp: 20,
+      usedFallbackMinimum: true,
+    });
+
+    const fallbackWinRes = await adService.showPostMatchDoubleRewardsAd({
+      isWinner: true,
+      baseCoins: 0,
+      baseXp: 20,
+      nowMs: 2_010_000,
+    });
+    assert.strictEqual(fallbackWinRes.rewarded, true);
+    assert.strictEqual(fallbackWinRes.coinsAwarded, POST_MATCH_REWARDED_FALLBACK_MIN_COINS);
+    assert.strictEqual(fallbackWinRes.xpAwarded, 20);
+    assert.strictEqual(fallbackWinRes.cooldownStatus.remainingWatches, MAX_REWARDED_ADS_PER_DAY - 2);
+
+    // 5. Shop rewarded ad still grants flat +100 Coins independently
+    const shopRes = await adService.showRewardedAdForCoins('shop', 2_020_000);
+    assert.strictEqual(shopRes.rewarded, true);
+    assert.strictEqual(shopRes.coinsAwarded, 100);
+    assert.strictEqual(shopRes.xpAwarded, 0);
   });
 });

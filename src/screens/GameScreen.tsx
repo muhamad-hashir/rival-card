@@ -4455,6 +4455,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
           seriesState={gameState.seriesState}
           departedPlayerIds={departedRoomPlayerIds}
           matchRewards={matchRewards}
+          onDoubleRewardsClaimed={(bonusCoins, bonusXp) => {
+            showQuickBanner(
+              bonusXp > 0
+                ? `🎉 2x Rewards! +${bonusCoins} Coins & +${bonusXp} XP added!`
+                : `🎉 2x Rewards! +${bonusCoins} Coins added!`,
+              3200
+            );
+          }}
           endedByTimeout={gameState.endedByTimeout}
           timeoutUsedTieBreaker={gameState.timeoutUsedTieBreaker}
           timeoutStandings={gameState.timeoutStandings}

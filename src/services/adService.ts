@@ -1,7 +1,11 @@
 // src/services/adService.ts - Non-intrusive Google AdMob Rewarded & Interstitial Ad Manager
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { GameMode, SeriesState } from '../types';
-import { playerProfileService, PlayerProfile } from './playerProfileService';
+import {
+  AwardRewardsResult,
+  playerProfileService,
+  PlayerProfile,
+} from './playerProfileService';
 import { getGoogleMobileAdsModule, isExpoGoRuntime } from './googleMobileAdsLoader';
 import type { AdInstanceLike, MobileAdsModuleLike } from './googleMobileAdsTypes';
 
@@ -22,7 +26,14 @@ export const ADMOB_TEST_ANDROID_APP_ID = 'ca-app-pub-3940256099942544~3347511713
 export const ADMOB_TEST_REWARDED_ID = 'ca-app-pub-3940256099942544/5224354917';
 export const ADMOB_TEST_INTERSTITIAL_ID = 'ca-app-pub-3940256099942544/1033173712';
 
+/**
+ * Feature flag disabling interstitial ads for initial launch while keeping all
+ * interstitial pacing, loss-streak, and room-series code intact to re-enable later.
+ */
+export const ENABLE_INTERSTITIAL_ADS = false;
+
 export const REWARDED_AD_COIN_PAYOUT = 100;
+export const POST_MATCH_REWARDED_FALLBACK_MIN_COINS = 25;
 export const MAX_REWARDED_ADS_PER_DAY = 5;
 export const MAX_TOTAL_REWARDED_ADS_PER_DAY = MAX_REWARDED_ADS_PER_DAY * 2;
 export const REWARDED_COOLDOWN_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -64,21 +75,76 @@ export interface RewardedAdResult {
   shown: boolean;
   rewarded: boolean;
   coinsAwarded: number;
+  xpAwarded?: number;
   profile?: PlayerProfile;
+  bonusAwardResult?: AwardRewardsResult;
   cooldownStatus: RewardedAdCooldownStatus;
-  reason?: 'rewarded' | 'cooldown' | 'unavailable' | 'dismissed_early' | 'error';
+  reason?: 'rewarded' | 'cooldown' | 'unavailable' | 'dismissed_early' | 'not_winner' | 'error';
   message: string;
+}
+
+export interface DoubleMatchRewardInput {
+  baseCoins?: number;
+  baseXp?: number;
+}
+
+export interface DoubleMatchRewardBonus {
+  bonusCoins: number;
+  bonusXp: number;
+  usedFallbackMinimum: boolean;
+}
+
+/**
+ * Computes the 2x Match Rewards bonus (matching duplicate Coins & XP earned in the match,
+ * with a clean fallback minimum coin reward if the mode awarded 0 base coins).
+ */
+export function computeDoubleMatchRewardBonus(
+  input?: DoubleMatchRewardInput
+): DoubleMatchRewardBonus {
+  const safeBaseCoins =
+    typeof input?.baseCoins === 'number' && Number.isFinite(input.baseCoins)
+      ? Math.max(0, Math.floor(input.baseCoins))
+      : 0;
+  const safeBaseXp =
+    typeof input?.baseXp === 'number' && Number.isFinite(input.baseXp)
+      ? Math.max(0, Math.floor(input.baseXp))
+      : 0;
+
+  const usedFallbackMinimum = safeBaseCoins <= 0;
+  const bonusCoins = usedFallbackMinimum
+    ? POST_MATCH_REWARDED_FALLBACK_MIN_COINS
+    : safeBaseCoins;
+
+  return {
+    bonusCoins,
+    bonusXp: safeBaseXp,
+    usedFallbackMinimum,
+  };
+}
+
+/**
+ * Post-match "Watch Ad for 2x Rewards" is strictly shown when the local player won
+ * the match and hidden completely on losses or ties.
+ */
+export function shouldShowPostMatchDoubleRewardButton(input: {
+  isWinner: boolean;
+  winnerId?: string | null;
+  isTie?: boolean;
+}): boolean {
+  return Boolean(input.isWinner && !input.isTie && input.winnerId);
 }
 
 export interface InterstitialCheckResult {
   shown: boolean;
   completedMatchesCount: number;
   shouldShow: boolean;
+  reason?: 'interstitials_disabled';
   skippedReason?:
     | 'tutorial'
     | 'interval'
     | 'room_series_in_progress'
     | 'loss_streak_guard'
+    | 'interstitials_disabled'
     | 'not_loaded'
     | 'unavailable'
     | 'error';
@@ -270,6 +336,19 @@ class AdService {
   private pendingPostMatchInterstitial = false;
   private pendingInterstitialBypassLossGuard = false;
   private isShowingInterstitial = false;
+  private interstitialEnabledOverride: boolean | null = null;
+
+  public isInterstitialAdsEnabled(): boolean {
+    return this.interstitialEnabledOverride ?? ENABLE_INTERSTITIAL_ADS;
+  }
+
+  /**
+   * Overrides `ENABLE_INTERSTITIAL_ADS` strictly for automated unit tests so both
+   * disabled-by-default launch behavior and preserved interstitial flows stay verified.
+   */
+  public setInterstitialAdsEnabledForTesting(enabled: boolean | null): void {
+    this.interstitialEnabledOverride = enabled;
+  }
 
   private getMobileAdsModule(): MobileAdsModuleLike | null {
     if (this.moduleOverride) {
@@ -370,7 +449,9 @@ class AdService {
     }
 
     this.preloadRewardedAd();
-    this.preloadInterstitialAd();
+    if (this.isInterstitialAdsEnabled()) {
+      this.preloadInterstitialAd();
+    }
   }
 
   /**
@@ -416,6 +497,7 @@ class AdService {
    * Preloads the next Interstitial Ad silently in the background.
    */
   public preloadInterstitialAd(): void {
+    if (!this.isInterstitialAdsEnabled()) return;
     if (this.interstitialLoaded || this.interstitialLoading) return;
     const adsMod = this.getMobileAdsModule();
     if (!adsMod) return;
@@ -559,18 +641,22 @@ class AdService {
   }
 
   /**
-   * Displays a Rewarded Ad for the given placement ('shop' or 'post_match') and grants
-   * `+100 Coins` strictly AFTER `RewardedAdEventType.EARNED_REWARD` fires.
-   * Each placement enforces 5 rewarded ads per rolling 24-hour day (10/day total = 1,000 coins/day).
+   * Displays a Rewarded Ad for the given placement ('shop' or 'post_match').
+   * - In `'shop'`: grants `+100 Coins` strictly AFTER `EARNED_REWARD` fires.
+   * - In `'post_match'` with `doubleMatchRewards`: grants a 2x match bonus (duplicate Coins & XP).
+   * Each placement enforces 5 rewarded ads per rolling 24-hour day.
    * Watching a post-match rewarded ad suppresses any due post-match interstitial on exit.
    */
   public async showRewardedAdForCoins(
     placement: RewardedAdPlacement = 'shop',
-    nowMs: number = Date.now()
+    nowMs: number = Date.now(),
+    options?: { doubleMatchRewards?: DoubleMatchRewardInput }
   ): Promise<RewardedAdResult> {
     if (this.activeRewardedPromise) {
       return this.activeRewardedPromise;
     }
+
+    const doubleMode = placement === 'post_match' ? options?.doubleMatchRewards : undefined;
 
     const run = async (): Promise<RewardedAdResult> => {
       const cooldownStatus = await this.getRewardedAdCooldownStatus(placement, nowMs);
@@ -581,6 +667,7 @@ class AdService {
           shown: false,
           rewarded: false,
           coinsAwarded: 0,
+          xpAwarded: 0,
           cooldownStatus,
           reason: 'cooldown',
           message: `${label} limit reached (${MAX_REWARDED_ADS_PER_DAY}/${MAX_REWARDED_ADS_PER_DAY}). Try again in ${waitLabel}.`,
@@ -593,6 +680,7 @@ class AdService {
           shown: false,
           rewarded: false,
           coinsAwarded: 0,
+          xpAwarded: 0,
           cooldownStatus,
           reason: 'unavailable',
           message: 'Ads are not available on this device right now.',
@@ -607,6 +695,7 @@ class AdService {
           shown: false,
           rewarded: false,
           coinsAwarded: 0,
+          xpAwarded: 0,
           cooldownStatus,
           reason: 'unavailable',
           message: 'No ad ready right now. Check your connection and try again!',
@@ -670,6 +759,29 @@ class AdService {
           this.pendingPostMatchInterstitial = false;
           this.pendingInterstitialBypassLossGuard = false;
         }
+
+        if (doubleMode) {
+          const { bonusCoins, bonusXp } = computeDoubleMatchRewardBonus(doubleMode);
+          const { profile: updatedProfile, rewardResult } =
+            await playerProfileService.grantBonusRewards(bonusCoins, bonusXp);
+          await this.recordRewardedClaimTimestamp(placement, nowMs);
+          const updatedCooldown = await this.getRewardedAdCooldownStatus(placement, nowMs);
+          return {
+            shown: true,
+            rewarded: true,
+            coinsAwarded: bonusCoins,
+            xpAwarded: bonusXp,
+            profile: updatedProfile,
+            bonusAwardResult: rewardResult,
+            cooldownStatus: updatedCooldown,
+            reason: 'rewarded',
+            message:
+              bonusXp > 0
+                ? `2x Rewards! +${bonusCoins} Coins & +${bonusXp} XP added!`
+                : `2x Rewards! +${bonusCoins} Coins added!`,
+          };
+        }
+
         const updatedProfile = await playerProfileService.addCurrency(REWARDED_AD_COIN_PAYOUT, 0);
         await this.recordRewardedClaimTimestamp(placement, nowMs);
         const updatedCooldown = await this.getRewardedAdCooldownStatus(placement, nowMs);
@@ -677,6 +789,7 @@ class AdService {
           shown: true,
           rewarded: true,
           coinsAwarded: REWARDED_AD_COIN_PAYOUT,
+          xpAwarded: 0,
           profile: updatedProfile,
           cooldownStatus: updatedCooldown,
           reason: 'rewarded',
@@ -689,6 +802,7 @@ class AdService {
           shown: false,
           rewarded: false,
           coinsAwarded: 0,
+          xpAwarded: 0,
           cooldownStatus,
           reason: 'error',
           message: 'Ad could not be displayed right now. Please try again later.',
@@ -699,9 +813,12 @@ class AdService {
         shown: true,
         rewarded: false,
         coinsAwarded: 0,
+        xpAwarded: 0,
         cooldownStatus,
         reason: 'dismissed_early',
-        message: `Watch the full ad to earn +${REWARDED_AD_COIN_PAYOUT} Coins!`,
+        message: doubleMode
+          ? 'Watch the full ad to claim 2x Match Rewards!'
+          : `Watch the full ad to earn +${REWARDED_AD_COIN_PAYOUT} Coins!`,
       };
     };
 
@@ -710,6 +827,39 @@ class AdService {
     });
 
     return this.activeRewardedPromise;
+  }
+
+  /**
+   * Winners-only post-match rewarded ad that grants a 2x Match Rewards bonus
+   * (doubling the match's earned Coins & XP using `EXPO_PUBLIC_ADMOB_REWARDED_ID`).
+   */
+  public async showPostMatchDoubleRewardsAd(options: {
+    isWinner: boolean;
+    baseCoins?: number;
+    baseXp?: number;
+    isTie?: boolean;
+    nowMs?: number;
+  }): Promise<RewardedAdResult> {
+    const nowMs = options.nowMs ?? Date.now();
+    if (!options.isWinner || options.isTie) {
+      const cooldownStatus = await this.getRewardedAdCooldownStatus('post_match', nowMs);
+      return {
+        shown: false,
+        rewarded: false,
+        coinsAwarded: 0,
+        xpAwarded: 0,
+        cooldownStatus,
+        reason: 'not_winner',
+        message: '2x Match Rewards are only available when you win a match.',
+      };
+    }
+
+    return this.showRewardedAdForCoins('post_match', nowMs, {
+      doubleMatchRewards: {
+        baseCoins: options.baseCoins,
+        baseXp: options.baseXp,
+      },
+    });
   }
 
   public async getCompletedMatchesCount(): Promise<number> {
@@ -777,13 +927,16 @@ class AdService {
 
     if (options.isOnlineRoom) {
       const seriesDone = options.isSeriesComplete === true;
-      this.pendingPostMatchInterstitial = seriesDone;
-      this.pendingInterstitialBypassLossGuard = seriesDone;
-      this.preloadInterstitialAd();
+      const enabled = this.isInterstitialAdsEnabled();
+      this.pendingPostMatchInterstitial = enabled && seriesDone;
+      this.pendingInterstitialBypassLossGuard = enabled && seriesDone;
+      if (enabled) {
+        this.preloadInterstitialAd();
+      }
       return {
         completedMatchesCount: current,
         consecutiveLosses: prevLosses,
-        shouldShowInterstitial: seriesDone,
+        shouldShowInterstitial: enabled && seriesDone,
         suppressedByLossStreak: false,
       };
     }
@@ -814,14 +967,18 @@ class AdService {
 
     const isRecoveryWin = Boolean(options.isWinner === true && options.wasRecoveryBotMatch);
     const isIntervalMatch = nextCount > 0 && nextCount % INTERSTITIAL_MATCH_INTERVAL === 0;
-    const shouldShowInterstitial = isRecoveryWin || isIntervalMatch;
+    const enabled = this.isInterstitialAdsEnabled();
+    const shouldShowInterstitial = enabled && (isRecoveryWin || isIntervalMatch);
 
     if (shouldShowInterstitial) {
       this.pendingPostMatchInterstitial = true;
       this.pendingInterstitialBypassLossGuard = false;
+    } else if (!enabled) {
+      this.pendingPostMatchInterstitial = false;
+      this.pendingInterstitialBypassLossGuard = false;
     }
 
-    // Keep next interstitial warmed up silently in the background
+    // Keep next interstitial warmed up silently in the background (no-op when disabled)
     this.preloadInterstitialAd();
 
     return {
@@ -843,6 +1000,19 @@ class AdService {
    */
   public async showPendingPostMatchInterstitialIfDue(): Promise<InterstitialCheckResult> {
     const count = await this.getCompletedMatchesCount();
+
+    if (!this.isInterstitialAdsEnabled()) {
+      this.pendingPostMatchInterstitial = false;
+      this.pendingInterstitialBypassLossGuard = false;
+      return {
+        shown: false,
+        completedMatchesCount: count,
+        shouldShow: false,
+        reason: 'interstitials_disabled',
+        skippedReason: 'interstitials_disabled',
+      };
+    }
+
     const losses = await this.getConsecutiveLosses();
 
     if (!this.pendingPostMatchInterstitial) {
@@ -899,6 +1069,18 @@ class AdService {
         isSeriesComplete: options.isSeriesComplete,
       });
 
+    if (!this.isInterstitialAdsEnabled()) {
+      this.pendingPostMatchInterstitial = false;
+      this.pendingInterstitialBypassLossGuard = false;
+      return {
+        shown: false,
+        completedMatchesCount,
+        shouldShow: false,
+        reason: 'interstitials_disabled',
+        skippedReason: 'interstitials_disabled',
+      };
+    }
+
     if (suppressedByLossStreak) {
       return {
         shown: false,
@@ -925,6 +1107,15 @@ class AdService {
   private async showPreloadedInterstitial(
     completedMatchesCount: number
   ): Promise<InterstitialCheckResult> {
+    if (!this.isInterstitialAdsEnabled()) {
+      return {
+        shown: false,
+        completedMatchesCount,
+        shouldShow: false,
+        reason: 'interstitials_disabled',
+        skippedReason: 'interstitials_disabled',
+      };
+    }
     if (this.isShowingInterstitial) {
       return {
         shown: false,
@@ -1020,6 +1211,7 @@ class AdService {
     this.pendingPostMatchInterstitial = false;
     this.pendingInterstitialBypassLossGuard = false;
     this.isShowingInterstitial = false;
+    this.interstitialEnabledOverride = null;
     this.activeRewardedPromise = null;
     this.initialized = false;
   }

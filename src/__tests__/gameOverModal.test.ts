@@ -1,7 +1,13 @@
 // src/__tests__/gameOverModal.test.ts - Unit tests for GameOverModal rankings and mode-aware button logic
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { getTimeoutTieBreakerNote } from '../gameEngine';
+import {
+  computeDoubleMatchRewardBonus,
+  shouldShowPostMatchDoubleRewardButton,
+} from '../services/adService';
 import {
   formatScorecardHoldSeconds,
   getRemainingScorecardHoldMs,
@@ -272,5 +278,42 @@ describe('GameOverModal Standings & Ranking Logic', () => {
     const remainingDone = getRemainingScorecardHoldMs(openedAt, openedAt + 5500);
     assert.strictEqual(remainingDone, 0);
     assert.strictEqual(formatScorecardHoldSeconds(remainingDone), 0);
+  });
+
+  test('GameOverModal 2x Match Rewards button appears ONLY for winners and doubles match Coins & XP', () => {
+    const modalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/GameOverModal.tsx'),
+      'utf8'
+    );
+    assert.ok(modalSrc.includes('shouldShowPostMatchDoubleRewardButton'));
+    assert.ok(modalSrc.includes('showPostMatchDoubleRewardsAd'));
+    assert.ok(modalSrc.includes('Watch Ad • 2x Rewards'));
+
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: true, winnerId: 'p1' }),
+      true
+    );
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: false, winnerId: 'bot1' }),
+      false
+    );
+    assert.strictEqual(
+      shouldShowPostMatchDoubleRewardButton({ isWinner: true, winnerId: 'p1', isTie: true }),
+      false
+    );
+
+    // Quick Match win (50 Coins, 100 XP) -> 2x preview (+50 Coins, +100 XP)
+    assert.deepStrictEqual(computeDoubleMatchRewardBonus({ baseCoins: 50, baseXp: 100 }), {
+      bonusCoins: 50,
+      bonusXp: 100,
+      usedFallbackMinimum: false,
+    });
+
+    // Solo Bot win (10 Coins, 20 XP) -> 2x preview (+10 Coins, +20 XP)
+    assert.deepStrictEqual(computeDoubleMatchRewardBonus({ baseCoins: 10, baseXp: 20 }), {
+      bonusCoins: 10,
+      bonusXp: 20,
+      usedFallbackMinimum: false,
+    });
   });
 });
