@@ -132,6 +132,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const connectedEmail = session?.user?.email || activeProfile.email;
   const currentLevel = activeProfile.level ?? 1;
   const currentCoins = activeProfile.coins ?? 250;
+  const currentGems = activeProfile.gems ?? 10;
   const equippedAvatarKey = normalizeAvatarKey(selectedAvatarId) || normalizeAvatarKey(activeProfile.avatarId) || 'fox';
   const unlockedAvatarsList = activeProfile.unlockedAvatars ?? ['fox', 'bot'];
   const unlockedCount = AVATAR_OPTIONS.filter((a) => isAvatarUnlocked(unlockedAvatarsList, a.id)).length;
@@ -518,7 +519,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   const isEquipped = isUnlocked && item.id === equippedAvatarKey;
                   const isLevelLocked = !isUnlocked && currentLevel < item.requiredLevel;
                   const isReadyToBuy = !isUnlocked && currentLevel >= item.requiredLevel;
-                  const canAfford = currentCoins >= item.coinCost;
+                  const gemCost = item.gemCost ?? 0;
+                  const canAfford =
+                    currentCoins >= item.coinCost && currentGems >= gemCost;
 
                   return (
                     <TouchableOpacity
@@ -533,6 +536,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                           ? ', unlocked'
                           : isLevelLocked
                           ? `, locked until level ${item.requiredLevel}`
+                          : gemCost > 0
+                          ? `, unlock for ${item.coinCost} coins and ${gemCost} gems`
                           : `, unlock for ${item.coinCost} coins`
                       }`}
                       testID={`avatar-option-${item.id}`}
@@ -594,8 +599,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                               !canAfford && styles.avatarStatusPriceTextLow,
                             ]}
                             numberOfLines={1}
+                            adjustsFontSizeToFit
+                            minimumFontScale={0.75}
                           >
                             🪙 {item.coinCost.toLocaleString()}
+                            {gemCost > 0 ? ` + 💎 ${gemCost}` : ''}
                           </Text>
                         </View>
                       )}
@@ -731,68 +739,81 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           </ScrollView>
 
           {/* In-Modal Avatar Unlock Confirmation Overlay */}
-          {pendingUnlockAvatar && (
-            <View style={styles.unlockOverlay}>
-              <View style={styles.unlockConfirmCard}>
-                <AvatarIcon
-                  avatarId={pendingUnlockAvatar.id}
-                  size={76}
-                  showCircle
-                  borderWidth={3}
-                  style={styles.unlockPreviewAvatar}
-                />
-                <Text style={styles.unlockTitle}>UNLOCK {pendingUnlockAvatar.label.toUpperCase()}?</Text>
-                <Text style={styles.unlockSubtitle}>
-                  Unlock {pendingUnlockAvatar.label} for{' '}
-                  {pendingUnlockAvatar.coinCost.toLocaleString()} Coins?
-                </Text>
+          {pendingUnlockAvatar && (() => {
+            const pendingGemCost = pendingUnlockAvatar.gemCost ?? 0;
+            const missingCoins = Math.max(0, pendingUnlockAvatar.coinCost - currentCoins);
+            const missingGems = Math.max(0, pendingGemCost - currentGems);
+            const hasEnoughCurrency = missingCoins === 0 && missingGems === 0;
 
-                {currentCoins < pendingUnlockAvatar.coinCost ? (
-                  <View style={styles.unlockInsufficientBanner}>
-                    <Text style={styles.unlockInsufficientText}>
-                      Need {(pendingUnlockAvatar.coinCost - currentCoins).toLocaleString()} more coins
-                      (You have 🪙 {currentCoins.toLocaleString()})
-                    </Text>
-                  </View>
-                ) : (
-                  <Text style={styles.unlockBalanceHint}>
-                    Balance after unlock: 🪙{' '}
-                    {(currentCoins - pendingUnlockAvatar.coinCost).toLocaleString()}
+            return (
+              <View style={styles.unlockOverlay}>
+                <View style={styles.unlockConfirmCard}>
+                  <AvatarIcon
+                    avatarId={pendingUnlockAvatar.id}
+                    size={76}
+                    showCircle
+                    borderWidth={3}
+                    style={styles.unlockPreviewAvatar}
+                  />
+                  <Text style={styles.unlockTitle}>UNLOCK {pendingUnlockAvatar.label.toUpperCase()}?</Text>
+                  <Text style={styles.unlockSubtitle}>
+                    Unlock {pendingUnlockAvatar.label} for{' '}
+                    {pendingUnlockAvatar.coinCost.toLocaleString()} Coins
+                    {pendingGemCost > 0 ? ` + ${pendingGemCost} Gems` : ''}?
                   </Text>
-                )}
 
-                <View style={styles.unlockActionsRow}>
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={() => setPendingUnlockAvatar(null)}
-                    disabled={isUnlockingAvatar}
-                    style={styles.unlockCancelBtn}
-                  >
-                    <Text style={styles.unlockCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    activeOpacity={0.85}
-                    onPress={handleConfirmUnlockAvatar}
-                    disabled={isUnlockingAvatar || currentCoins < pendingUnlockAvatar.coinCost}
-                    style={[
-                      styles.unlockConfirmBtn,
-                      (isUnlockingAvatar || currentCoins < pendingUnlockAvatar.coinCost) &&
-                        styles.unlockConfirmBtnDisabled,
-                    ]}
-                    testID="confirm-unlock-avatar-btn"
-                  >
-                    {isUnlockingAvatar ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.unlockConfirmText}>
-                        🪙 Unlock ({pendingUnlockAvatar.coinCost.toLocaleString()})
+                  {!hasEnoughCurrency ? (
+                    <View style={styles.unlockInsufficientBanner}>
+                      <Text style={styles.unlockInsufficientText}>
+                        {missingCoins > 0 && missingGems > 0
+                          ? `Need ${missingCoins.toLocaleString()} more coins & ${missingGems} more gems`
+                          : missingCoins > 0
+                          ? `Need ${missingCoins.toLocaleString()} more coins (You have 🪙 ${currentCoins.toLocaleString()})`
+                          : `Need ${missingGems} more gems (You have 💎 ${currentGems})`}
                       </Text>
-                    )}
-                  </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <Text style={styles.unlockBalanceHint}>
+                      Balance after unlock: 🪙{' '}
+                      {(currentCoins - pendingUnlockAvatar.coinCost).toLocaleString()}
+                      {pendingGemCost > 0 ? `  •  💎 ${currentGems - pendingGemCost}` : ''}
+                    </Text>
+                  )}
+
+                  <View style={styles.unlockActionsRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => setPendingUnlockAvatar(null)}
+                      disabled={isUnlockingAvatar}
+                      style={styles.unlockCancelBtn}
+                    >
+                      <Text style={styles.unlockCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={handleConfirmUnlockAvatar}
+                      disabled={isUnlockingAvatar || !hasEnoughCurrency}
+                      style={[
+                        styles.unlockConfirmBtn,
+                        (isUnlockingAvatar || !hasEnoughCurrency) &&
+                          styles.unlockConfirmBtnDisabled,
+                      ]}
+                      testID="confirm-unlock-avatar-btn"
+                    >
+                      {isUnlockingAvatar ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.unlockConfirmText}>
+                          🪙 {pendingUnlockAvatar.coinCost.toLocaleString()}
+                          {pendingGemCost > 0 ? ` + 💎 ${pendingGemCost}` : ''}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
-            </View>
-          )}
+            );
+          })()}
         </View>
       </View>
     </Modal>

@@ -16,6 +16,12 @@ import { hapticsService } from '../services/hapticsService';
 import { soundService } from '../services/soundService';
 import { FONT_CARTOON_BOLD, FONT_CARTOON_HEAVY } from '../styles/typography';
 import { TAUNT_EMOJIS } from '../utils/botEmotes';
+import {
+  formatShopEmoteTauntText,
+  getUnlockedShopEmotes,
+  shopService,
+  ShopItem,
+} from '../services/shopService';
 import type { Player } from '../types';
 
 export { TAUNT_EMOJIS };
@@ -127,6 +133,30 @@ export const TauntBar: React.FC<TauntBarProps> = ({
   const [isTrayOpen, setIsTrayOpen] = useState(false);
   const [trayScale] = useState(() => new Animated.Value(0.88));
   const [trayOpacity] = useState(() => new Animated.Value(0));
+  const [unlockedShopEmotes, setUnlockedShopEmotes] = useState<ShopItem[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    shopService
+      .getInventory()
+      .then((inv) => {
+        if (mounted) {
+          setUnlockedShopEmotes(getUnlockedShopEmotes(inv.ownedItemIds));
+        }
+      })
+      .catch(() => {});
+
+    const unsubscribe = shopService.subscribe((inv) => {
+      if (mounted) {
+        setUnlockedShopEmotes(getUnlockedShopEmotes(inv.ownedItemIds));
+      }
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (isTrayOpen) {
@@ -234,6 +264,38 @@ export const TauntBar: React.FC<TauntBarProps> = ({
                   <Text style={styles.drawerCloseText}>✕</Text>
                 </TouchableOpacity>
               </View>
+
+              {unlockedShopEmotes.length > 0 && (
+                <View style={styles.unlockedEmotesSection}>
+                  <Text style={styles.unlockedEmotesLabel}>MY EMOTES</Text>
+                  <View style={styles.unlockedEmotesWrap}>
+                    {unlockedShopEmotes.map((emote) => (
+                      <TouchableOpacity
+                        key={emote.id}
+                        style={[
+                          styles.unlockedEmoteChip,
+                          {
+                            backgroundColor: emote.previewStyle.primaryColor,
+                            borderColor: emote.previewStyle.borderColor || '#0F172A',
+                          },
+                        ]}
+                        onPress={() => handlePressEmoji(formatShopEmoteTauntText(emote))}
+                        activeOpacity={0.72}
+                        testID={`taunt-shop-emote-${emote.id}`}
+                      >
+                        {Boolean(emote.previewStyle.emoji) && (
+                          <Text style={styles.unlockedEmoteIcon}>
+                            {emote.previewStyle.emoji}
+                          </Text>
+                        )}
+                        <Text style={styles.unlockedEmoteText} numberOfLines={1}>
+                          {emote.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              )}
 
               <View style={styles.emojiGrid}>
                 {TAUNT_EMOJIS.map((emoji) => (
@@ -424,6 +486,42 @@ const styles = StyleSheet.create({
     ...FONT_CARTOON_HEAVY,
     fontSize: 12,
     color: '#DC2626',
+  },
+  unlockedEmotesSection: {
+    marginBottom: 10,
+    paddingBottom: 9,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#E2D9C8',
+  },
+  unlockedEmotesLabel: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 9.5,
+    color: '#64748B',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
+  unlockedEmotesWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  unlockedEmoteChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderBottomWidth: 3,
+  },
+  unlockedEmoteIcon: {
+    fontSize: 13,
+  },
+  unlockedEmoteText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 11,
+    color: '#FFFFFF',
   },
   emojiGrid: {
     flexDirection: 'row',

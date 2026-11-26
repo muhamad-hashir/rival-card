@@ -317,6 +317,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
 
   const currentLevel = profile?.level ?? 1;
   const currentCoins = profile?.coins ?? 250;
+  const currentGems = profile?.gems ?? 10;
   const equippedAvatarKey = normalizeAvatarKey(profile?.avatarId) || 'fox';
   const unlockedAvatars = profile?.unlockedAvatars ?? ['fox', 'bot'];
 
@@ -507,7 +508,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
 
                 {/* Level + Coin Unlockable Avatars (Excludes Guest Fox & Guest Bot starters) */}
                 <View style={[styles.sectionHeaderRow, { marginTop: 10 }]}>
-                  <Text style={styles.sectionHeaderTitle}>🪙 LEVEL + COIN AVATARS</Text>
+                  <Text style={styles.sectionHeaderTitle}>🪙 LEVEL + COIN / GEM AVATARS</Text>
                   <View style={styles.levelHeaderPill}>
                     <Text style={styles.levelHeaderPillText}>LVL {currentLevel} / 40</Text>
                   </View>
@@ -519,8 +520,10 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                     const isUnlocked = isAvatarUnlocked(unlockedAvatars, key);
                     const isEquipped = isUnlocked && equippedAvatarKey === key;
                     const reqLevel = item.requiredLevel ?? 1;
+                    const gemCost = item.gemCost ?? 0;
                     const isLevelLocked = !isUnlocked && currentLevel < reqLevel;
-                    const canAfford = currentCoins >= item.price.amount;
+                    const canAfford =
+                      currentCoins >= item.price.amount && currentGems >= gemCost;
 
                     return (
                       <View key={item.id} style={styles.itemCard} testID={`shop-item-${item.id}`}>
@@ -570,12 +573,23 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                                 canAfford ? styles.buyBtnCoin : styles.buyBtnInsufficient,
                               ]}
                               accessibilityRole="button"
-                              accessibilityLabel={`Unlock ${item.name} for ${item.price.amount} coins`}
+                              accessibilityLabel={
+                                gemCost > 0
+                                  ? `Unlock ${item.name} for ${item.price.amount} coins and ${gemCost} gems`
+                                  : `Unlock ${item.name} for ${item.price.amount} coins`
+                              }
                               testID={`item-buy-btn-${item.id}`}
                             >
-                              <Text style={styles.buyBtnPrice}>
-                                🟡 {item.price.amount.toLocaleString()}
-                              </Text>
+                              <View style={styles.dualCostRow}>
+                                <Text style={styles.buyBtnPrice}>
+                                  🟡 {item.price.amount.toLocaleString()}
+                                </Text>
+                                {gemCost > 0 && (
+                                  <View style={styles.dualGemBadge}>
+                                    <Text style={styles.dualGemText}>💎 {gemCost}</Text>
+                                  </View>
+                                )}
+                              </View>
                             </TactileButton>
                           )}
                         </View>
@@ -1559,6 +1573,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#FFFFFF',
     letterSpacing: 0.3,
+  },
+  dualCostRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    paddingHorizontal: 4,
+  },
+  dualGemBadge: {
+    backgroundColor: '#0284C7',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  dualGemText: {
+    ...FONT_CARTOON_HEAVY,
+    fontSize: 10,
+    color: '#FFFFFF',
   },
   lockedItemCol: {
     width: '100%',

@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  formatShopEmoteTauntText,
+  getUnlockedShopEmotes,
   shopService,
   SHOP_CATEGORIES,
   SHOP_CATALOG,
@@ -82,22 +84,32 @@ describe('Streamlined Shop Catalog, Card Backs, Emotes & Currency Packs', () => 
     }
   });
 
-  test('Emotes category contains all 4 clean quick-chat emotes without PNG sticker images', () => {
+  test('Emotes category contains 4 Coin emotes and 5 Gem-priced emotes without PNG sticker images', () => {
     const emotes = shopService.getItemsByCategory('emotes');
-    assert.strictEqual(emotes.length, 4, 'Must have exactly 4 quick-chat emotes');
+    assert.strictEqual(emotes.length, 9, 'Must have 4 Coin emotes + 5 Gem emotes');
 
-    const expectedEmotes = [
-      { id: 'emote_thinking', name: 'Thinking...', amount: 1200 },
-      { id: 'emote_oops', name: 'Oops!', amount: 2000 },
-      { id: 'emote_gg', name: 'GG!', amount: 3200 },
-      { id: 'emote_nice_try', name: 'Nice Try!', amount: 4500 },
+    const expectedEmotes: Array<{
+      id: string;
+      name: string;
+      currency: 'coins' | 'gems';
+      amount: number;
+    }> = [
+      { id: 'emote_thinking', name: 'Thinking...', currency: 'coins', amount: 1200 },
+      { id: 'emote_oops', name: 'Oops!', currency: 'coins', amount: 2000 },
+      { id: 'emote_gg', name: 'GG!', currency: 'coins', amount: 3200 },
+      { id: 'emote_nice_try', name: 'Nice Try!', currency: 'coins', amount: 4500 },
+      { id: 'emote_close_one', name: 'Close One!', currency: 'gems', amount: 15 },
+      { id: 'emote_too_slow', name: 'Too Slow!', currency: 'gems', amount: 15 },
+      { id: 'emote_unlucky', name: 'Unlucky!', currency: 'gems', amount: 15 },
+      { id: 'emote_rematch', name: 'Rematch?', currency: 'gems', amount: 20 },
+      { id: 'emote_no_mercy', name: 'No Mercy!', currency: 'gems', amount: 20 },
     ];
 
     for (const expected of expectedEmotes) {
       const found = emotes.find((e) => e.id === expected.id);
       assert.ok(found, `Missing emote ${expected.id}`);
       assert.strictEqual(found.name, expected.name);
-      assert.strictEqual(found.price.currency, 'coins');
+      assert.strictEqual(found.price.currency, expected.currency);
       assert.strictEqual(found.price.amount, expected.amount);
       assert.strictEqual(Boolean(found.purchasesUnavailable), false);
       assert.strictEqual(found.image, undefined);
@@ -265,5 +277,74 @@ describe('Streamlined Shop Catalog, Card Backs, Emotes & Currency Packs', () => 
     const profileAfter = await playerProfileService.getProfile();
     assert.strictEqual(profileAfter.coins, 50250);
     assert.strictEqual(profileAfter.gems, 510);
+  });
+
+  test('Gem-priced emotes validate gems, appear in unlocked in-match picker list, and merge from cloud inventory', async () => {
+    // Starter guest has 10 Gems -> cannot buy 15-Gem emote
+    const failRes = await shopService.buyItem('emote_close_one');
+    assert.strictEqual(failRes.success, false);
+    assert.strictEqual(failRes.error, 'Not enough gems!');
+
+    // Add 30 Gems (total 40) -> buy Close One! (15 Gems) & No Mercy! (20 Gems)
+    await playerProfileService.addCurrency(0, 30);
+
+    const buyCloseOne = await shopService.buyItem('emote_close_one');
+    assert.strictEqual(buyCloseOne.success, true);
+    assert.ok(buyCloseOne.inventory?.ownedItemIds.includes('emote_close_one'));
+
+    const buyNoMercy = await shopService.buyItem('emote_no_mercy');
+    assert.strictEqual(buyNoMercy.success, true);
+    assert.ok(buyNoMercy.inventory?.ownedItemIds.includes('emote_no_mercy'));
+
+    const profileAfter = await playerProfileService.getProfile();
+    assert.strictEqual(profileAfter.gems, 5); // 10 + 30 - 15 - 20
+
+    const unlocked = getUnlockedShopEmotes(buyNoMercy.inventory?.ownedItemIds || []);
+    assert.deepStrictEqual(
+      unlocked.map((e) => e.id),
+      ['emote_close_one', 'emote_no_mercy']
+    );
+    assert.strictEqual(formatShopEmoteTauntText(unlocked[0]), '😬 Close One!');
+    assert.strictEqual(formatShopEmoteTauntText(unlocked[1]), '🔥 No Mercy!');
+
+    // Remote cloud merge accepts new Gem emotes
+    const merged = await shopService.mergeInventory(['emote_rematch']);
+    assert.ok(merged.ownedItemIds.includes('emote_rematch'));
+
+    const tauntBarSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/TauntBar.tsx'),
+      'utf8'
+    );
+    assert.ok(tauntBarSrc.includes('getUnlockedShopEmotes'));
+    assert.ok(tauntBarSrc.includes('formatShopEmoteTauntText'));
+  });
+
+  test('High-level Shop avatars expose dual Coins + Gems requirements and enforce both currencies', async () => {
+    const expectedDual: Array<[string, number, number]> = [
+      ['jester', 7500, 5],
+      ['flame', 9000, 10],
+      ['champ', 11000, 15],
+      ['dragon', 13500, 20],
+    ];
+    for (const [id, coinCost, gemCost] of expectedDual) {
+      const item = shopService.getItemById(id);
+      assert.ok(item, `Expected Shop avatar ${id}`);
+      assert.strictEqual(item.price.currency, 'coins');
+      assert.strictEqual(item.price.amount, coinCost);
+      assert.strictEqual(item.gemCost, gemCost);
+    }
+
+    const shopModalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/ShopModal.tsx'),
+      'utf8'
+    );
+    const profileModalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/ProfileModal.tsx'),
+      'utf8'
+    );
+    assert.ok(shopModalSrc.includes('dualGemBadge'));
+    assert.ok(shopModalSrc.includes('currentGems >= gemCost'));
+    assert.ok(profileModalSrc.includes('pendingUnlockAvatar.gemCost'));
+    assert.ok(profileModalSrc.includes('missingGems'));
   });
 });

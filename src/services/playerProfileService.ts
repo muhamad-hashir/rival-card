@@ -158,7 +158,12 @@ export interface UnlockAvatarResult {
   profile: PlayerProfile;
   avatar?: AvatarOption;
   error?: string;
-  reason?: 'invalid_avatar' | 'already_unlocked' | 'level_too_low' | 'insufficient_coins';
+  reason?:
+    | 'invalid_avatar'
+    | 'already_unlocked'
+    | 'level_too_low'
+    | 'insufficient_coins'
+    | 'insufficient_gems';
 }
 
 export interface AwardRewardsResult {
@@ -567,8 +572,8 @@ class PlayerProfileService {
   }
 
   /**
-   * Unlocks an avatar permanently if the player meets its requiredLevel and coinCost,
-   * deducts coins, equips it immediately, saves locally, and syncs to Supabase.
+   * Unlocks an avatar permanently if the player meets its requiredLevel, coinCost, and gemCost,
+   * deducts both currencies atomically, equips it immediately, saves locally, and syncs to Supabase.
    */
   public async unlockAvatar(avatarId: string): Promise<UnlockAvatarResult> {
     const current = await this.getProfile();
@@ -584,6 +589,7 @@ class PlayerProfileService {
     }
 
     const avatar = getProgressionAvatarConfig(key);
+    const gemCost = avatar.gemCost ?? 0;
 
     if (isAvatarUnlocked(current.unlockedAvatars, key)) {
       return {
@@ -611,7 +617,20 @@ class PlayerProfileService {
         profile: current,
         avatar,
         reason: 'insufficient_coins',
-        error: `Not enough coins! Need ${avatar.coinCost.toLocaleString()} coins.`,
+        error:
+          gemCost > 0 && current.gems < gemCost
+            ? `Need ${avatar.coinCost.toLocaleString()} coins and ${gemCost} gems.`
+            : `Not enough coins! Need ${avatar.coinCost.toLocaleString()} coins.`,
+      };
+    }
+
+    if (gemCost > 0 && current.gems < gemCost) {
+      return {
+        success: false,
+        profile: current,
+        avatar,
+        reason: 'insufficient_gems',
+        error: `Not enough gems! Need ${gemCost.toLocaleString()} gems.`,
       };
     }
 
@@ -619,6 +638,7 @@ class PlayerProfileService {
     const updated: PlayerProfile = {
       ...current,
       coins: current.coins - avatar.coinCost,
+      gems: current.gems - gemCost,
       unlockedAvatars: updatedUnlocked,
       avatarId: key,
     };

@@ -55,30 +55,31 @@ describe('12-Avatar Level + Coin Progression System', () => {
     (globalThis as any).window = originalWindow;
   });
 
-  test('Catalog defines all 12 avatars with exact Level + Coin unlock progression ladder', () => {
+  test('Catalog defines all 12 avatars with exact Level + Coin + Gem unlock progression ladder', () => {
     assert.strictEqual(AVATAR_CATALOG.length, 12);
 
-    const expected: Array<[string, string, number, number]> = [
-      ['fox', 'Fox', 1, 0],
-      ['bot', 'Bot', 1, 0],
-      ['panda', 'Panda', 3, 500],
-      ['shield', 'Shield', 7, 900],
-      ['tiger', 'Tiger', 10, 2000],
-      ['wolf', 'Wolf', 15, 3200],
-      ['rival', 'Rival', 20, 4500],
-      ['ninja', 'Ninja', 25, 6000],
-      ['jester', 'Jester', 30, 7500],
-      ['flame', 'Flame', 35, 9000],
-      ['champ', 'Champ', 38, 11000],
-      ['dragon', 'Dragon', 40, 13500],
+    const expected: Array<[string, string, number, number, number]> = [
+      ['fox', 'Fox', 1, 0, 0],
+      ['bot', 'Bot', 1, 0, 0],
+      ['panda', 'Panda', 3, 500, 0],
+      ['shield', 'Shield', 7, 900, 0],
+      ['tiger', 'Tiger', 10, 2000, 0],
+      ['wolf', 'Wolf', 15, 3200, 0],
+      ['rival', 'Rival', 20, 4500, 0],
+      ['ninja', 'Ninja', 25, 6000, 0],
+      ['jester', 'Jester', 30, 7500, 5],
+      ['flame', 'Flame', 35, 9000, 10],
+      ['champ', 'Champ', 38, 11000, 15],
+      ['dragon', 'Dragon', 40, 13500, 20],
     ];
 
-    expected.forEach(([id, label, requiredLevel, coinCost], idx) => {
+    expected.forEach(([id, label, requiredLevel, coinCost, gemCost], idx) => {
       const item = AVATAR_CATALOG[idx];
       assert.strictEqual(item.id, id);
       assert.strictEqual(item.label, label);
       assert.strictEqual(item.requiredLevel, requiredLevel);
       assert.strictEqual(item.coinCost, coinCost);
+      assert.strictEqual(item.gemCost, gemCost);
     });
 
     assert.deepStrictEqual([...DEFAULT_UNLOCKED_AVATARS], ['fox', 'bot']);
@@ -125,27 +126,46 @@ describe('12-Avatar Level + Coin Progression System', () => {
     assert.strictEqual(poorRes.reason, 'insufficient_coins');
     assert.strictEqual(poorRes.profile.coins, 300);
     assert.strictEqual(isAvatarUnlocked(poorRes.profile.unlockedAvatars, 'panda'), false);
-  });
 
-  test('unlockAvatar deducts coins, permanently unlocks, equips, and persists when level and coins are met', async () => {
+    // Seed a Level 40 profile with enough coins for Dragon (13,500) but only 5 Gems (needs 20)
     seedStoredProfile({
       ...(await playerProfileService.getProfile()),
       level: 40,
       coins: 15000,
+      gems: 5,
     });
     await playerProfileService.getProfile(true);
 
-    // Unlock Panda (Lv. 3 / 500 coins)
+    const lowGemsRes = await playerProfileService.unlockAvatar('dragon');
+    assert.strictEqual(lowGemsRes.success, false);
+    assert.strictEqual(lowGemsRes.reason, 'insufficient_gems');
+    assert.strictEqual(lowGemsRes.profile.coins, 15000);
+    assert.strictEqual(lowGemsRes.profile.gems, 5);
+    assert.strictEqual(isAvatarUnlocked(lowGemsRes.profile.unlockedAvatars, 'dragon'), false);
+  });
+
+  test('unlockAvatar deducts coins and gems atomically, permanently unlocks, equips, and persists', async () => {
+    seedStoredProfile({
+      ...(await playerProfileService.getProfile()),
+      level: 40,
+      coins: 15000,
+      gems: 30,
+    });
+    await playerProfileService.getProfile(true);
+
+    // Unlock Panda (Lv. 3 / 500 coins, 0 gems)
     const pandaUnlock = await playerProfileService.unlockAvatar('panda');
     assert.strictEqual(pandaUnlock.success, true);
     assert.strictEqual(pandaUnlock.profile.coins, 14500);
+    assert.strictEqual(pandaUnlock.profile.gems, 30);
     assert.strictEqual(pandaUnlock.profile.avatarId, 'panda');
     assert.ok(pandaUnlock.profile.unlockedAvatars.includes('panda'));
 
-    // Unlock Dragon (Lv. 40 / 13500 coins)
+    // Unlock Dragon (Lv. 40 / 13500 coins + 20 gems)
     const dragonUnlock = await playerProfileService.unlockAvatar('dragon');
     assert.strictEqual(dragonUnlock.success, true);
     assert.strictEqual(dragonUnlock.profile.coins, 1000);
+    assert.strictEqual(dragonUnlock.profile.gems, 10);
     assert.strictEqual(dragonUnlock.profile.avatarId, 'dragon');
     assert.ok(dragonUnlock.profile.unlockedAvatars.includes('dragon'));
 
@@ -154,11 +174,13 @@ describe('12-Avatar Level + Coin Progression System', () => {
     assert.strictEqual(duplicateUnlock.success, false);
     assert.strictEqual(duplicateUnlock.reason, 'already_unlocked');
     assert.strictEqual(duplicateUnlock.profile.coins, 1000);
+    assert.strictEqual(duplicateUnlock.profile.gems, 10);
 
-    // Reload from persistent storage -> unlocks & coins persist cleanly
+    // Reload from persistent storage -> unlocks, coins & gems persist cleanly
     const reloaded = await playerProfileService.getProfile(true);
     assert.strictEqual(reloaded.avatarId, 'dragon');
     assert.strictEqual(reloaded.coins, 1000);
+    assert.strictEqual(reloaded.gems, 10);
     assert.ok(reloaded.unlockedAvatars.includes('panda'));
     assert.ok(reloaded.unlockedAvatars.includes('dragon'));
   });

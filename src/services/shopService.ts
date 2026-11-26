@@ -42,6 +42,7 @@ export interface ShopItem {
   isRealMoneyExclusive?: boolean;
   comingSoon?: boolean;
   requiredLevel?: number;
+  gemCost?: number;
   avatarKey?: string;
   image?: any;
   previewStyle: ShopItemPreviewStyle;
@@ -168,17 +169,21 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
       price: { currency: 'coins', amount: avatar.coinCost },
       unlockType: 'level_coins',
       requiredLevel: avatar.requiredLevel,
+      gemCost: avatar.gemCost,
       previewStyle: {
         primaryColor: avatar.bgColor,
         accentColor: avatar.accentColor,
         borderColor: avatar.accentColor,
         emoji: avatar.emoji,
       },
-      description: `Unlocks at Level ${avatar.requiredLevel} for ${avatar.coinCost.toLocaleString()} Coins.`,
+      description:
+        avatar.gemCost > 0
+          ? `Unlocks at Level ${avatar.requiredLevel} for ${avatar.coinCost.toLocaleString()} Coins + ${avatar.gemCost} Gems.`
+          : `Unlocks at Level ${avatar.requiredLevel} for ${avatar.coinCost.toLocaleString()} Coins.`,
     })
   ),
 
-  // --- EMOTES / QUICK CHAT (CLEAN STANDARD QUICK-CHAT BUBBLES) ---
+  // --- EMOTES / QUICK CHAT (4 COIN EMOTES + 5 GEM EMOTES) ---
   {
     id: 'emote_thinking',
     name: 'Thinking...',
@@ -230,6 +235,71 @@ export const SHOP_CATALOG: readonly ShopItem[] = [
       text: 'Nice Try!',
     },
     description: 'Cheeky reaction after surviving a Wild Draw 4 attack.',
+  },
+  {
+    id: 'emote_close_one',
+    name: 'Close One!',
+    category: 'emotes',
+    price: { currency: 'gems', amount: 15 },
+    previewStyle: {
+      primaryColor: '#0EA5E9',
+      borderColor: '#0369A1',
+      emoji: '😬',
+      text: 'Close One!',
+    },
+    description: 'Barely dodged disaster on the final card.',
+  },
+  {
+    id: 'emote_too_slow',
+    name: 'Too Slow!',
+    category: 'emotes',
+    price: { currency: 'gems', amount: 15 },
+    previewStyle: {
+      primaryColor: '#8B5CF6',
+      borderColor: '#6D28D9',
+      emoji: '⏱️',
+      text: 'Too Slow!',
+    },
+    description: 'Tease rivals when they hesitate or miss a Catch Rival call.',
+  },
+  {
+    id: 'emote_unlucky',
+    name: 'Unlucky!',
+    category: 'emotes',
+    price: { currency: 'gems', amount: 15 },
+    previewStyle: {
+      primaryColor: '#EC4899',
+      borderColor: '#BE185D',
+      emoji: '🎲',
+      text: 'Unlucky!',
+    },
+    description: 'Sympathetic shrug when the draw pile hits them hard.',
+  },
+  {
+    id: 'emote_rematch',
+    name: 'Rematch?',
+    category: 'emotes',
+    price: { currency: 'gems', amount: 20 },
+    previewStyle: {
+      primaryColor: '#10B981',
+      borderColor: '#047857',
+      emoji: '⚔️',
+      text: 'Rematch?',
+    },
+    description: 'Challenge your rival to run it back right away.',
+  },
+  {
+    id: 'emote_no_mercy',
+    name: 'No Mercy!',
+    category: 'emotes',
+    price: { currency: 'gems', amount: 20 },
+    previewStyle: {
+      primaryColor: '#DC2626',
+      borderColor: '#991B1B',
+      emoji: '🔥',
+      text: 'No Mercy!',
+    },
+    description: 'Drop a stacked +4 or Rival Swap without holding back.',
   },
 
   // --- COINS & GEMS PACKS (GOOGLE PLAY BILLING READY - COMING SOON v1.2.0) ---
@@ -692,3 +762,23 @@ class ShopService {
 }
 
 export const shopService = new ShopService();
+
+/**
+ * Returns the player's unlocked Shop quick-chat emotes in catalog order.
+ */
+export function getUnlockedShopEmotes(ownedItemIds: readonly string[]): ShopItem[] {
+  const ownedSet = new Set(ownedItemIds);
+  return SHOP_CATALOG.filter(
+    (item) => item.category === 'emotes' && ownedSet.has(item.id)
+  );
+}
+
+/**
+ * Formats an unlocked Shop emote into its broadcastable in-match taunt payload.
+ */
+export function formatShopEmoteTauntText(
+  item: Pick<ShopItem, 'name' | 'previewStyle'>
+): string {
+  const emoji = item.previewStyle?.emoji?.trim();
+  return emoji ? `${emoji} ${item.name}` : item.name;
+}

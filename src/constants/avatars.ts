@@ -31,6 +31,7 @@ export interface AvatarOption {
   accentColor: string;
   requiredLevel: number;
   coinCost: number;
+  gemCost: number;
 }
 
 export interface VipAvatarOption {
@@ -56,6 +57,7 @@ export interface ResolvedAvatarOption {
   image: any;
   requiredLevel?: number;
   coinCost?: number;
+  gemCost?: number;
   isVipExclusive?: boolean;
 }
 
@@ -118,6 +120,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#EA580C',
     requiredLevel: 1,
     coinCost: 0,
+    gemCost: 0,
   },
   {
     id: 'bot',
@@ -128,6 +131,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#0284C7',
     requiredLevel: 1,
     coinCost: 0,
+    gemCost: 0,
   },
   // Level + Coin Unlockable Ladder (Early starters below Lv. 10, stretched up to Level 40)
   {
@@ -139,6 +143,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#334155',
     requiredLevel: 3,
     coinCost: 500,
+    gemCost: 0,
   },
   {
     id: 'shield',
@@ -149,6 +154,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#0891B2',
     requiredLevel: 7,
     coinCost: 900,
+    gemCost: 0,
   },
   {
     id: 'tiger',
@@ -159,6 +165,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#D97706',
     requiredLevel: 10,
     coinCost: 2000,
+    gemCost: 0,
   },
   {
     id: 'wolf',
@@ -169,6 +176,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#475569',
     requiredLevel: 15,
     coinCost: 3200,
+    gemCost: 0,
   },
   {
     id: 'rival',
@@ -179,6 +187,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#7C3AED',
     requiredLevel: 20,
     coinCost: 4500,
+    gemCost: 0,
   },
   {
     id: 'ninja',
@@ -189,6 +198,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#DC2626',
     requiredLevel: 25,
     coinCost: 6000,
+    gemCost: 0,
   },
   {
     id: 'jester',
@@ -199,6 +209,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#B91C1C',
     requiredLevel: 30,
     coinCost: 7500,
+    gemCost: 5,
   },
   {
     id: 'flame',
@@ -209,6 +220,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#EA580C',
     requiredLevel: 35,
     coinCost: 9000,
+    gemCost: 10,
   },
   {
     id: 'champ',
@@ -219,6 +231,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#D97706',
     requiredLevel: 38,
     coinCost: 11000,
+    gemCost: 15,
   },
   {
     id: 'dragon',
@@ -229,6 +242,7 @@ export const AVATAR_CATALOG: readonly AvatarOption[] = [
     accentColor: '#BE123C',
     requiredLevel: 40,
     coinCost: 13500,
+    gemCost: 20,
   },
 ] as const;
 
